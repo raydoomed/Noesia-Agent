@@ -1,0 +1,21 @@
+{
+  "avatar": {
+    "id": "noesia",
+    "dir": "assets/transparent",
+    "idle_video": "assets/idle_video.mp4",
+    "reference": {
+      "front": "noesia_transparent.png"
+    }
+  },
+  "engine": {
+    "core_path": "src/engine",
+    "home": "data/NoesiaHome",
+    "workdir": "data/workspace"
+  },
+  "ui": {
+    "floating": {
+      "always_on_top": true,
+      "transparent": true
+    }
+  }
+}

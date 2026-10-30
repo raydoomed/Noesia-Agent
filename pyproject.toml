@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "noesia"
+version = "0.1.0"
+description = "Qt 桌面数字人：桌面形象 + 流式对话 + 语音朗读，口型驱动走 Vidu 云端"
+readme = "README.md"
+requires-python = ">=3.14"
+license = { text = "MIT" }
+authors = [{ name = "Ray" }]
+keywords = ["digital-human", "avatar", "lipsync", "tts", "qt", "desktop"]
+dependencies = [
+    "PyYAML>=6",
+    "pydantic>=2",
+    "websockets>=12",
+    "httpx>=0.27",
+    # 界面要用：numpy 做绿幕抠像（app/idle_video.py），pillow 做素材体检
+    # （src/assets/check.py）。缺了会 ImportError，不能只放进 extras。
+    "numpy>=1.26",
+    "pillow>=10",
+    # 语音：Edge 在线朗读（免费那一档）走这个包。镜像源可能还没收录它，
+    # 装不上就加 `-i https://pypi.org/simple`；只用 ElevenLabs 时它不会被 import。
+    "edge-tts>=7",
+    # 语音互动（src/app/avatar_rtc.py）：画面走阿里云 ARTC 原生 SDK，直接在进程内拿裸帧。
+    # C++ 那层用 Python C API 编成 src/app/_alirtc.pyd（tools/build_alirtc.py），
+    # dll 在 vendor/alirtc/，不依赖浏览器、不需要额外运行库。
+    "requests>=2.31",
+    "websocket-client>=1.8",
+]
+# 引擎自己干活用的库不在这里：它导入上百个第三方包，清单单独一份
+# （src/engine/deps.txt，46 个直接依赖），由 setup.bat 或 `pip install -r` 装。
+# 少了那份她能聊天，但工具、技能、浏览器都还不能用。
+
+[project.optional-dependencies]
+# dev 要能把仓库跑起来：测试 + 图片处理 + 桌面界面（缺 PySide6 就 `python -m app` 直接 ImportError）
+dev = ["pytest>=8", "PySide6>=6.5"]
+qt = ["PySide6>=6.5"]  # 只想跑界面、不想装 pytest 时用这个
+# 口型驱动（Vidu）走云端，本地不需要 torch 之类的推理依赖；
+# 哪天要换本地后端，那层的依赖单独给一组 extras，别在这里写不存在的东西。
+
+[project.scripts]
+noesia = "noesia_entry:main"
+noesia-gui = "app.main:main"
+
+[tool.setuptools]
+# src/ 下面直接就是产品代码：包有 app / assets / backends；顶层模块有
+# cli.py / engine_config_view.py / noesia_entry.py / paths.py / settings.py。
+# 没有中间那层包名；src/engine 是内置引擎，按路径导入，不装成包（依赖见 engine/deps.txt）。
+py-modules = ["cli", "engine_config_view", "noesia_entry", "paths", "settings"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["app*", "assets*", "backends*"]
+exclude = ["engine*", "engine.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

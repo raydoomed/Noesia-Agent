@@ -1,0 +1,240 @@
+"""Shared helpers for tool backend selection."""
+
+from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from utils import is_truthy_value
+
+logger = logging.getLogger(__name__)
+_DEFAULT_BROWSER_PROVIDER = "local"
+_DEFAULT_MODAL_MODE = "auto"
+_VALID_MODAL_MODES = {"auto", "direct"}
+
+
+def normalize_browser_cloud_provider(value: object | None) -> str:
+    """Return a normalized browser provider key."""
+    provider = str(value or _DEFAULT_BROWSER_PROVIDER).strip().lower()
+    return provider or _DEFAULT_BROWSER_PROVIDER
+
+
+def coerce_modal_mode(value: object | None) -> str:
+    """Return the requested modal mode when valid, else the default."""
+    mode = str(value or _DEFAULT_MODAL_MODE).strip().lower()
+    return mode if mode in _VALID_MODAL_MODES else _DEFAULT_MODAL_MODE
+
+
+normalize_modal_mode = coerce_modal_mode
+
+
+def has_direct_modal_credentials() -> bool:
+    """Return True when direct Modal credentials/config are available. The token pair is a
+    profile credential: read it through the secret scope so the default profile's Modal
+    account never selects the direct backend for a multiplexed secondary."""
+    if _scoped_credential("MODAL_TOKEN_ID") and _scoped_credential("MODAL_TOKEN_SECRET"):
+        return True
+    try:
+        return (Path.home() / ".modal.toml").exists()
+    except OSError:  # includes PermissionError on Path.home()
+        return False
+
+
+def resolve_modal_backend_state(modal_mode: object | None, *, has_direct: bool,
+                                managed_ready: bool = False,
+                                managed_enabled: bool | None = None) -> dict[str, Any]:
+    """Resolve the Modal backend: only the direct one (the hosted Modal runner is gone)."""
+    requested_mode = coerce_modal_mode(modal_mode)
+    return {"requested_mode": requested_mode, "mode": requested_mode, "has_direct": has_direct,
+            "managed_ready": False, "managed_mode_blocked": requested_mode == "managed",
+            "selected_backend": "direct" if has_direct else None}
+
+
+def _scoped_credential(name: str) -> str:
+    """Read a credential env var under the active profile secret scope; raw env fallback only
+    if ``agent.secret_scope`` cannot import (a packaging edge must never lose the key)."""
+    try:
+        from agent.secret_scope import get_secret
+        return (get_secret(name, "") or "").strip()
+    except Exception:  # pragma: no cover — secret_scope is in-repo
+        return (os.getenv(name, "") or "").strip()
+
+
+def _dotenv_value(env_var: str) -> str:
+    """``.env`` value via ``noesia_cli.config.get_env_value`` (``""`` when unavailable)."""
+    try:
+        from noesia_cli.config import get_env_value
+        return str(get_env_value(env_var) or "").strip()
+    except Exception:  # pragma: no cover — config is in-repo
+        return ""
+
+
+def _env_source_suppressed(provider_id: str, env_var: str) -> bool:
+    """``noesia auth remove <provider>`` records ``env:<VAR>`` in ``suppressed_sources`` and promises
+    the variable is ignored until ``noesia auth add``; a value still living in a long-running
+    gateway's process environment (inherited across update restarts) must honor that too."""
+    if not provider_id:
+        return False
+    try:
+        from noesia_cli.auth import is_source_suppressed
+        return is_source_suppressed(provider_id, f"env:{env_var}")
+    except Exception:  # pragma: no cover — auth store unreadable: keep prior behavior
+        return False
+
+
+def resolve_provider_secret(env_var: str, provider_id: str, config_value: str = "",
+                            env_getter=None) -> str:
+    """Resolve a voice-provider API key (single owner for STT/TTS lookup). Order: explicit
+    ``config_value`` -> profile secret scope / env -> ``.env`` via ``env_getter`` (or
+    ``noesia_cli.config.get_env_value``) -> credential pool for ``provider_id``. Under an
+    active multiplex turn the profile scope is authoritative: a miss returns ``""`` rather
+    than borrowing another profile's env or pool. Never raises. The env/.env tier is skipped
+    entirely while ``env:<env_var>`` is suppressed for ``provider_id`` (#116155).
+
+    Resolution order (fixes #68003 — keys added via ``noesia auth add <provider>`` were invisible to the
+    voice tools, which only consulted env/.env):
+    """
+    key = str(config_value or "").strip()
+    if key:
+        return key
+    env_suppressed = _env_source_suppressed(provider_id, env_var)
+    if not env_suppressed and (key := _scoped_credential(env_var)):
+        return key
+    try:
+        from agent.secret_scope import is_multiplex_active
+        if is_multiplex_active():
+            return ""
+    except Exception:  # pragma: no cover — secret_scope is in-repo
+        pass
+    if not env_suppressed:
+        key = str(env_getter(env_var) or "").strip() if env_getter else _dotenv_value(env_var)
+    if key or not provider_id:
+        return key
+    try:
+        from agent.credential_pool import load_pool
+        # config.yaml ``providers.<name>`` entries are pooled under ``custom:<name>``.
+        for pool_key in (provider_id, f"custom:{provider_id}"):
+            pool = load_pool(pool_key)
+            entry = pool.peek() if pool is not None and pool.has_credentials() else None
+            key = str(getattr(entry, "runtime_api_key", "") or getattr(entry, "access_token", "")
+                      or "").strip()
+            if key:
+                return key
+    except Exception as exc:
+        logger.debug("Could not read %s credential pool for %s: %s", provider_id, env_var, exc)
+    return ""
+
+
+def resolve_openai_audio_api_key() -> str:
+    """Prefer VOICE_TOOLS_OPENAI_KEY, else OPENAI_API_KEY (scope-aware, pool fallback for the
+    latter). Must go through the secret scope: a raw ``os.environ`` read could bill another
+    profile's account under multiplex.
+
+    Outside a multiplexed turn, ``OPENAI_API_KEY`` additionally falls back to the credential pool (``noesia
+    auth add openai-api``) via ``resolve_provider_secret`` — same #68003 fix as the other voice providers.
+    The dedicated voice-tools override remains env/scope-only.
+    """
+    return (resolve_provider_secret("VOICE_TOOLS_OPENAI_KEY", "")
+            or resolve_provider_secret("OPENAI_API_KEY", "openai-api"))
+
+
+# Config values the retired managed picker rows wrote ("Noesia Subscription" for every category,
+# ``use_gateway: true`` for web/browser). They stay recognized so an existing config gets a direct
+# answer, but nothing routes on them: each category uses its vendor's own key.
+RETIRED_GATEWAY_SELECTION = "noesia"
+# Per-capability keys that also count as "this category has been configured".
+_EXTRA_SELECTION_KEYS = {"web": ("search_backend", "extract_backend")}
+# Key(s) carrying the category's provider selection. ``browser.backend`` is the DRIVER
+# choice (browser-use CLI vs built-in), not the cloud provider — excluded.
+_SELECTION_NAME_KEYS = {"browser": ("cloud_provider",), "web": ("backend",)}
+_DEFAULT_NAME_KEYS = ("provider", "backend", "cloud_provider")
+
+
+def _raw_section(section: str) -> dict[str, Any] | None:
+    """The RAW (unmerged) config.yaml mapping for ``section``, or None."""
+    try:
+        from noesia_cli.config import read_raw_config_readonly
+        cfg = read_raw_config_readonly() or {}
+        raw = cfg.get(section) if isinstance(cfg, dict) else None
+        return raw if isinstance(raw, dict) else None
+    except Exception:
+        return None
+
+
+def read_selection(section: str) -> str | None:
+    """THE single runtime read of the persisted `noesia tools` selection: a vendor name (direct,
+    own credentials), or ``None`` (never configured -> legacy autodetect allowed). Reads the RAW
+    config.yaml so key presence means "actually written", not "schema default"; a raw ``local`` is
+    therefore a real user selection. A legacy ``use_gateway: true`` still counts as a written
+    selection and reports :data:`RETIRED_GATEWAY_SELECTION`. Never raises."""
+    raw = _raw_section(section)
+    if raw is None:
+        return None
+    if is_truthy_value(raw.get("use_gateway")):
+        return RETIRED_GATEWAY_SELECTION
+    for key in _SELECTION_NAME_KEYS.get(section, _DEFAULT_NAME_KEYS):
+        text = str(raw.get(key)).strip().lower() if raw.get(key) is not None else ""
+        if text:
+            return text
+    # use_gateway: false with no name key is not a usable selection shape;
+    # per-capability web keys still count as configured via selection_exists().
+    return None
+
+
+def read_web_capability_selection(capability: Optional[str] = None) -> str | None:
+    """Stored selection that decides ONE web capability (``"search"`` / ``"extract"``):
+    ``web.<capability>_backend`` when set (a vendor name = that vendor direct), else the shared
+    :func:`read_selection`. Lets search and extract each choose their own key."""
+    if capability:
+        raw = _raw_section("web") or {}
+        pin = str(raw.get(f"{capability}_backend") or "").strip().lower()
+        if pin:
+            return pin
+    return read_selection("web")
+
+
+def selection_exists(section: str) -> bool:
+    """True when ANY selection signal was ever written for the section (wider than
+    read_selection: per-capability web keys count too)."""
+    if read_selection(section) is not None:
+        return True
+    extra = _EXTRA_SELECTION_KEYS.get(section, ())
+    raw = _raw_section(section) if extra else None
+    return raw is not None and any(str(raw.get(key) or "").strip() for key in extra)
+
+
+# Backends that once shipped in-tree but were removed; a config still pointing at one would
+# otherwise fail silently at the FIRST tool call with a generic "no registered provider has that
+# name". Used by the startup config check and selection_error(); add removals here, never as
+# one-off string checks:  "web": {"<name>": "the <Name> backend was removed in vX (...)"}
+REMOVED_BACKENDS: dict[str, dict[str, str]] = {}
+
+
+# Backends that once shipped in-tree but were removed. A config that still points at one otherwise fails
+# silently at the FIRST tool call with a generic "no registered provider has that name" — no migration, no
+# startup notice (reported after the Tavily removal in #99199). Both the startup config check
+# (noesia_cli.config.validate_config_structure) and selection_error() consult this map so the user learns
+# what actually happened and what to do. Declared data, one policy — add future removals here, never as
+# one-off string checks at call sites.
+# Currently empty: the Tavily removal (#99199) that introduced this registry was reverted by the #99731
+# restore. Future backend removals add an entry here, e.g. "web": {"<name>": "the <Name> backend was removed
+# in vX.Y.Z (...)"},
+def removed_backend_note(section: str, name: str) -> Optional[str]:
+    """Explanation for a backend that used to ship in-tree, or None. ``name`` tolerates the
+    quoted form callers pass to selection_error()."""
+    return REMOVED_BACKENDS.get(section, {}).get((name or "").strip().strip("'\"").lower())
+
+
+def selection_error(section: str, selection_name: str, failure: str) -> str:
+    """The uniform honest-error contract for a selected-but-broken provider."""
+    failure = removed_backend_note(section, selection_name) or failure
+    return (f"{section} is configured to use {selection_name} (set via noesia "
+            f"tools), but {failure}. Run 'noesia tools' to change it.")
+
+
+def fal_key_is_configured() -> bool:
+    """True when FAL_KEY is set (scope/env, else ``.env`` for CLI paths that run before dotenv
+    loads) to a non-whitespace value, so tool-side and CLI setup-time checks agree."""
+    return bool(_scoped_credential("FAL_KEY") or _dotenv_value("FAL_KEY"))

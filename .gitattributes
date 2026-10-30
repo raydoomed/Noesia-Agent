@@ -1,0 +1,11 @@
+# Windows 双击脚本必须是 CRLF：cmd 遇到裸 LF 会把整行拆错，
+# 行里的引号和 if (...) 块全乱套，症状是报「'n.exe' 不是内部或外部命令」这种鬼话。
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# VBS 存的是 UTF-16 + BOM（否则脚本宿主把中文弹成乱码），别让 git 当文本改写它
+*.vbs   binary
+
+# shell 脚本要在 Linux 容器/WSL 里 exec：CRLF 会让内核报 "no such file or directory"。
+# 其余是 CI/打包规则，这里不需要。
+*.sh    text eol=lf

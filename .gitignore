@@ -1,0 +1,72 @@
+# 唯一的 .gitignore（内核目录不再自带一份，规则都收在这里）
+#
+# 约定：能生成的东西不入库——虚拟环境、字节码、运行时数据、密钥、模型权重、测试产物。
+# 入库的只有：源码、示例配置、素材、文档、启动脚本。
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+# 注意不要写 *.py[cod]：那会把 .pyd 二进制扩展也挡在门外（见下面 alirtc 那条）
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.venv-core/
+
+# 凭据（外壳没有配置文件：界面参数在 src/settings.py 里）
+.env
+.env.*
+!.env.example
+
+# 随包的运行环境（Python 3.14 / git bash / ffmpeg / 离线轮子 / alirtc 绑定）约 1 GB、
+# 1.1 万个文件，其中 ffmpeg.exe 138 MB、ffprobe.exe 138 MB、pyside6_webengine 轮子 125.6 MB，
+# 都超过 GitHub 单文件 100 MiB 的硬限，仓库里根本推不上去。
+# 它只跟发布整合包走（setup.bat 需要它），源码仓库里不带——这份目录是「下载来的二进制」，
+# 不是能生成的东西，所以单独列一条，别和下面的运行时数据混在一起。
+#
+# 用 vendor/* 而不是 vendor/：整目录排除后「!」例外对里面任何文件都不生效，
+# 而 MANIFEST.txt（文件清单 + sha256 + 来源版本）必须入库——它是「包里带的二进制是哪一版」的唯一依据。
+vendor/*
+!vendor/MANIFEST.txt
+
+# AliRTC 的 Python 绑定是编译产物（源码 _alirtc.cxx 入库，用 tools/build_alirtc.py 编），
+# 不跟源码仓库走，但整合包里必须有——avatar_rtc.py 直接 import 它。
+src/app/_alirtc.pyd
+
+# 运行时数据：记忆 / 人设 / 会话 / 日志 / 模型 / 生成物一律不入库
+data/
+logs/
+
+# 内核打包时才生成这个版本文件，工作区里不该有
+src/engine/noesia_cli/_version.py
+
+# 测试只在本机跑，不入库（守护测试里会出现被禁止的旧名字，公开仓库不该带上）
+tests/
+
+# 测试与工具产物
+.pytest_cache/
+.coverage
+htmlcov/
+*.spec.png
+*.onset.png
+*_small.png
+
+# 模型权重与生成物
+*.pt
+*.pth
+*.safetensors
+*.onnx
+*.mp4.tmp
+*.wav.tmp
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 开发笔记，不入库
+docs/
+CHANGELOG.md
