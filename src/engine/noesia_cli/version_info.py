@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,10 @@ from typing import Literal, cast
 
 from noesia_cli.steward import UPDATE_MECHANISMS
 from noesia_cli.update_channel import STABLE_TAG_RE
+
+# Windows 上 git 是控制台程序。外壳由 pythonw 启动、自身没有控制台，
+# 不指定这个标志时每条 git 都会分配一个可见黑窗——打开设置读版本号会连跑几条，桌面就会闪好几下。
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 
 @dataclass(frozen=True)
@@ -62,7 +67,7 @@ def _run_git(repo_dir: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
             ["git", *args], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3, cwd=str(repo_dir),
-            check=False,
+            check=False, creationflags=_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -234,6 +239,7 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
             timeout=3,
             cwd=str(repo_dir),
             check=False,
+            creationflags=_NO_WINDOW,
         )
         dirty = dirty_result.returncode == 0 and bool((dirty_result.stdout or "").strip())
     except (OSError, subprocess.SubprocessError):
