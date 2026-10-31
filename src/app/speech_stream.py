@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -29,6 +30,40 @@ from app.speech_prefs import SpeechError
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
 TARGET_RATE = 24000  # Vidu 组件版要 24k 单声道；本地播放也用这个，省一次重采样
+
+# 单次请求送给语音服务的最大字数。整段回答多长都照念，超过这个数就按句子切成几段，
+# 一段接一段合成、连续喂给播放器——段与段之间没有空隙（TTS 比实时快几倍，后段在前段还在播时就合成了）。
+SEGMENT_CHARS = 300
+
+
+def _split_for_tts(text: str, limit: int = SEGMENT_CHARS) -> list[str]:
+    """把长文本切成每段不超过 limit 字的几段，尽量在句子边界断开。"""
+    text = text.strip()
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+
+    pieces: list[str] = []
+    buf = ""
+    for sentence in re.split(r"(?<=[。！？；\n])", text):
+        if not sentence:
+            continue
+        while len(sentence) > limit:
+            # 单句本身超长：先找逗号，再找不到就硬切（罕见，只在没有标点的长串里出现）
+            cut = max(sentence.rfind(mark, 0, limit) for mark in "，、：, ")
+            cut = cut + 1 if cut > limit // 3 else limit
+            pieces.append(sentence[:cut])
+            sentence = sentence[cut:]
+        if len(buf) + len(sentence) > limit:
+            if buf:
+                pieces.append(buf)
+            buf = sentence
+        else:
+            buf += sentence
+    if buf:
+        pieces.append(buf)
+    return pieces
 
 
 class Resampler:
@@ -63,17 +98,22 @@ class Resampler:
 
 
 def stream_pcm(text: str) -> Iterator[bytes]:
-    """按当前语音设置流式合成，产出 24k 单声道 s16le 分片。"""
+    """按当前语音设置流式合成，产出 24k 单声道 s16le 分片。
+
+    整段文字多长都念完：超过 SEGMENT_CHARS 就分段合成，一段接一段，中间不断。
+    """
     from app.speech_prefs import current
 
     chosen = current()
     provider = chosen.get("provider") or "edge"
     if provider == "edge":
-        yield from _stream_edge(text, chosen)
+        synth = _stream_edge
     elif provider == "doubao":
-        yield from _stream_doubao(text, chosen)
+        synth = _stream_doubao
     else:
-        yield from _stream_elevenlabs(text, chosen)
+        synth = _stream_elevenlabs
+    for segment in _split_for_tts(text):
+        yield from synth(segment, chosen)
 
 
 def _stream_doubao(text: str, chosen: dict) -> Iterator[bytes]:

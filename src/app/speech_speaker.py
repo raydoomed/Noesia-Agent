@@ -30,13 +30,12 @@ _URL = re.compile(r"https?://\S+")
 _MARK = re.compile(r"[*_>#|]+")
 
 
-def speakable(text: str, max_chars: int | None = None) -> str:
-    """把回答洗成能念的纯文字；洗完没内容就返回空串（调用方直接跳过）。"""
-    if not max_chars:
-        from app.speech_prefs import current as voice_prefs
+def speakable(text: str) -> str:
+    """把回答洗成能念的纯文字；洗完没内容就返回空串（调用方直接跳过）。
 
-        max_chars = voice_prefs()["max_chars"]
-    limit = max_chars
+    不截断：回答有多少字就念多少字。以前这里按 max_chars 截到句末，
+    长回答会在中途停住、后面整段没声音；超长文本的分段交给 speech_stream。
+    """
     cleaned = _CODE_FENCE.sub(" ", text)
     cleaned = _MEDIA_TOKEN.sub(" ", cleaned)
     cleaned = _INLINE_CODE.sub(" ", cleaned)
@@ -46,10 +45,6 @@ def speakable(text: str, max_chars: int | None = None) -> str:
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\s+([，。！？；：、])", r"\1", cleaned)  # 删掉标点前的空格，「重点 ：」→「重点：」
     cleaned = re.sub(r"\n{2,}", "\n", cleaned).strip()
-    if len(cleaned) > limit:
-        # 截到最后一个句末再收，避免念半句
-        cut = max(cleaned.rfind(mark, 0, limit) for mark in "。！？；\n")
-        cleaned = cleaned[: cut + 1] if cut > limit // 3 else cleaned[:limit]
     return cleaned
 
 

@@ -73,7 +73,6 @@ _TEMPLATE: dict = {
     "voice_id": "",
     "voice_name": "",
     "model_id": "eleven_v3",
-    "max_chars": 400,  # 一条回答最多念这么多字，超了截到句末
     "output_format": "pcm_16000",  # ElevenLabs 直接给 16k 单声道裸 PCM，落 wav 即可
     "sample_rate": 16000,
     "voices": [],  # ElevenLabs 的音色缓存：[{"id": ..., "name": ...}]
@@ -82,7 +81,7 @@ _TEMPLATE: dict = {
 # 缺一个都不行：语音设置只有这一份，缺键当场报错，不拿代码默认值顶
 _REQUIRED = (
     "enabled", "mode", "provider", "voice_id", "voice_name", "model_id",
-    "max_chars", "output_format", "sample_rate",
+    "output_format", "sample_rate",
 )
 
 
@@ -205,7 +204,6 @@ def current() -> dict:
         ),
         # 这里永远给 ElevenLabs 的缓存清单：Edge 的音色是常量，界面自己按引擎取（EDGE_VOICES）
         # 合成参数也在这份配置里：纯语音和语音互动读同一套，不另开一处
-        "max_chars": int(data["max_chars"]),
         "output_format": data["output_format"],
         "sample_rate": int(data["sample_rate"]),
         "voices": list(data["voices"]),
