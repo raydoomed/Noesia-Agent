@@ -38,10 +38,14 @@ https://github.com/user-attachments/assets/bce248c6-16c5-49a8-831f-ec23d15c23b2
 
 ### 方式二：克隆仓库
 
-1. 装 **Python 3.14**
-2. `git clone https://github.com/raydoomed/Noesia-Agent.git`
-3. 进去双击 `setup.bat`
-4. 双击 `Noesia.exe`
+```bash
+git clone https://github.com/raydoomed/Noesia-Agent.git
+cd Noesia-Agent
+```
+
+进去双击 `setup.bat`。机器上没有 Python 3.14 时它自己下一份放进 `vendor/python314`，
+依赖走网络源装（阿里云 → 中科大 → 官方），ffmpeg 与 ARTC 运行库也一并补上。装完双击 `Noesia.exe`。
+整个过程联网约几分钟，全程只动项目文件夹，不写注册表、不改系统 PATH。
 
 ## 第一次打开
 
@@ -76,7 +80,7 @@ Noesia Agent/
 ├── setup.bat    uninstall.bat     # 装 / 卸
 ├── src/                           # app/ 界面 · engine/ 内置引擎 · 入口脚本
 ├── assets/                        # 形象图、待机视频、截图与演示
-├── vendor/                        # 随包运行环境（只有整合包里有）
+├── vendor/                        # 随包运行环境（整合包自带；源码副本由 setup 自动补）
 ├── data/                          # 运行时数据（首次启动自动建，不入库）
 ├── scripts/   tools/   tests/     # setup.ps1 / uninstall.ps1 · 构建脚本 · 测试
 ├── pyproject.toml   Makefile   VERSION

@@ -32,8 +32,8 @@ vendor/*
 !vendor/MANIFEST.txt
 
 # AliRTC 的 Python 绑定是编译产物（源码 _alirtc.cxx 入库，用 tools/build_alirtc.py 编），
-# 不跟源码仓库走，但整合包里必须有——avatar_rtc.py 直接 import 它。
-src/app/_alirtc.pyd
+# 但它必须入库：clone 的人机器上没有 MSVC，现编不了，缺了它语音互动档直接不可用。
+# 200 KB，远在 GitHub 100 MiB 单文件限制之内；只认 CPython 3.14，而全项目就锁在 3.14 上。
 
 # 运行时数据：记忆 / 人设 / 会话 / 日志 / 模型 / 生成物一律不入库
 data/

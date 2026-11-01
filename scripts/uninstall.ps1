@@ -240,15 +240,51 @@ if ($Mode -eq "all") {
 # ---- 5. 收尾：目录本身不删 ----
 Write-Host ""
 if ($Mode -eq "path") {
-    Write-Host "  [√] 命令已摘掉，程序和 data 原样留着。" -ForegroundColor Green
+    Write-Host "  [√] 命令已摘掉，程序和 data 原样留着（想用直接双击 Noesia.vbs）。" -ForegroundColor Green
 } elseif ($Mode -eq "venv") {
-    Write-Host "  [√] 命令已摘掉，依赖已删，data 原样留着（重装只需双击 setup.bat）。" -ForegroundColor Green
+    Write-Host "  [√] 命令已摘掉，依赖已删，data 原样留着。" -ForegroundColor Green
+    Write-Host "      以后想用，双击 setup.bat 装回来就行——data 里的会话和记忆不会丢。"
 } else {
     Write-Host "  [√] 命令、依赖、数据都清掉了。" -ForegroundColor Green
 }
+
+if ($Mode -ne "path") {
+    # 卸载不动 vendor：那里面是程序自己跑要用的东西，不是用户数据。
+    # 但也不能不说——用户看到「都清掉了」，一开文件夹发现还占着几百 MB，会觉得没卸干净。
+    $vendorItems = @(
+        @{ Name = "python314"; Desc = "程序用的 Python（没有它，setup 要先联网下一份）" },
+        @{ Name = "ffmpeg";    Desc = "语音朗读要的解码器" },
+        @{ Name = "alirtc";    Desc = "语音互动（画面）要的运行库" },
+        @{ Name = "wheels";    Desc = "离线安装包，装依赖时不用联网" }
+    )
+    $vendorLines = @()
+    $vendorTotal = 0
+    foreach ($it in $vendorItems) {
+        $mb = Get-SizeMB (Join-Path $root ("vendor\" + $it.Name))
+        if ($mb -ge 0.1) {
+            $vendorLines += ("      {0,-10} {1,7} MB  {2}" -f $it.Name, $mb, $it.Desc)
+            $vendorTotal += $mb
+        }
+    }
+    if ($vendorLines.Count -gt 0) {
+        Write-Host ""
+        Write-Host "  另外 vendor 文件夹里还有 $vendorTotal MB 随包文件，这次没删。"
+        Write-Host "  它们不是你的数据，是程序跑起来要靠的东西："
+        $vendorLines | ForEach-Object { Write-Host $_ }
+        Write-Host ""
+        Write-Host "  重装时 setup.bat 靠它们离线装，所以默认留着。"
+        Write-Host "  想省掉这块空间 —— 打开项目文件夹，只删 vendor 这一个文件夹（别删别的），"
+        Write-Host "  重装时 setup.bat 会自己重新下回来。"
+    }
+}
+
 Write-Host ""
-Write-Host "  项目文件夹本身没删（脚本删不掉自己所在的目录）。要彻底清掉，"
-Write-Host "  把整个文件夹手动删掉即可："
+Write-Host "  项目文件夹本身没删（脚本删不掉自己所在的目录）。"
+if ($Mode -eq "path") {
+    Write-Host "  以后整个不要了，删这个文件夹即可（里面的 data 会一起没）："
+} else {
+    Write-Host "  想连程序带源码一起清掉，删这个文件夹即可（删了就什么都没了）："
+}
 Write-Host "      $root"
 Write-Host ""
 exit 0

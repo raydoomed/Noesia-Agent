@@ -39,7 +39,8 @@ function Get-PythonVersion([string]$exe, [string[]]$preArgs = @()) {
 #   1. `src\engine\deps.txt` 每一行都带 `python_version >= '3.14'`（按 3.14 环境导出的清单），
 #      在 3.10 / 3.13 上 pip 会把整份清单当「不适用」整行 Ignoring 掉，一个包都不装，引擎起不来；
 #   2. `src\app\_alirtc.pyd` 是按 CPython 3.14 编的（只认 python314.dll），语音互动档也要 3.14。
-# 但「没有 3.14」不该让用户自己去官网下：这里自己下官方安装包静默装上，装不上才退回手动提示。
+# 但「没有 3.14」不该让用户自己去官网下：这里从 NuGet 下官方 python 包补进 vendor\python314
+# （见下面 Install-BundledPython），补不上才退回手动提示。不用 exe 安装包，原因写在那段注释里。
 # 候选写成参数数组而不是一整条命令：走启动器是 ("py","-3.14")，走磁盘路径是 ("<安装目录>\python.exe")，
 # 带空格的路径只有在数组形式下才不会解析错（`cmd /c "$py ..."` 那种拼字符串必踩）。
 function Find-Python314 {
@@ -73,12 +74,56 @@ function Find-Python314 {
     return $null
 }
 
-# 随包带的那份 Python 是 python.org 官方在 NuGet 上发布的 `python` 包（解压后 `tools\` 就是完整 CPython，
-# 已放进仓库的 `vendor\python314\`）。所以这里既不下也不用装：没有 3.14 就是包不完整，直接说清楚。
-# （python.org 的 exe 安装包那条路实测踩过，不能走：它走 MSI，会写 HKCU\Software\Python\PythonCore\3.14
-#   并覆盖机器上已有的 3.14 登记；装过一次后目录被删还会让下次 /quiet 变「修复」，退出码 0 却一个文件不装。）
+# 从 git clone 下来的仓库里没有 vendor\python314（vendor 整个目录不进仓库，里面 1 GB 二进制推不上去）。
+# 这一步按整合包同一个来源把它补回来：python.org 在 NuGet 上发布的 `python` 包，解开 `tools\` 就是完整的
+# CPython（整合包里那份就是它，见 vendor\MANIFEST.txt）。不用 python.org 的 exe 安装包：
+# 它走 MSI，会写 HKCU\Software\Python\PythonCore\3.14 并覆盖机器上已有的登记；装过一次后目录被删，
+# 下次 /quiet 还会变成「修复」，退出码 0 却一个文件都不装。
+# 网络不通也没关系：下面 Fail 里留着手动装 Python 3.14 的路。
+function Install-BundledPython {
+    $target = Join-Path $root "vendor\python314"
+    if ((Test-Path (Join-Path $target "python.exe")) -and ((Get-PythonVersion (Join-Path $target "python.exe")) -eq 14)) {
+        return $true
+    }
+    $tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
+    if (-not (Test-Path $tarExe)) {
+        Say "[WARN] 这台系统没有 tar.exe，没法自动补 Python 3.14。"
+        return $false
+    }
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("noesia-py-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
+    $oldProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    $ok = $false
+    try {
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        $nupkg = Join-Path $tmp "python.nupkg"
+        Say "      下载 Python 3.14.6（NuGet 官方包，约 15 MB）..."
+        Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/python/3.14.6/python.3.14.6.nupkg" `
+            -OutFile $nupkg -UseBasicParsing -TimeoutSec 600
+        & $tarExe -xf $nupkg -C $tmp "tools"
+        if (Test-Path (Join-Path $tmp "tools\python.exe")) {
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            Copy-Item -Path (Join-Path $tmp "tools\*") -Destination $target -Recurse -Force
+            $ok = ((Test-Path (Join-Path $target "python.exe")) -and ((Get-PythonVersion (Join-Path $target "python.exe")) -eq 14))
+        }
+    } catch {
+        Say "      [WARN] 下载失败：$($_.Exception.Message)"
+    } finally {
+        $ProgressPreference = $oldProgress
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($ok) { Say "      已放好：$target" }
+    return $ok
+}
 
 $pyCmd = Find-Python314
+if (-not $pyCmd) {
+    Say "这台机器上没有 Python 3.14，先补一份随包的（vendor\python314）..."
+    if (Install-BundledPython) {
+        $pyCmd = Find-Python314
+        if ($pyCmd) { Say "      Python 3.14 已就位。" }
+    }
+}
 if (-not $pyCmd) {
     $have = @()
     foreach ($cand in @("py", "python")) {
@@ -86,8 +131,8 @@ if (-not $pyCmd) {
         if ($null -ne $minor) { $have += "3.$minor"; break }
     }
     if ($have.Count -gt 0) { $where = "这台机器上是 Python $($have[0])" } else { $where = "这台机器上没有 Python" }
-    $tip = "① 这个包里随附的 Python（vendor\python314）不见了？把压缩包完整重解一次（别只拷 src\app 或 scripts）；② 或者自己装 Python 3.14（python.org 下载时勾 Add python.exe to PATH，或命令行 winget install -e --id Python.Python.3.14）。装好再双击 setup.bat。"
-    Fail "需要 Python 3.14（这个包只能在 3.14 上跑）；$where。$tip"
+    $tip = "自动补也没成功（多半是网络问题）。两条路任选：① 自己装 Python 3.14（python.org 下载时勾 Add python.exe to PATH，或命令行 winget install -e --id Python.Python.3.14）；② 联网后重新双击 setup.bat，让它自己补。装好再跑一次。"
+    Fail "需要 Python 3.14（这个程序只能在 3.14 上跑，两处硬约束都在这里）；$where。$tip"
 }
 
 # 所有调用都走这里：$pyCmd 是「可执行文件 + 可选版本参数」的数组，带空格的路径也不会解析错
@@ -182,7 +227,11 @@ if (-not (Test-Deps)) {
 function Test-EngineDeps {
     $probe = @()
     try {
-        $probe = & $vpy -c "import sys; sys.path.insert(0, 'src/engine'); import run_agent; print('NOESIA_ENGINE_OK')" 2>$null
+        # 探针要把「不装上就当场炸」的都导一遍，光 import run_agent 不够：
+        # run_agent 是懒加载，语音识别那三个包（numpy / onnxruntime / kaldi-native-fbank）
+        # 要等用户真的按住球说话才 import。漏装的话这里照样报「环境就绪」，
+        # 等用户开口才炸——那时候他已经以为装好了。
+        $probe = & $vpy -c "import sys; sys.path.insert(0, 'src/engine'); import run_agent, numpy, onnxruntime, kaldi_native_fbank; print('NOESIA_ENGINE_OK')" 2>$null
     } catch {
         return $false
     }
@@ -217,25 +266,10 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ---- 4.5 随包的本地运行库：语音互动那一档要用（缺了不影响文字与纯语音）----
-$pydPath = "src\app\_alirtc.pyd"
-$rtcDir = "vendor\alirtc"
-if (-not (Test-Path $pydPath)) {
-    Say "[WARN] 没找到 $pydPath（杀毒软件常把这种文件删掉）：语音互动用不了，文字和纯语音不受影响。"
-} elseif (-not (Test-Path (Join-Path $rtcDir "AliRTCSdk.dll"))) {
-    Say "[WARN] 没找到 $rtcDir\AliRTCSdk.dll：语音互动用不了，文字和纯语音不受影响。"
-} else {
-    # 真导入一次，比读版本号可靠：ABI 对不上时这里会直接失败。
-    $probe = @()
-    try {
-        $probe = & $vpy -c "import os, sys; sys.path.insert(0, 'src'); os.add_dll_directory(os.path.abspath('vendor/alirtc')); import app._alirtc; print('NOESIA_ALIRTC_OK')" 2>$null
-    } catch { $probe = @() }
-    if (@($probe) -contains "NOESIA_ALIRTC_OK") {
-        Say "语音互动的本地运行库可用（ARTC 原生 SDK，$pydPath）。"
-    } else {
-        Say "[WARN] 语音互动的本地运行库导入失败（${pydPath}）：运行库不完整，或被杀毒软件删过。"
-        Say "       文字聊天和纯语音（Edge / ElevenLabs / 豆包）都不受影响。"
-        Say "       想用互动档：把整个包重新完整解压一次（别只单独拷 src\app），再双击 setup.bat。"
-    }
+# 这里只判「文件在不在」；真正的导入验证放到 4.8——ARTC 的 dll 在 [5/6] 才补齐，
+# 早一步验会对着还不存在的 dll 报红字，让人以为互动档坏了。
+if (-not (Test-Path "src\app\_alirtc.pyd")) {
+    Say "[WARN] 没找到 src\app\_alirtc.pyd（杀毒软件常把这种文件删掉）：语音互动用不了，文字和纯语音不受影响。"
 }
 
 # ---- 4.6 外部程序：ffmpeg / ffprobe（语音解码与素材体检要用）----
@@ -329,6 +363,21 @@ if (Test-Path (Join-Path $rtcDir "AliRTCSdk.dll")) {
         } else {
             Say "[WARN] 没补上 ARTC：语音互动那一档用不了（文字和纯语音不受影响）。"
         }
+    }
+}
+
+# ---- 4.8 互动档收尾确认：ARTC 的 dll 刚在 [5/6] 补齐，到这里才真导入 pyd ----
+# 4.5 那一步在 dll 还没到位时只提示「等下面补完再验」，不报红字；ABI 对不上（pyd 不是 3.14 编的）也在这里露出来。
+if (Test-Path "src\app\_alirtc.pyd") {
+    $probe = @()
+    try {
+        $probe = & $vpy -c "import os, sys; sys.path.insert(0, 'src'); os.add_dll_directory(os.path.abspath('vendor/alirtc')); import app._alirtc; print('NOESIA_ALIRTC_OK')" 2>$null
+    } catch { $probe = @() }
+    if (@($probe) -contains "NOESIA_ALIRTC_OK") {
+        Say "语音互动的本地运行库可用（ARTC 原生 SDK，src\app\_alirtc.pyd）。"
+    } else {
+        Say "[WARN] 语音互动的本地运行库导入失败：dll 不完整，或被杀毒软件删过。"
+        Say "       文字聊天和纯语音（Edge / ElevenLabs / 豆包）都不受影响。"
     }
 }
 
