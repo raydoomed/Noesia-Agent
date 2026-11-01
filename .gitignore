@@ -43,7 +43,9 @@ logs/
 src/engine/noesia_cli/_version.py
 
 # 测试只在本机跑，不入库（守护测试里会出现被禁止的旧名字，公开仓库不该带上）
-tests/
+# 只排项目根这一层：写成 tests/ 会把 src/engine/**/tests/ 也一起挡掉，
+# 而那是技能自带的测试文件，属于技能内容，必须跟着包走。
+/tests/
 
 # 测试与工具产物
 .pytest_cache/
