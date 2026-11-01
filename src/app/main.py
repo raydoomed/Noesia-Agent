@@ -334,6 +334,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self.speaker.started.connect(lambda _text: self._voice_ok())
         self._reply_text = ""  # 本轮回答的原文，on_complete 时整段丢给 Speaker
         self._turn_stopped = False  # 这一轮被用户叫停：complete 到达时别再整段念
+        self._voice_model_downloading = False  # 识别模型正在下：别因为再查一次又发一遍
         self._sending_attachments: list = []  # 点发送时带的附件：等 _send_user_text 整轮交给引擎
         if idle_video is not None:
             self.idle_player = IdleVideoPlayer(idle_video, self)
@@ -984,6 +985,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.speaker.stopped.connect(self.chat_panel.speech_done)
             self.speaker.failed.connect(lambda _msg: self.chat_panel.speech_done())
             self.chat_panel.reasoning_requested.connect(self.request_reasoning)
+            # 语音输入：松手后录的那段交给引擎识别，结果从 wire.voice_text 回来
+            self.chat_panel.voice_transcribe_requested.connect(self._transcribe_voice)
+            # 按下说话先掐朗读：不掐的话，麦克风收的是她自己正在念的这句
+            self.chat_panel.voice_record_started.connect(self._stop_voice)
+            # 进语音模式就问一句识别模型在不在：不在当场开始下，别等人说完才报错
+            self.chat_panel.voice_input_opened.connect(self._ensure_voice_model)
             if self._models:  # 面板晚建：把已有清单补进去
                 self.chat_panel.set_models(
                     list(self._models.get("items") or []), str(self._models.get("current") or "")
@@ -995,6 +1002,50 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._greet_if_needed()
         self.request_approval_mode()  # 面板刚建，问一次引擎现在的档位
         self.request_reasoning()  # 当前推理强度：七档清单是固定的，这里只要「现在哪一档」
+
+    def _ensure_voice_model(self) -> None:
+        """进语音模式先问一句模型在不在。引擎顺手在后台预热，缺文件就当场开始下。"""
+        wire = getattr(self, "client", None)
+        if wire is not None:
+            wire.check_voice_model()
+
+    def _on_voice_model(self, info: dict) -> None:
+        """识别模型的状态：齐了就报一声，缺了就下，下不成把原因摆出来。"""
+        panel = self.chat_panel
+        if panel is None:
+            return
+        if info.get("ready"):
+            if self._voice_model_downloading:
+                self._voice_model_downloading = False
+                panel.show_notice("voice-model", "语音识别准备好了，按住麦克风说话就行", ttl_ms=5000)
+            return
+        if info.get("failed"):
+            self._voice_model_downloading = False
+            panel.show_notice("voice-model", f"识别模型没下成：{info['failed']}", ttl_ms=8000, level="error")
+            return
+        if self._voice_model_downloading:
+            return
+        self._voice_model_downloading = True
+        total = int(info.get("total") or 0)
+        size = f"{total / 1048576:.0f} MB" if total else "两百多兆"
+        panel.show_notice(
+            "voice-model",
+            f"第一次用要先下语音识别模型（{size}），下好会告诉你",
+            ttl_ms=0,  # 常驻到有结果为止
+        )
+        wire = getattr(self, "client", None)
+        if wire is not None:
+            wire.download_voice_model()
+
+    def _transcribe_voice(self, path: str) -> None:
+        """录好的一段交给引擎识别。引擎还没起好就当场说清，别让球卡在「识别中」。"""
+        wire = getattr(self, "client", None)
+        panel = self.chat_panel
+        if wire is None:
+            if panel is not None:
+                panel.voice_transcribe_failed("识别引擎还没起好，稍等一下再试", path)
+            return
+        wire.transcribe_audio(path)
 
     def stop_turn(self) -> None:
         """叫住这一轮：真停由引擎的 interrupt 做，界面只发一条 stop。"""
@@ -1868,8 +1919,19 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if resized:
             self._save_geometry()
 
+    def release_audio(self) -> None:
+        """退出前把麦克风还回去。
+
+        退出走的是 `QApplication.quit()`（右键菜单那条路），它**不触发 closeEvent**——
+        只挂在 closeEvent 上的清理等于永远不执行，蓝牙耳机那头会一直显示「正在使用」。
+        """
+        panel = self.chat_panel
+        if panel is not None:
+            panel.release_audio()
+
     def closeEvent(self, event) -> None:  # noqa: N802
         self._save_geometry()
+        self.release_audio()
         super().closeEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
@@ -2221,6 +2283,13 @@ def main() -> int:
     wire.secret_prompt.connect(window.on_secret_request)
     wire.reaction.connect(window.on_reaction)
     wire.processes.connect(lambda rows: window.chat_panel and window.chat_panel.set_processes(rows))
+    wire.voice_text.connect(
+        lambda path, text: window.chat_panel and window.chat_panel.apply_voice_transcript(text, path)
+    )
+    wire.voice_failed.connect(
+        lambda path, message: window.chat_panel and window.chat_panel.voice_transcribe_failed(message, path)
+    )
+    wire.voice_model.connect(window._on_voice_model)
     wire.approval.connect(window.on_approval_request)
     wire.setup_beat.connect(window.on_setup_beat)
     wire.key_saved.connect(lambda _slug: window._greet_if_needed(force=True))
@@ -2318,6 +2387,8 @@ def main() -> int:
         _reap_browser_daemons()
 
     app.aboutToQuit.connect(_shutdown_engine)
+    # 退出这条路（右键 → 退出）不经过 closeEvent，麦克风得单独在这儿还回去
+    app.aboutToQuit.connect(window.release_audio)
     if getattr(window, "_avatar", None) is not None:
         app.aboutToQuit.connect(window._avatar.shutdown)
     if window.idle_player is not None:

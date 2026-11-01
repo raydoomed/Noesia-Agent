@@ -884,5 +884,67 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "speaking"})
 
 
+@method("voice.transcribe.ready")
+def _(rid, params: dict) -> dict:
+    """本地识别模型装了没有、下了多少。界面靠它决定显示「就绪」还是「要下载」。"""
+    try:
+        from tools import audio_sensevoice
+    except Exception as e:  # noqa: BLE001
+        return _ok(rid, {"ready": False, "error": str(e), "downloaded": 0, "total": 0})
+    if audio_sensevoice.is_ready():
+        # 顺手在后台把模型读进内存：界面进语音模式查这一下，说完话就不用再等六秒
+        audio_sensevoice.warm()
+    return _ok(rid, {
+        "ready": audio_sensevoice.is_ready(),
+        "downloaded": audio_sensevoice.downloaded_bytes(),
+        "total": audio_sensevoice.total_download_bytes(),
+        "missing": audio_sensevoice.missing_files(),
+    })
+
+
+@method("voice.transcribe.download")
+def _(rid, params: dict) -> dict:
+    """下识别模型（约 230 MB）。同步跑，界面那边自己轮询 ready 看进度。"""
+    try:
+        from tools import audio_sensevoice
+    except Exception as e:  # noqa: BLE001
+        return _err(rid, 5027, f"识别模块不可用：{e}")
+    try:
+        audio_sensevoice.download()
+    except audio_sensevoice.ModelMissing as e:
+        return _err(rid, 5030, str(e))
+    except Exception as e:  # noqa: BLE001
+        return _err(rid, 5031, f"下载失败：{e}")
+    return _ok(rid, {"ready": audio_sensevoice.is_ready()})
+
+
+@method("voice.transcribe")
+def _(rid, params: dict) -> dict:
+    """把一段已经录好的 WAV 转成文字。
+
+    采集在桌面端做（要设备选择、电平反馈），这里只管识别。``path`` 是调用方写好的
+    16kHz 单声道 16 位 WAV；转完由调用方自己删。
+    """
+    from pathlib import Path
+    path = str(params.get("path") or "").strip()
+    if not path:
+        return _err(rid, 4031, "path required")
+    if not Path(path).is_file():
+        return _err(rid, 4032, f"找不到音频文件：{path}")
+    try:
+        from tools import audio_sensevoice
+    except Exception as e:  # noqa: BLE001
+        return _err(rid, 5027, f"识别模块不可用：{e}")
+    try:
+        text = audio_sensevoice.transcribe(path)
+    except audio_sensevoice.ModelMissing as e:
+        return _err(rid, 5030, str(e))
+    except ValueError as e:
+        return _err(rid, 4033, str(e))
+    except Exception as e:  # noqa: BLE001
+        return _err(rid, 5031, f"识别失败：{e}")
+    return _ok(rid, {"text": text})
+
+
 def register(server) -> None:
     bind_module(globals(), server, skip=("_",))

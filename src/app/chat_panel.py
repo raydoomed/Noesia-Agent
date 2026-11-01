@@ -16,10 +16,12 @@ from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from app import disclosure, file_preview, markdown_render, media_links
+from app import audio_devices, disclosure, file_preview, markdown_render, media_links
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton
 from app.speech_bar import SpeechBar
 from app.status_stack import StatusStack
+from app.voice_input import SILENT_PEAK, VoiceRecorder, peak_of, write_wav
+from app.voice_orb import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_THINKING, VoiceOrb
 from app.tool_view.i18n import tr as tool_tr
 
 logger = logging.getLogger(__name__)
@@ -183,6 +185,11 @@ STYLE = """
     border-radius: 8px;
 }
 #inputbox[focused="true"] { border: 1px solid rgba(154, 208, 255, 160); }
+/* 语音模式：整条输入区就是这一颗球，不要框、不要底——有框就像「球被装在一个盒子里」 */
+#inputbox[voice="true"] {
+    background-color: transparent;
+    border: none;
+}
 #attachbar {
     background-color: rgba(255, 255, 255, 12);
     border: 1px solid rgba(255, 255, 255, 28);
@@ -384,6 +391,17 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
                 -50 * 16,
                 100 * 16,
             )
+    elif kind == "mic":
+        # 话筒：头 + 支架弧 + 杆。语音输入用这个，跟上面 voice（喇叭）不是一回事
+        painter.drawRoundedRect(QtCore.QRectF(6.2, 2.4, 5.6, 8.2), 2.8, 2.8)
+        painter.drawArc(QtCore.QRectF(4.8, 5.4, 8.4, 7.4), 180 * 16, 180 * 16)
+        painter.drawLine(QtCore.QPointF(9.0, 12.8), QtCore.QPointF(9.0, 15.4))
+    elif kind == "keyboard":
+        # 键盘：外框 + 一排按键 + 空格键。14px 里塞两排会糊成一片，只留一排
+        painter.drawRoundedRect(QtCore.QRectF(2.6, 4.6, 12.8, 8.8), 1.6, 1.6)
+        for x in (5.2, 7.8, 10.4, 13.0):
+            painter.drawPoint(QtCore.QPointF(x, 8.2))
+        painter.drawLine(QtCore.QPointF(7.0, 10.6), QtCore.QPointF(11.0, 10.6))
     else:  # spark：思考档位
         star = QtGui.QPainterPath()
         points = [(9.0, 2.4), (11.0, 7.0), (15.6, 9.0), (11.0, 11.0),
@@ -518,6 +536,12 @@ class ChatPanel(QtWidgets.QWidget):
     stop_requested = QtCore.Signal()  # 跑着的时候按「停止」，叫住这一轮
     speech_stop_requested = QtCore.Signal()  # 语音进度条上那个停止：只掐朗读，不动这一轮
     voice_mode_changed = QtCore.Signal(str)  # 语音档位换了（静音/纯语音/互动）：旧的语音提示要跟着撤
+    # 语音输入：录完一段，把 WAV 路径发出去让引擎识别；结果由窗口那边回灌给 apply_voice_transcript
+    voice_transcribe_requested = QtCore.Signal(str)
+    # 按下说话：窗口那边先掐掉正在念的那句，不然麦克风收的是她自己的声音
+    voice_record_started = QtCore.Signal()
+    # 进了语音模式：窗口那边问一句识别模型在不在（引擎顺手预热）
+    voice_input_opened = QtCore.Signal()
     reasoning_requested = QtCore.Signal(str)  # 思考档位：选哪一档发哪个（空串 = 不指定）
     attachment_picked = QtCore.Signal(list)  # 按发送那一刻才把附件交给引擎（选的时候只留在界面上）
     attachment_failed = QtCore.Signal(str)  # 某个附件没传上去：从待发送条里撤掉
@@ -744,6 +768,17 @@ class ChatPanel(QtWidgets.QWidget):
         self.input.setAcceptDrops(True)  # 拖文件进来：DragEnter/Drop 也在同一个 eventFilter 里接
         box_row.addWidget(self.input, 1)
 
+        # 语音模式的输入区：跟输入框抢同一个位置，同一时刻只露一个。
+        # 切模式只做 hide/show，不销毁 QLineEdit——草稿、光标位置、焦点都在控件自己身上，
+        # 藏起来不会丢，切回来还是原样。
+        # 球按居中摆：语音模式下其余按钮都藏起来，整条输入区就剩这一颗球。
+        self._box_row = box_row
+        self._voice_orb = VoiceOrb(box)
+        self._voice_orb.hide()
+        self._voice_orb.pressed.connect(self._voice_hold_start)
+        self._voice_orb.released.connect(self._voice_hold_end)
+        box_row.addWidget(self._voice_orb, 1, QtCore.Qt.AlignCenter)
+
         # 审批档位：写一句话之前先知道「危险命令要不要问我」。档位写在 tooltip 上。
         self._approval_button = QtWidgets.QToolButton(box)
         self._approval_button.setObjectName("icon")
@@ -808,6 +843,21 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         box_row.addWidget(self._voice_button)
         self.set_voice_mode(_voice_mode())
+
+        # 语音输入：点一下在「打字 / 说话」之间来回切，右键选麦克风。
+        # 跟左边那个 TTS 三档是两件事——那个管「念不念出来」，这个管「怎么输入」。
+        self._mic_button = QtWidgets.QToolButton(box)
+        self._mic_button.setObjectName("icon")
+        self._mic_button.setIcon(_glyph_icon("mic"))
+        self._mic_button.setIconSize(QtCore.QSize(14, 14))
+        self._mic_button.setFixedSize(22, 22)
+        self._mic_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._mic_button.setToolTip("语音输入（右键选麦克风）")
+        self._mic_button.clicked.connect(self._toggle_voice_input)
+        self._mic_button.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self._mic_button.customContextMenuRequested.connect(self._show_mic_menu)
+        box_row.addWidget(self._mic_button)
+        self._init_voice_input()
 
         self._send_button = send = QtWidgets.QPushButton("发送", frame)
         send.setObjectName("send")
@@ -877,6 +927,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._tool_folds = {}
         self._clarify = None
         self.stack.clear_all()
+        # 清屏顺带把语音球退回待机：不然它会一直停在「识别中」转圈
+        self._voice_orb.set_state(STATE_IDLE)
         self._tool_started.clear()
         self._tool_clock.stop()
         self._provider_wait = ""
@@ -2755,9 +2807,15 @@ class ChatPanel(QtWidgets.QWidget):
                 found.append(path)
         return found
 
+    def _stop_turn(self) -> None:
+        """叫住这一轮。Enter 在忙的时候是「停止」，语音打断也走这一个口子——同一件事只写一遍。"""
+        if not self._busy:
+            return
+        self.stop_requested.emit()
+
     def _emit(self) -> None:
         if self._busy:  # 在跑的时候这个键是「停止」
-            self.stop_requested.emit()
+            self._stop_turn()
             return
         message = self.input.text().strip()
         attachments = list(self._attachments)
@@ -2770,6 +2828,286 @@ class ChatPanel(QtWidgets.QWidget):
             # 到这一刻才交给引擎：没点发送的附件既不会落盘、也不会被模型看见
             self.attachment_picked.emit(attachments)
         self.submitted.emit(message)
+
+    # ---- 语音输入 ----
+
+    def _init_voice_input(self) -> None:
+        """建录音器。音频接口在这台机器上用不了就把按钮关掉，不影响打字。"""
+        self._voice_mode_on = False
+        self._recorder = None
+        self._voice_prefs = None
+        self._voice_draft_focus = False
+        self._audio_released = False
+        try:
+            from app import voice_input_prefs
+
+            recorder = VoiceRecorder(self)
+            recorder.level.connect(self._on_voice_level)
+            recorder.failed.connect(self._on_voice_failed)
+            recorder.device_lost.connect(self._on_voice_device_lost)
+            remembered = voice_input_prefs.device_guid()
+            if remembered:
+                recorder.preload(remembered)  # 只记住选择，不在这里开流
+            self._recorder = recorder
+            self._voice_prefs = voice_input_prefs
+        except Exception:  # noqa: BLE001 - 音频初始化失败不该让整个面板起不来
+            logger.warning("[语音] 录音器起不来", exc_info=True)
+            self._mic_button.setEnabled(False)
+            self._mic_button.setToolTip("这台机器的音频接口用不了，语音输入先关着")
+
+    def _toggle_voice_input(self) -> None:
+        self._set_voice_input(not self._voice_mode_on)
+
+    def _set_voice_input(self, on: bool) -> None:
+        """切「打字 / 说话」。只切可见性，输入框和它的内容一直在。"""
+        if self._recorder is None or on == self._voice_mode_on:
+            return
+        self._voice_mode_on = on
+        if on:
+            # 记下切走前焦点在不在输入框，切回来要还给她
+            self._voice_draft_focus = self.input.hasFocus()
+            self._voice_orb.set_state(STATE_IDLE)
+            self.input.hide()
+            # 整条输入区只留球：＋、审批、思考、喇叭全收起来，球居中才有「轮到说话」的样子
+            for button in (self._attach_button, self._approval_button,
+                           self._reasoning_button, self._voice_button, self._send_button):
+                button.hide()
+            self._box_row.setContentsMargins(9, 10, 4, 10)  # 球别贴着上下边框
+            self._set_inputbox_voice(True)
+            self._voice_orb.show()
+            self._float_mode_button(True)
+            self._mic_button.setIcon(_glyph_icon("keyboard", "#ffffff"))
+            self._mic_button.setToolTip("语音已开：按住球说话，松手就发（点一下回到打字，右键换麦克风）")
+            try:
+                self._recorder.open_stream()
+            except Exception as exc:  # noqa: BLE001 - 开流崩了别让整条输入区跟着塌
+                logger.warning("[语音] 打开录音流失败", exc_info=True)
+                self._voice_flash(f"麦克风打不开：{exc}")
+            self.voice_input_opened.emit()
+        else:
+            self._recorder.cancel()
+            self._recorder.close_stream()
+            self._voice_orb.hide()
+            self._voice_orb.set_state(STATE_IDLE)
+            for button in (self._attach_button, self._approval_button,
+                           self._reasoning_button, self._voice_button, self._send_button):
+                button.show()
+            self._box_row.setContentsMargins(9, 0, 4, 0)
+            self._set_inputbox_voice(False)
+            self._float_mode_button(False)
+            self.input.show()
+            self._mic_button.setIcon(_glyph_icon("mic"))
+            self._mic_button.setToolTip("语音输入（右键选麦克风）")
+            if self._voice_draft_focus or self.input.text():
+                self.input.setFocus()
+
+    def _float_mode_button(self, floating: bool) -> None:
+        """语音模式下把「切回打字」那颗按钮从布局里摘出来，浮到输入框右上角。
+
+        语音模式里整条输入区只剩球居中，按钮留在布局里会被挤到球右边偏下的位置；
+        浮起来贴角更像个「关闭」开关，也不占球的横向空间。
+        """
+        button = self._mic_button
+        if floating:
+            self._box_row.removeWidget(button)
+            button.setParent(self._inputbox)
+            self._place_mode_button()
+            button.show()
+            self._inputbox.installEventFilter(self)
+            return
+        self._inputbox.removeEventFilter(self)
+        button.setParent(self._inputbox)
+        self._box_row.addWidget(button)
+        button.show()
+
+    def _place_mode_button(self) -> None:
+        """贴着输入框右上角摆，留 6px 内边距。"""
+        button = self._mic_button
+        button.move(max(0, self._inputbox.width() - button.width() - 6), 6)
+
+    def _set_inputbox_voice(self, on: bool) -> None:
+        """切输入条的样子：语音模式下它只是球的托盘，不要框也不要底色。"""
+        self._inputbox.setProperty("voice", on)
+        # 属性变了 Qt 不会自己重算样式，得手动 unpolish/polish 一遍
+        style = self._inputbox.style()
+        style.unpolish(self._inputbox)
+        style.polish(self._inputbox)
+
+    def _voice_hold_start(self) -> None:
+        recorder = self._recorder
+        if recorder is None:
+            return
+        try:
+            endpoint = recorder.current()
+        except Exception as exc:  # noqa: BLE001 - 枚举设备崩了也得让人看到，不能按了没反应
+            logger.warning("[语音] 取麦克风失败", exc_info=True)
+            self._voice_flash(f"没法确认用哪只麦克风：{exc}")
+            return
+        if endpoint is None:
+            # 先分清「没麦」和「在开」：两种都说成「还在准备」会让人一直等下去
+            self._voice_flash("这台电脑现在找不到能用的麦克风，右键能选别的设备")
+            return
+        self._voice_orb.set_state(STATE_RECORDING)
+        try:
+            started = recorder.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[语音] 开始录音失败", exc_info=True)
+            self._voice_orb.set_state(STATE_IDLE)
+            self._voice_flash(f"录音起不来：{exc}")
+            return
+        if not started:
+            # 流还在打开（蓝牙要先唤醒链路，几百毫秒）：这次按下不算数，球退回去
+            self._voice_orb.set_state(STATE_IDLE)
+            self.show_notice("voice-input", "麦克风还在准备，稍等一下再说", ttl_ms=2500, level="warn")
+            return
+        # 真开始录了才掐朗读：她正在念的时候开口，这段录音里全是她自己的声音
+        self.voice_record_started.emit()
+
+    def _voice_hold_end(self) -> None:
+        recorder = self._recorder
+        if recorder is None or self._voice_orb.state() != STATE_RECORDING:
+            return
+        pcm = recorder.stop()
+        if pcm is None:
+            self._voice_flash("说话太短了，按住多说一会儿")
+            return
+        if peak_of(pcm) <= SILENT_PEAK:
+            # 整段都是数字静音：设备没在收音，跟「没说话」是两回事，得分开说
+            self._voice_flash(f"「{recorder.endpoint_name()}」没收到声音，看看是不是戴歪了")
+            return
+        path = self._voice_temp_path()
+        try:
+            write_wav(pcm, path)
+        except OSError as exc:
+            self._voice_flash(f"录音存不下来：{exc}")
+            return
+        self._voice_orb.set_state(STATE_THINKING)
+        self.voice_transcribe_requested.emit(str(path))
+
+    def _voice_flash(self, message: str) -> None:
+        """麦克风这边出问题：球闪红一下，状态条留一句话。"""
+        self.show_notice("voice-input", message, ttl_ms=5000, level="error")
+        self._voice_orb.set_state(STATE_ERROR)
+        QtCore.QTimer.singleShot(1600, lambda: self._voice_orb.set_state(STATE_IDLE))
+
+    def _voice_temp_path(self) -> Path:
+        root = Path(__file__).resolve().parents[2] / "data" / "tmp" / "voice"
+        root.mkdir(parents=True, exist_ok=True)
+        return root / f"{int(time.time() * 1000)}.wav"
+
+    @QtCore.Slot(float)
+    def _on_voice_level(self, value: float) -> None:
+        self._voice_orb.set_level(value)
+
+    @QtCore.Slot(str)
+    def _on_voice_failed(self, message: str) -> None:
+        self._voice_flash(message or "麦克风用不了")
+
+    @QtCore.Slot(str)
+    def _on_voice_device_lost(self, replacement: str) -> None:
+        """正在用的麦克风拔了/断开了：录音器已经自己回退，这里只告诉人一声。"""
+        if replacement:
+            self.show_notice("voice-input", f"麦克风断开了，已经换到「{replacement}」", ttl_ms=6000, level="warn")
+        else:
+            self.show_notice("voice-input", "麦克风断开了，现在没有能用的录音设备", ttl_ms=8000, level="error")
+            self._voice_orb.set_state(STATE_ERROR)
+
+    def apply_voice_transcript(self, text: str, source_path: str = "") -> None:
+        """识别回来了：直接发出去，人留在语音模式接着往下说。
+
+        不走输入框：语音模式下它是藏着的，里面可能还压着没发出去的草稿，
+        清掉等于替她扔了东西，合并着发又等于替她拍了板。
+        """
+        self._discard_voice_file(source_path)
+        text = (text or "").strip()
+        if not text:
+            self._voice_flash("这句没听清，再说一次")
+            return
+        self._voice_orb.set_state(STATE_IDLE)  # 球先回待机，能接着按住说下一句
+        # 人开口就是要打断：还在跑就先终止这一轮，跟 Enter 变「停止」走同一条路
+        # （停朗读、半条回答收尾、工具行标「已停止」、发 interrupt 全在里面）。
+        self._stop_turn()
+        self.append_user(text, [])
+        self.submitted.emit(text)
+
+    def voice_transcribe_failed(self, message: str, source_path: str = "") -> None:
+        self._discard_voice_file(source_path)
+        self._voice_flash(message or "识别失败了，再试一次")
+
+    def release_audio(self) -> None:
+        """把麦克风还回去。关窗和退出两条路都会走到，只认真做一次。"""
+        if getattr(self, "_audio_released", True):
+            return
+        self._audio_released = True
+        recorder = self._recorder
+        if recorder is None:
+            return
+        try:
+            recorder.cancel()
+            recorder.shutdown()
+        except Exception:  # noqa: BLE001 - 收尾失败不该挡住程序退出
+            logger.debug("[语音] 收尾失败", exc_info=True)
+
+    @staticmethod
+    def _discard_voice_file(path: str) -> None:
+        if not path:
+            return
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            logger.debug("[语音] 删不掉临时录音 %s", path, exc_info=True)
+
+    def _show_mic_menu(self, pos: QtCore.QPoint) -> None:
+        """右键：把所有能录的设备列出来，勾上当前那只。"""
+        recorder = self._recorder
+        if recorder is None:
+            return
+        menu = QtWidgets.QMenu(self._mic_button)
+        menu.setObjectName("modelmenu")
+        menu.setStyleSheet(STYLE)
+
+        current = recorder.current()
+        current_guid = current.guid if current else ""
+
+        endpoints = recorder.devices()
+        if not endpoints:
+            empty = menu.addAction("没找到能用的麦克风")
+            empty.setEnabled(False)
+        else:
+            group = QtGui.QActionGroup(menu)
+            group.setExclusive(True)
+            for endpoint in endpoints:
+                label = endpoint.name + ("（蓝牙）" if endpoint.bluetooth else "")
+                action = menu.addAction(label)
+                action.setCheckable(True)
+                action.setChecked(endpoint.guid == current_guid)
+                action.setActionGroup(group)
+                action.triggered.connect(
+                    lambda _checked=False, guid=endpoint.guid: self._choose_mic(guid)
+                )
+        menu.addSeparator()
+        follow = menu.addAction("跟随系统默认")
+        follow.setCheckable(True)
+        follow.setChecked(not recorder.chosen_guid())
+        follow.triggered.connect(lambda _checked=False: self._choose_mic(""))
+        menu.exec(self._mic_button.mapToGlobal(pos))
+
+    def _choose_mic(self, guid: str) -> None:
+        recorder = self._recorder
+        if recorder is None:
+            return
+        recorder.choose(guid)
+        if self._voice_prefs is not None:
+            try:
+                self._voice_prefs.remember(guid)
+            except OSError as exc:
+                logger.warning("[语音] 记不住选的麦克风：%s", exc)
+        if guid:
+            endpoint = audio_devices.find(guid)
+            name = endpoint.name if endpoint else "所选麦克风"
+            self.show_notice("voice-input", f"麦克风换成「{name}」", ttl_ms=3000)
+        else:
+            self.show_notice("voice-input", "麦克风跟随系统默认", ttl_ms=3000)
 
     # ---- 交互：拖动 / Esc 收起 ----
 
@@ -3080,6 +3418,11 @@ class ChatPanel(QtWidgets.QWidget):
                     if kind is QtCore.QEvent.Type.Drop:
                         self._attach_paths(paths)
                     return True
+            return super().eventFilter(obj, event)
+        if obj is getattr(self, "_inputbox", None) and event.type() is QtCore.QEvent.Type.Resize:
+            # 语音模式下那颗「切回打字」的按钮是浮在右上角的，输入框一变宽就得重摆
+            if self._mic_button.parent() is self._inputbox:
+                self._place_mode_button()
             return super().eventFilter(obj, event)
         if obj is getattr(self, "_frame", None):
             kind = event.type()

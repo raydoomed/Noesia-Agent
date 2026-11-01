@@ -190,6 +190,8 @@ _LONG_HANDLERS = frozenset({
     "bot_relay.deliver", "bot_relay.reply", "image.generate", "projects.discover_repos",
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
     "setup.runtime_check", "setup.status", "voice.toggle", "voice.record", "voice.tts", "wake.start",
+    # 识别：首次要加载 230 MB 模型（约 5 秒），下载要传输同样大小——都不能堵住 RPC 读线程
+    "voice.transcribe", "voice.transcribe.download",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.save", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "onboarding.start", "onboarding.state",

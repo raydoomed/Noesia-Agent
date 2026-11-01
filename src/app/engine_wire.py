@@ -648,6 +648,9 @@ class EngineWire(QtCore.QObject):
     secret_prompt = QtCore.Signal(dict)    # 引擎要一个密钥 / sudo 密码（secret、sudo）
     reaction = QtCore.Signal(str)          # 她对你的温柔话有反应（ily / <3）
     processes = QtCore.Signal(list)        # process.list：还在跑的后台进程
+    voice_text = QtCore.Signal(str, str)   # voice.transcribe 回执：录音文件路径 + 识别出的文字
+    voice_failed = QtCore.Signal(str, str)  # 同上但失败：录音文件路径 + 原因
+    voice_model = QtCore.Signal(dict)      # voice.transcribe.ready：模型在不在、下了多少
     setup_needed = QtCore.Signal(str)      # 引擎回 code=provider_not_configured：可撤销的临时提示
     error = QtCore.Signal(str)             # 某条请求失败（引擎回的 error 帧）
     failed = QtCore.Signal(str)            # 引擎没起来 / 通道断了
@@ -670,6 +673,9 @@ class EngineWire(QtCore.QObject):
 
         self._buffer = ""
         self._stderr_tail: list[str] = []  # 引擎最后几行 stderr：退出码非 0 时要拿它说人话
+        # 语音识别这条线：编号 → 录音文件路径。编号进 tag，路径不进（见 transcribe_audio）
+        self._voice_seq = 0
+        self._voice_jobs: dict[int, str] = {}
         self._out_decoder = None  # stdout 的增量 UTF-8 解码器（留住被切开的半个字）
         self._err_decoder = None  # stderr 同上
         self._next_id = 0
@@ -1201,6 +1207,22 @@ class EngineWire(QtCore.QObject):
             params["session_id"] = self._session_id
         self._call("process.kill", params, tag="process.kill")
 
+    def check_voice_model(self) -> None:
+        """问识别模型在不在。引擎顺手会在后台预热，进语音模式就该问这一下。"""
+        self._call("voice.transcribe.ready", {}, tag="voice.transcribe.ready")
+
+    def download_voice_model(self) -> None:
+        """下识别模型（两百多兆）。引擎那边同步跑，所以登记在长活清单里。"""
+        self._call("voice.transcribe.download", {}, tag="voice.transcribe.download")
+
+    def transcribe_audio(self, path: str) -> None:
+        """把一段录音交给引擎识别。tag 里只放编号不放路径——路径带反斜杠和冒号，
+        拼进 tag 会被切错，而 tag 又是失败重发时要靠的原件。"""
+        self._voice_seq += 1
+        job = self._voice_seq
+        self._voice_jobs[job] = str(path)
+        self._call("voice.transcribe", {"path": str(path)}, tag=f"voice.transcribe:{job}")
+
     def _reply(self, request_id, result: dict) -> None:
         self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
 
@@ -1355,6 +1377,17 @@ class EngineWire(QtCore.QObject):
                 self._attaching = False  # 起会话这一趟失败了：下一句还能重新发起，别被标志挡死
             if isinstance(rid, int):
                 self._sent.pop(rid, None)  # 别的失败不再留着「原样重发」的副本
+            if tag == "voice.transcribe.download":
+                # 没下成：把原因交回界面，让它把「正在下」那条换成一句能看懂的
+                self.voice_model.emit({"ready": False, "failed": str(message)})
+                return
+            if tag.startswith("voice.transcribe:"):
+                # 识别失败：走语音自己那条通道。别落进下面那个 error 分支——那会在聊天区
+                # 冒一行红字，看起来像「消息发失败了」，其实只是这声没听清。
+                job = tag.split(":", 1)[1]
+                path = self._voice_jobs.pop(int(job), "") if job.isdigit() else ""
+                self.voice_failed.emit(path, str(message))
+                return
             if tag.startswith("model.save_key") or tag == "config.set:model":
                 # 设置窗口正等这一条：失败原因原样交给那个窗口，别改成「没配供应商」的泛提示，
                 # 也别往聊天区再喷一条无关的英文
@@ -1374,6 +1407,23 @@ class EngineWire(QtCore.QObject):
             self.error.emit(f"{message}")
             return
         result = frame.get("result") or {}
+        if tag == "voice.transcribe.ready":
+            self.voice_model.emit(result if isinstance(result, dict) else {})
+            return
+        if tag == "voice.transcribe.download":
+            # 下完再问一次：判「好了没」以引擎真读到的文件为准，不靠这边的乐观判断
+            self.check_voice_model()
+            return
+        if tag.startswith("voice.transcribe:"):
+            job = tag.split(":", 1)[1]
+            path = self._voice_jobs.pop(int(job), "") if job.isdigit() else ""
+            text = str(result.get("text") or "").strip()
+            if text:
+                self.voice_text.emit(path, text)
+            else:
+                # 引擎听了个空：这不是「发消息失败」，是一条可重来的提示
+                self.voice_failed.emit(path, str(result.get("reason") or "这句没听清，再说一次"))
+            return
         if tag in {"session.create", "session.resume"}:
             # 会话到手：在途/恢复这些标志全在这一处清（成功、失败、超时都从这儿过）
             self._session_ready(
