@@ -196,6 +196,7 @@ from app.idle_video import IdleVideoPlayer
 from app.user_state import window_settings
 
 from app.window_geometry import (
+    DEFAULT_WIDTH,
     MIN_WIDTH,
     cursor_for,
     edges_at,
@@ -251,10 +252,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._scale = 0.5
         # 形象图/视频的固定构图比例（高 / 宽），缩放时锁住，避免把人脸压扁
         self._aspect = (self._pixmap.height() / self._pixmap.width()) if self._pixmap.width() else 1.333
-        self._default_size = fit_width(self._pixmap.width() * self._scale, self._aspect)
+        # 打开时的大小：形象原图 1344×1792，缩到 360 宽（480 高）放在桌面上不挡东西
+        self._default_size = fit_width(DEFAULT_WIDTH, self._aspect)
+        # 能拖到的最大：原图的一半（672×896），和以前一样
+        self._max_size = fit_width(self._pixmap.width() * self._scale, self._aspect)
         self.setMinimumSize(MIN_WIDTH, round(MIN_WIDTH * self._aspect))
-        # 只能缩、不能比她默认大小更大：最大尺寸就是「恢复默认大小」那个尺寸
-        self.setMaximumSize(self._default_size)
+        self.setMaximumSize(self._max_size)
         self.resize(self._default_size)
         # 尺寸/位置记在系统设置里（QSettings 自己选平台合适的位置，不写死路径）
         self._settings = window_settings()
@@ -335,6 +338,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._reply_text = ""  # 本轮回答的原文，on_complete 时整段丢给 Speaker
         self._turn_stopped = False  # 这一轮被用户叫停：complete 到达时别再整段念
         self._voice_model_downloading = False  # 识别模型正在下：别因为再查一次又发一遍
+        self._voice_model_tried = False  # 这一轮已经下过一次了：失败后别再反复拉 230 MB
         self._sending_attachments: list = []  # 点发送时带的附件：等 _send_user_text 整轮交给引擎
         if idle_video is not None:
             self.idle_player = IdleVideoPlayer(idle_video, self)
@@ -355,8 +359,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         return screen.availableGeometry() if screen is not None else QtCore.QRect(0, 0, 1920, 1080)
 
     def _max_height(self) -> int:
-        """高度上限＝默认大小的高度（窗口宽度最大就是这个尺寸，按比例算下来也一样）。"""
-        return self._default_size.height()
+        """高度上限＝能拖到的最大尺寸的高度（窗口宽度最大就是这个尺寸，按比例算下来也一样）。"""
+        return self._max_size.height()
 
     def _sync_chat_anchor(self) -> None:
         """把「她在屏幕上的位置」告诉聊天窗：拖到下方时靠它对齐中心线。"""
@@ -386,7 +390,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     saved_size.width(),
                     self._aspect,
                     min_width=MIN_WIDTH,
-                    max_width=self._default_size.width(),
+                    max_width=self._max_size.width(),
                     max_height=self._max_height(),
                 )
             )
@@ -1015,15 +1019,36 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if panel is None:
             return
         if info.get("ready"):
+            self._voice_model_tried = True   # 齐了：这一轮不用再下了
             if self._voice_model_downloading:
                 self._voice_model_downloading = False
                 panel.show_notice("voice-model", "语音识别准备好了，按住麦克风说话就行", ttl_ms=5000)
             return
         if info.get("failed"):
             self._voice_model_downloading = False
+            self._voice_model_tried = True
             panel.show_notice("voice-model", f"识别模型没下成：{info['failed']}", ttl_ms=8000, level="error")
             return
         if self._voice_model_downloading:
+            # 走到这儿只可能是「下完了又查一次还是不齐」：标志不能再吊在 True 上，
+            # 否则之后再进语音模式会永远被挡住，既不重试也不说话，用户只能去重启。
+            self._voice_model_downloading = False
+            self._voice_model_tried = True
+            panel.show_notice(
+                "voice-model",
+                "识别模型下完了但不完整，语音输入暂时用不了（重启程序会再试一次）",
+                ttl_ms=8000,
+                level="error",
+            )
+            return
+        if self._voice_model_tried:
+            # 这一轮已经拉过一次了：别每进一次语音模式就重下 230 MB，但要说清现状
+            panel.show_notice(
+                "voice-model",
+                "识别模型还没装好，语音输入暂时用不了（重启程序会再试一次）",
+                ttl_ms=6000,
+                level="error",
+            )
             return
         self._voice_model_downloading = True
         total = int(info.get("total") or 0)
@@ -1339,6 +1364,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if panel is None:
             return
         kind = str(event.get("kind") or "")
+        if self._turn_stopped and kind in {"tool.generating", "tool.progress"}:
+            # 这一轮已经被叫停：引擎可能还飘回来几条进度，别再挂到输入框上方
+            # （挂了就没人撤——那个工具的 tool.start 永远不会来了）
+            return
         if kind == "tool.generating":
             # 引擎在拼这次工具调用：先在输入框上方说一句「马上要调谁了」，
             # 工具真的开跑（tool.start）就撤掉——桌面端也是这一行的前身
@@ -1891,7 +1920,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 pos - self._resize_start_global,
                 self._aspect,
                 min_width=MIN_WIDTH,
-                max_width=self._default_size.width(),
+                max_width=self._max_size.width(),
                 max_height=self._max_height(),
             )
             old = self.geometry()

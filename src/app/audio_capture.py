@@ -1,15 +1,21 @@
 """录音：WASAPI 共享模式直采。
 
 只用 `ctypes` 调系统 DLL，不引入 PortAudio / sounddevice / Qt Multimedia。
-格式由系统重采样器（`AUTOCONVERTPCM`）负责，所以固定要 16k 单声道即可。
 
-**绝不给音频流设通信类用途**（`AudioCategory_Communications` / `Speech`）：实测设上去
-之后，同一只蓝牙耳机的 A2DP 放音端点会立刻变成 `UNPLUGGED`，而且不会自己恢复，
-用户得断开重连才能听回声音。放音被掐的代价远大于回声那点收益。
+**开流不写死采样率**：先按调用方给的格式请求，系统能做转换（`AUTOCONVERTPCM`）就直接用；
+系统不肯转，就退到**设备自己的采样率和声道数**（`GetMixFormat`）——不同设备原生是 16k
+还是 48k 由它自己说了算。实际拿到多少从 `Capture.rate / Capture.channels` 读，调用方据此去重采样。
 
-**也不做 MME（waveIn）兜底、不做蓝牙链路预唤醒**：实测这两种做法都会把蓝牙耳机从
-A2DP 拽进 HFP（SCO），一开麦电脑里别的声音就全没了。直接开 WASAPI 共享流能正常
-收到麦克风数据，又不碰放音那条链路——网页里的在线麦克风测试就是这么做的。
+**位深永远是 16bit**：混音格式普遍是 32bit float，照抄下来上层按 int16 解析就是一串垃圾。
+所以降级时只取设备的采样率和声道数，格式仍按 16bit PCM 要，让系统转位深——转不了就报错，
+绝不把不是 int16 的数据交给上层。
+
+**不给音频流设通信类用途**（`AudioCategory_Communications` / `Speech`）：通信类会进入
+系统的「通信活动」策略，其他声音可能被压低或被静音，而采集本身并不需要这个身份。
+
+**只留 WASAPI 一条路**：不做 MME（waveIn）兜底、不做蓝牙链路预唤醒。多一条后端就是
+多一条能挂住设备句柄的路径，也会让「这次到底走的哪条」变得不可知。共享模式下
+WASAPI 自己就能从蓝牙麦克风拿到数据。
 """
 
 from __future__ import annotations
@@ -60,6 +66,18 @@ def _pcm_format(rate: int, channels: int) -> WAVEFORMATEX:
     return fmt
 
 
+def _free_mix_format(ptr) -> None:
+    """`GetMixFormat` 的返回值是 `CoTaskMemAlloc` 分配的，按文档要还回去。
+
+    `ctypes.windll` 默认把参数当 `c_int`，64 位上会把指针的高 32 位截掉——
+    必须显式声明 `c_void_p`，否则这里会踩内存。
+    """
+    ole32 = ctypes.windll.ole32
+    ole32.CoTaskMemFree.argtypes = [c_void_p]
+    ole32.CoTaskMemFree.restype = None
+    ole32.CoTaskMemFree(ctypes.cast(ptr, c_void_p))
+
+
 def _peak(pcm: bytes) -> int:
     """这段 PCM 里绝对值最大的采样（int16 域）。全零数据 = 0。"""
     if not pcm:
@@ -74,11 +92,11 @@ def _peak(pcm: bytes) -> int:
 # ================================================================ WASAPI
 
 class WasapiCapture:
-    """按端点 GUID 直接采。"""
+    """按端点 GUID 直接采。`rate` / `channels` 是请求值，开流后变成设备实际给的格式。"""
 
     backend = "wasapi"
 
-    def __init__(self, endpoint: Endpoint, rate: int = 16000, channels: int = 1) -> None:
+    def __init__(self, endpoint: Endpoint, rate: int, channels: int = 1) -> None:
         self.endpoint = endpoint
         self.rate = rate
         self.channels = channels
@@ -87,6 +105,29 @@ class WasapiCapture:
         self._capture = None
         self._format = _pcm_format(rate, channels)
         self._opened = False
+
+    def _initialize(self, client, fmt_ptr, flags: int) -> int:
+        """`IAudioClient::Initialize`（共享模式）。`fmt_ptr` 是 WAVEFORMATEX 指针。
+
+        用 `c_void_p` 而不是 `POINTER(WAVEFORMATEX)`：设备报的格式可能是
+        WAVEFORMATEXTENSIBLE，比 WAVEFORMATEX 多出扩展部分，按窄类型传会丢掉。
+        """
+        hr = _call(
+            client, 3, ctypes.c_long,
+            c_int, c_ulong, ctypes.c_longlong, ctypes.c_longlong, c_void_p, c_void_p,
+        )(
+            client, AUDCLNT_SHAREMODE_SHARED, flags,
+            ctypes.c_longlong(_BUFFER_HNS), ctypes.c_longlong(0), fmt_ptr, None,
+        )
+        return hr & 0xFFFFFFFF
+
+    def _mix_format(self, client):
+        """`IAudioClient::GetMixFormat`：设备自己的混音格式，共享模式下一定接受。"""
+        ptr = POINTER(WAVEFORMATEX)()
+        hr = _call(client, 8, ctypes.c_long, POINTER(POINTER(WAVEFORMATEX)))(client, byref(ptr))
+        if hr != 0 or not ptr:
+            return None
+        return ptr
 
     def open(self) -> None:
         enumerator = _enumerator()
@@ -110,15 +151,41 @@ class WasapiCapture:
             raise CaptureError(f"「{self.endpoint.name}」打不开（Activate hr=0x{hr & 0xFFFFFFFF:08X}）")
         self._client = client
 
+        # 第一步：按调用方要的格式开，让系统的重采样器去转（大多数设备走这条）
         flags = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
-        hr = _call(client, 3, ctypes.c_long, c_int, c_ulong, ctypes.c_longlong, ctypes.c_longlong,
-                   POINTER(WAVEFORMATEX), c_void_p)(
-            client, AUDCLNT_SHAREMODE_SHARED, flags,
-            ctypes.c_longlong(_BUFFER_HNS), ctypes.c_longlong(0), byref(self._format), None,
-        )
+        hr = self._initialize(client, ctypes.cast(byref(self._format), c_void_p), flags)
         if hr != 0:
-            self._release_all()
-            raise CaptureError(f"「{self.endpoint.name}」不接受 {self.rate}Hz/单声道（hr=0x{hr & 0xFFFFFFFF:08X}）")
+            # 第二步：系统不肯按我们要的采样率转，就改用它自己的采样率和声道数——
+            # 但位深仍坚持 16bit。混音格式常是 32bit float，直接照抄的话上层按 int16
+            # 解析会得到一堆垃圾，所以这里只要采样率/声道，不要位深。
+            native = self._mix_format(client)
+            if native is None:
+                self._release_all()
+                raise CaptureError(
+                    f"「{self.endpoint.name}」不接受 {self.rate}Hz/{self.channels} 声道，"
+                    f"也读不到它的混音格式（hr=0x{hr & 0xFFFFFFFF:08X}）"
+                )
+            native_rate = native.contents.nSamplesPerSec
+            native_channels = native.contents.nChannels
+            _free_mix_format(native)
+
+            fmt16 = _pcm_format(native_rate, native_channels)
+            hr = self._initialize(client, ctypes.cast(byref(fmt16), c_void_p), flags)
+            if hr != 0:
+                self._release_all()
+                raise CaptureError(
+                    f"「{self.endpoint.name}」只接受 {native_rate}Hz/{native_channels} 声道，"
+                    f"但转不成 16bit 采样（hr=0x{hr & 0xFFFFFFFF:08X}）"
+                )
+            logger.info(
+                "[录音] %s 不接受 %d Hz / %d 声道，改用设备原生的 %d Hz / %d 声道（16bit）",
+                self.endpoint.name, self.rate, self.channels, native_rate, native_channels,
+            )
+            self._format = fmt16
+
+        # 实际拿到多少以设备为准，调用方按这个值去重采样
+        self.rate = self._format.nSamplesPerSec
+        self.channels = self._format.nChannels
 
         capture = c_void_p()
         hr = _call(client, 14, ctypes.c_long, POINTER(ctypes.c_byte * 16), POINTER(c_void_p))(
@@ -155,6 +222,9 @@ class WasapiCapture:
             size = frames.value * self._format.nBlockAlign
             if data:
                 chunks.append(ctypes.string_at(data, size))
+            else:
+                # SILENT 包：指针是空的，但这段时长真实存在，不补零录音就会变短
+                chunks.append(b"\x00" * size)
             _call(self._capture, 4, ctypes.c_long, ctypes.c_uint)(self._capture, frames.value)
         return b"".join(chunks)
 
@@ -178,38 +248,3 @@ class WasapiCapture:
 
 def _as_bytes(guid) -> ctypes.Array:
     return (ctypes.c_byte * ctypes.sizeof(guid)).from_buffer_copy(guid)
-
-
-# ================================================================ 门面
-
-class Capture:
-    """对上层只暴露 open / read / close。只有 WASAPI 一条路。"""
-
-    def __init__(self, endpoint: Endpoint, rate: int = 16000, channels: int = 1) -> None:
-        self.endpoint = endpoint
-        self.rate = rate
-        self.channels = channels
-        self.backend = ""
-        self._impl: WasapiCapture | None = None
-        self._opened = False
-
-    def open(self) -> None:
-        wasapi = WasapiCapture(self.endpoint, self.rate, self.channels)
-        wasapi.open()
-        self._impl = wasapi
-        self.backend = "wasapi"
-        self._opened = True
-        logger.info("[录音] %s 走 WASAPI", self.endpoint.name)
-
-    def read(self) -> bytes:
-        return self._impl.read() if self._impl else b""
-
-    def close(self) -> None:
-        if self._impl:
-            self._impl.close()
-        self._impl = None
-        self._opened = False
-
-    @property
-    def opened(self) -> bool:
-        return self._opened

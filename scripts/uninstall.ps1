@@ -254,6 +254,7 @@ if ($Mode -ne "path") {
     $vendorItems = @(
         @{ Name = "python314"; Desc = "程序用的 Python（没有它，setup 要先联网下一份）" },
         @{ Name = "ffmpeg";    Desc = "语音朗读要的解码器" },
+        @{ Name = "git";       Desc = "版本号与仓库信息要的便携 git" },
         @{ Name = "alirtc";    Desc = "语音互动（画面）要的运行库" },
         @{ Name = "wheels";    Desc = "离线安装包，装依赖时不用联网" }
     )

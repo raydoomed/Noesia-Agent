@@ -221,8 +221,8 @@ if (-not (Test-Deps)) {
     Fail "安装失败：换网络或挂代理再双击 setup.bat。具体原因看上面几行。"
 }
 
-# ---- 4. 内核依赖：她干活用的工具、技能、浏览器都在 src\engine 里 ----
-# 内核代码随仓库分发，依赖单独一份清单（src\engine\deps.txt），不安装内核包本身
+# ---- 4. 引擎依赖：她干活用的工具、技能、浏览器都在 src\engine 里 ----
+# 引擎代码随仓库分发，依赖单独一份清单（src\engine\deps.txt），不安装引擎包本身
 # （它声明了一个不存在的 setuptools 版本，装包这条路走不通，也没必要）。
 function Test-EngineDeps {
     $probe = @()
@@ -240,9 +240,9 @@ function Test-EngineDeps {
 
 if (Test-Path "src\engine\deps.txt") {
     if (Test-EngineDeps) {
-        Say "[3/6] 内核依赖已装好，跳过。"
+        Say "[3/6] 引擎依赖已装好，跳过。"
     } else {
-        Say "[3/6] 安装内核依赖（46 个直接依赖，连传递依赖约 100 个包，第一次要几分钟）..."
+        Say "[3/6] 安装引擎依赖（46 个直接依赖，连传递依赖约 100 个包，第一次要几分钟）..."
         foreach ($src in $sources) {
             Say "用 $($src.Name) 安装 ..."
             $extra = $src.Args
@@ -252,11 +252,11 @@ if (Test-Path "src\engine\deps.txt") {
             Say "这个源没装上，换下一个。"
         }
         if (-not (Test-EngineDeps)) {
-            Fail "内核依赖没装上：她能聊天，但还不能干活。换网络或挂代理再双击 setup.bat。"
+            Fail "引擎依赖没装上：她能聊天，但还不能干活。换网络或挂代理再双击 setup.bat。"
         }
     }
 } else {
-    Say "[3/6] 没找到 src\engine\deps.txt，跳过内核依赖（只聊天，不干活）。"
+    Say "[3/6] 没找到 src\engine\deps.txt，跳过引擎依赖（只聊天，不干活）。"
 }
 
 # ---- 5. 运行时目录与引擎起步配置（用户可能删过 data/，这里补齐，已有不覆盖）----

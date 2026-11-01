@@ -51,9 +51,9 @@ class VoiceOrb(QtWidgets.QWidget):
     pressed = QtCore.Signal()
     released = QtCore.Signal()
 
-    SIZE = 112      # 画布宽：够放下下面那行字
-    ORB = 88        # 球所在方框的高
-    LABEL_H = 26    # 下面那行字占的高
+    SIZE = 94       # 画布宽：够放下下面那行字
+    ORB = 71        # 球所在方框的高
+    LABEL_H = 23    # 下面那行字占的高
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -232,8 +232,14 @@ class VoiceOrb(QtWidgets.QWidget):
         painter.restore()
 
     def _paint_label(self, painter) -> None:
+        text = _LABELS.get(self._state, "")
         font = QtGui.QFont(self.font())
         font.setPointSizeF(9.5)
+        # 画布只有 SIZE 宽，长句子（「没听清，再来一次」）放不下时会被两边各裁掉一点，
+        # 看着像糊了个字。按实际宽度把字号收一档，宁可字小一点也不切字。
+        need = QtGui.QFontMetricsF(font).horizontalAdvance(text)
+        if need > self.SIZE:
+            font.setPointSizeF(max(7.0, 9.5 * self.SIZE / need))
         painter.setFont(font)
         if self._state == STATE_ERROR:
             color = QtGui.QColor(255, 150, 150, 215)
@@ -244,5 +250,5 @@ class VoiceOrb(QtWidgets.QWidget):
         painter.drawText(
             rect,
             QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop,
-            _LABELS.get(self._state, ""),
+            text,
         )

@@ -253,7 +253,11 @@ def find(guid: str) -> Endpoint | None:
 
 
 def default_input() -> Endpoint | None:
-    """系统默认录音设备。"""
+    """系统默认录音设备；已经不在场的当没有。
+
+    共享模式下 `GetDefaultAudioEndpoint` 会把状态已经变成 NOTPRESENT 的端点照样返回，
+    拿它去开流必然失败，失败后的热插拔事件又被当成「设备变了」再试一次——在这里挡住。
+    """
     enumerator = _enumerator()
     try:
         device = c_void_p()
@@ -263,9 +267,10 @@ def default_input() -> Endpoint | None:
         if hr != 0 or not device:
             return None
         try:
-            return _describe(device)
+            endpoint = _describe(device)
         finally:
             _release(device)
+        return endpoint if endpoint.active else None
     finally:
         _release(enumerator)
 

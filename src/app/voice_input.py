@@ -12,8 +12,9 @@
 这样做是因为反复开关蓝牙耳机的采集流代价很高（每次都要建链路，几百毫秒）。
 常开之后按下就能录，没有启动延迟。
 
-采集一律按 48k 开流：向蓝牙耳机要 16k 会被系统当成通话而掐掉放音，48k 不会。录完由
-`stop()` 降到 16k，调用方拿到的永远是 16k 单声道 s16le。
+开流优先要 48k（向蓝牙耳机要 16k 有可能被系统当成通话需求），但**不写死**：设备不肯转
+就用它自己的混音格式，实际采样率和声道数从 `Capture` 读回来。录完由 `stop()` 重采样到
+16k，调用方拿到的永远是 16k 单声道 s16le。
 
 录音不在主线程做打开动作：`Capture.open()` 要枚举端点、激活音频客户端，合计几十到
 几百毫秒。放进工作线程，界面不会僵。
@@ -24,14 +25,16 @@ from __future__ import annotations
 import io
 import logging
 import threading
+import time
 import wave
-from array import array
 from pathlib import Path
 
+import numpy as np
 from PySide6 import QtCore
 
 from app import audio_capture, audio_devices
 from app.audio_devices import Endpoint
+from app.speech_stream import Resampler
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,19 @@ MAX_SECONDS = 60.0          # 一直按着也不会无限涨
 # 判「没人说话」的门槛：int16 域，约 -76 dBFS。数字静音才触发，
 # 正常底噪够不到，低灵敏度麦也不会误伤
 SILENT_PEAK = 5
+
+# 一次设备切换（拔插、蓝牙重连、切换默认设备）会连着吐几十条事件。
+# 等它们停够这么久，才当成「稳定了」统一处理一次，不逐条响应。
+EVENT_QUIET_SECONDS = 0.6
+# 但事件也可能一直不停（设备反复重连）：等够这么久就强制处理一次，不能干等着。
+EVENT_MAX_WAIT_SECONDS = 2.0
+# 自动重开的次数限制：窗口内超过上限就认输报错，不再无限重试。
+REOPEN_WINDOW_SECONDS = 10.0
+MAX_REOPEN_IN_WINDOW = 3
+# 流开起来之后要稳住这么久，断开记录才算翻篇。
+# 不能用「开成功了就清零」——蓝牙切换模式是拆了重建、每次都能开成功，
+# 那样计数永远归零，上限等于没有。
+OPEN_STABLE_SECONDS = 5.0
 
 STATE_IDLE = "idle"
 STATE_RECORDING = "recording"
@@ -57,16 +73,19 @@ class VoiceRecorder(QtCore.QObject):
     device_lost = QtCore.Signal(str)      # 正在用的设备没了，参数是新设备名
 
     # 工作线程 → 主线程
-    _opened = QtCore.Signal(object)
-    _open_failed = QtCore.Signal(str)
+    _opened = QtCore.Signal(object, int)     # (capture, 代次)
+    _open_failed = QtCore.Signal(int, str)   # (代次, 错误话)
+    _reopened = QtCore.Signal()       # 换设备：旧流关干净了，该开新的了
 
     def __init__(self, parent: QtCore.QObject | None = None) -> None:
         super().__init__(parent)
-        # 采集固定 48k：向蓝牙耳机要 16k 会让系统把它切进通话模式、把放音掐掉，
-        # 要 48k 则不会。录完在 stop() 里降到 16k，外面看到的仍是 16k 单声道。
-        self._rate = 48000
+        # 开流优先要 48k：向蓝牙耳机要 16k 有可能让系统把它切进通话模式、把放音掐掉。
+        # 但这不是硬性要求——设备不肯转就退回它自己的混音格式，实际拿到多少在
+        # _on_opened 里从 Capture 读回来，重采样按那个比例算。外面看到的永远是 16k。
+        self._request_rate = 48000
+        self._rate = self._request_rate      # 开流后会被设备实际值覆盖
         self._channels = 1
-        self._capture: audio_capture.Capture | None = None
+        self._capture: audio_capture.WasapiCapture | None = None
         self._endpoint: Endpoint | None = None
         self._chosen_guid = ""            # 用户选的；空 = 跟随系统默认
         self._pcm = bytearray()
@@ -78,6 +97,15 @@ class VoiceRecorder(QtCore.QObject):
         # 设备变更：Core Audio 的回调在它自己的线程，只能投进队列，主线程定时取
         self._events: list[tuple[str, object, str]] = []
         self._events_lock = threading.Lock()
+        self._events_seen_at = 0.0        # 最后一条事件的时刻：用来判断"事件停了没有"
+        self._events_first_at = 0.0       # 第一条待处理事件的时刻：事件不停时靠它兜底
+        self._reopen_times: list[float] = []   # 最近几次自动重开的时刻
+        self._gave_up = False             # 已经报过「反复断开」：同一次别连报好几遍
+        self._last_failure = ""           # 上次报给用户的失败话：同一句连续失败只说一遍
+        self._wanted = False              # 用户想要麦克风开着；切回文字模式才变 False
+        self._open_seq = 0                # 开流代次：晚到的旧结果按它丢掉
+        self._reopening = False           # 正在换流：这期间的热插拔事件是它自己弄出来的
+        self._closing = False             # 窗口在关：换流线程回来也别再开流了
         self._watcher = audio_devices.EndpointWatcher(self._on_os_event)
         self._watcher.start()
 
@@ -90,8 +118,14 @@ class VoiceRecorder(QtCore.QObject):
         self._events_timer.timeout.connect(self._drain_events)
         self._events_timer.start()
 
+        # 流稳住了才算好：蓝牙切换模式每次都能开成功，不能一成功就把断开记录清零
+        self._stable_timer = QtCore.QTimer(self)
+        self._stable_timer.setSingleShot(True)
+        self._stable_timer.timeout.connect(self._mark_stable)
+
         self._opened.connect(self._on_opened)
         self._open_failed.connect(self._on_open_failed)
+        self._reopened.connect(self._on_reopened)
 
     # ------------------------------------------------------------ 设备
 
@@ -137,26 +171,78 @@ class VoiceRecorder(QtCore.QObject):
     # ------------------------------------------------------------ 流
 
     def open_stream(self) -> None:
-        """进语音模式时调一次。已经在开/已开好就什么都不做。"""
-        if self._capture is not None or self._opening:
+        """进语音模式时调一次。已经在开/已开好/正在换流就什么都不做。"""
+        self._wanted = True
+        if self._capture is not None or self._opening or self._reopening:
             return
         self._spawn_open()
 
-    def close_stream(self) -> None:
-        """切回文字模式时调。关掉流、丢掉半截数据。"""
+    def close_stream(self, *, keep_open_intent: bool = False) -> None:
+        """切回文字模式时调。关掉流、丢掉半截数据。
+
+        `keep_open_intent=True` 是内部用：只是这条流暂时用不了，用户还想要麦克风，
+        设备回来要自动接上——比如读失败、重开超限这两种。
+        """
+        if not keep_open_intent:
+            self._wanted = False
         self._collecting = False
-        self._state = STATE_IDLE
+        self._set_state(STATE_IDLE)          # 走信号，界面才知道状态变了
         self._pump.stop()
+        self._stable_timer.stop()
         capture, self._capture = self._capture, None
+        self._open_seq += 1                  # 还在飞的开流结果一律作废
+        self._opening = False
         if capture is not None:
             threading.Thread(target=capture.close, name="noesia-mic-close", daemon=True).start()
         with self._lock:
             self._pcm.clear()
 
     def reopen(self) -> None:
-        """换设备：先关旧的再开新的。"""
-        self.close_stream()
+        """换设备：等旧流真的关掉，再开新的。
+
+        旧流是丢在后台线程里关的（`close()` 可能几十毫秒）。不等着就开新流，
+        两个句柄会短暂并存于同一个端点，系统把这当成「设备变了」再抛一轮事件，
+        事件又触发一次重开——日志里 5 秒刷 13 次「设备没了」就是这么来的。
+        """
+        self._collecting = False
+        self._set_state(STATE_IDLE)
+        self._pump.stop()
+        self._stable_timer.stop()
+        capture, self._capture = self._capture, None
+        self._open_seq += 1          # 在飞的开流结果作废，否则它晚到会盖掉新的那一路
         self._opening = False
+        with self._lock:
+            self._pcm.clear()
+
+        if capture is None:
+            self.open_stream()      # 本来就没开着：直接开
+            return
+        self._reopening = True      # 关→开这段时间的热插拔事件一律别处理
+        threading.Thread(
+            target=self._close_then_reopen,
+            args=(capture,),
+            name="noesia-mic-reopen",
+            daemon=True,
+        ).start()
+
+    def _close_then_reopen(self, capture) -> None:
+        """**在后台线程上跑**：旧流关干净了再回主线程开新的。"""
+        try:
+            capture.close()
+        except Exception:  # noqa: BLE001 - 关不掉也得往下走，否则流再也开不回来
+            logger.debug("[录音] 关旧流失败", exc_info=True)
+        self._reopened.emit()
+
+    @QtCore.Slot()
+    def _on_reopened(self) -> None:
+        self._reopening = False
+        if self._closing or not self._wanted:
+            return   # 换流期间用户切回文字模式了：别再开回来
+        # 关流期间攒下的事件是旧流自己弄出来的，不算设备真的变了
+        with self._events_lock:
+            self._events.clear()
+            self._events_first_at = 0.0
+        self._events_seen_at = 0.0
         self.open_stream()
 
     def shutdown(self) -> None:
@@ -167,6 +253,8 @@ class VoiceRecorder(QtCore.QObject):
         """
         self._pump.stop()
         self._events_timer.stop()
+        self._closing = True
+        self._reopening = False
         self.close_stream()
         try:
             self._watcher.stop()
@@ -180,35 +268,64 @@ class VoiceRecorder(QtCore.QObject):
             return
         self._opening = True
         self._endpoint = endpoint
-        threading.Thread(target=self._open_worker, args=(endpoint,), name="noesia-mic-open", daemon=True).start()
+        self._open_seq += 1          # 每次开流一个新代次：晚到的旧结果会被认出来
+        seq = self._open_seq
+        threading.Thread(
+            target=self._open_worker, args=(endpoint, seq), name="noesia-mic-open", daemon=True
+        ).start()
 
-    def _open_worker(self, endpoint: Endpoint) -> None:
-        capture = audio_capture.Capture(endpoint, self._rate, self._channels)
+    def _open_worker(self, endpoint: Endpoint, seq: int) -> None:
+        capture = audio_capture.WasapiCapture(endpoint, self._request_rate, self._channels)
         try:
             capture.open()
         except audio_capture.CaptureError as exc:
-            self._open_failed.emit(str(exc))
+            self._open_failed.emit(seq, str(exc))
             return
         except Exception as exc:  # noqa: BLE001 - 任何意外都要变成界面上的一句话，不能静默
             logger.warning("打开麦克风时崩溃", exc_info=True)
-            self._open_failed.emit(f"「{endpoint.name}」打不开：{exc}")
+            self._open_failed.emit(seq, f"「{endpoint.name}」打不开：{exc}")
             return
-        self._opened.emit(capture)
+        self._opened.emit(capture, seq)
 
-    @QtCore.Slot(object)
-    def _on_opened(self, capture) -> None:
+    @QtCore.Slot(object, int)
+    def _on_opened(self, capture, seq: int) -> None:
+        if seq != self._open_seq:
+            # 又开了一次流，这一路是过期的：关掉，别让它占着设备还没人管
+            logger.debug("[录音] 过时的开流结果（代次 %d，当前 %d），关掉", seq, self._open_seq)
+            threading.Thread(target=capture.close, name="noesia-mic-close", daemon=True).start()
+            return
         self._opening = False
         self._capture = capture
+        self._last_failure = ""      # 开起来了：同一句错误下次还能再报
+        # 断开记录要等流稳住了才清（蓝牙切换模式每次都能开成功，一成功就清零等于没上限）
+        self._stable_timer.start(int(OPEN_STABLE_SECONDS * 1000))
+        # 设备实际给了什么格式就按什么算，不假设它一定是 48k
+        self._rate = capture.rate or self._rate
+        self._channels = capture.channels or 1
         self._pump.start()
-        logger.info("[录音] %s 就绪（%s）", capture.endpoint.name, capture.backend)
+        logger.info(
+            "[录音] %s 就绪（%s · %d Hz / %d 声道）",
+            capture.endpoint.name, capture.backend, self._rate, self._channels,
+        )
         self.stream_ready.emit(capture.backend)
 
-    @QtCore.Slot(str)
-    def _on_open_failed(self, message: str) -> None:
+    @QtCore.Slot(int, str)
+    def _on_open_failed(self, seq: int, message: str) -> None:
+        if seq != self._open_seq:
+            return   # 过时的失败，别再拿它吓用户一遍
         self._opening = False
         self._capture = None
         logger.warning("[录音] %s", message)
+        if self._gave_up or message == self._last_failure:
+            return   # 已经认输、或者同一句话刚说过：别再刷一遍
+        self._last_failure = message
         self.failed.emit(message)
+
+    @QtCore.Slot()
+    def _mark_stable(self) -> None:
+        """流稳住了这么久：攒着的断开记录才算真的翻篇。"""
+        self._reopen_times.clear()
+        self._gave_up = False
 
     # ------------------------------------------------------------ 采集
 
@@ -234,7 +351,7 @@ class VoiceRecorder(QtCore.QObject):
         if seconds < MIN_SECONDS:
             logger.info("[录音] 太短：%.2f 秒", seconds)
             return None
-        return _to_16k(data)
+        return _resample(data, self._rate, self._channels)
 
     def cancel(self) -> None:
         self._collecting = False
@@ -250,8 +367,11 @@ class VoiceRecorder(QtCore.QObject):
         try:
             chunk = capture.read()
         except Exception:  # noqa: BLE001 - 读取失败不再让它每 16ms 崩一次
+            if self._capture is None:
+                # 是我们自己关流关掉的（close_stream 把引用置空了），不是设备出问题
+                return
             logger.warning("读麦克风失败", exc_info=True)
-            self.close_stream()
+            self.close_stream(keep_open_intent=True)  # 用户还想要麦，设备回来要自动接上
             self.failed.emit("麦克风读不出来了，已断开")
             return
         if not chunk:
@@ -274,32 +394,93 @@ class VoiceRecorder(QtCore.QObject):
 
     def _on_os_event(self, reason: str, flow, guid: str) -> None:
         """**在 Core Audio 自己的线程上跑**：只入队，绝不碰 Qt 对象。"""
+        now = time.monotonic()
         with self._events_lock:
+            if not self._events:
+                self._events_first_at = now   # 这批事件从什么时候开始攒的
             self._events.append((reason, flow, guid))
+        # 记在锁外：_drain_events 靠这个时间戳判断事件停没停
+        self._events_seen_at = now
+
+    def _may_retry(self, now: float, message: str) -> bool:
+        """还能不能再自动试一次。
+
+        两条重开路径（设备没了、设备在但开流失败）共用这一个窗口：
+        任一原因的反复重试都要算进同一个计数，不然从另一条路绕进去就绕过了上限。
+        认输时同一类话只报一遍，别让用户每秒看见一次同样的错。
+        """
+        self._reopen_times = [t for t in self._reopen_times if now - t < REOPEN_WINDOW_SECONDS]
+        if len(self._reopen_times) >= MAX_REOPEN_IN_WINDOW:
+            if not self._gave_up:
+                self._gave_up = True
+                logger.warning(
+                    "[录音] %.0f 秒内已经重试 %d 次，停止自动重开",
+                    REOPEN_WINDOW_SECONDS,
+                    len(self._reopen_times),
+                )
+                self.failed.emit(message)
+            return False
+        self._reopen_times.append(now)
+        self._gave_up = False
+        return True
 
     @QtCore.Slot()
     def _drain_events(self) -> None:
-        with self._events_lock:
-            events, self._events = self._events, []
-        if not events:
+        # 正在换流：这批事件是它自己弄出来的（关旧流、开新流都会触发），别处理
+        if self._reopening:
             return
+        now = time.monotonic()
+        with self._events_lock:
+            if not self._events:
+                return
+            # 一次切换（拔插、蓝牙重连、切换默认设备）会连着吐几十条事件。
+            # 等它们停够 EVENT_QUIET_SECONDS 再统一处理一次，别逐条响应——
+            # 逐条响应就是每 150ms 关一次流、开一次流，自己跟自己打架。
+            # 但事件也可能一直不停（设备反复重连），所以还得有个总上限，不能干等。
+            if (
+                now - self._events_seen_at < EVENT_QUIET_SECONDS
+                and now - self._events_first_at < EVENT_MAX_WAIT_SECONDS
+            ):
+                return
+            events, self._events = self._events, []
+            self._events_first_at = 0.0
 
         # 只关心录制方向；flow 为 None 的是状态/增删事件，两个方向都可能
         relevant = [e for e in events if e[1] in (None, audio_devices.E_CAPTURE)]
         if not relevant:
             return
 
-        self.devices_changed.emit([(e.guid, e.name, e.active) for e in self.devices()])
-
         endpoints = self.devices()
+        self.devices_changed.emit([(e.guid, e.name, e.active) for e in endpoints])
         alive = {e.guid.lower() for e in endpoints}
+
         if self._endpoint is not None and self._endpoint.guid.lower() not in alive:
             if self._collecting:
                 self.cancel()
             logger.info("[录音] 设备没了：%s", self._endpoint.name)
-            self.close_stream()
+
+            # 反复断开时别再自动重开：越重开越乱，还可能把设备拖挂
+            if not self._may_retry(
+                now, "麦克风反复断开，先停一下；插好或重新连上之后再点一下麦克风"
+            ):
+                self.close_stream(keep_open_intent=True)  # 用户还想要麦，设备回来要自动接上
+                return
+
             replacement = self.current()
             self.device_lost.emit(replacement.name if replacement else "")
+            self.reopen()  # 走串行化那条路：旧流关干净了才开新的
+            return
+
+        # 设备都在，手里却没有流：上次没开成、或者被丢掉了，接上。
+        # 只在用户还想要麦克风时才做——切回文字模式后不能在后台偷偷开流。
+        # 这条也要计入同一个重试窗口：麦克风被别的程序独占时开流会一直失败，
+        # 不计的话就成了每秒重试一次、每秒报一条错。
+        if self._wanted and self._capture is None and not self._opening and endpoints:
+            if not self._may_retry(
+                now, "麦克风一直打不开，先停一下；关掉占用它的程序或重新连接之后再点一下麦克风"
+            ):
+                return
+            logger.info("[录音] 设备在、手里没有流，重新开起来")
             self.open_stream()
 
 
@@ -318,23 +499,39 @@ def peak_of(pcm: bytes) -> int:
     return audio_capture._peak(pcm)
 
 
-def _to_16k(pcm: bytes) -> bytes:
-    """48k 单声道 s16le 降到 16k：三个采样取平均。
+def _resample(pcm: bytes, src_rate: int, src_channels: int = 1, dst_rate: int = 16000) -> bytes:
+    """把设备原生格式的 PCM 换成 16k 单声道 s16le。
 
-    顺手当低通用——直接丢弃后两个采样会混叠，语音识别对混叠很敏感。
-    60 秒录音走这条路径约 0.3 秒，可以接受。
+    比例按实测算，不写死：设备的原生采样率可能是 44.1k、48k、16k 任何一种，声道可能是
+    1 或 2。多声道先平均成单声道，再交给 `speech_stream.Resampler` 变速——整数倍取平均、
+    非整数倍线性插值，那套逻辑项目里已经有了，这里不再写一份。
     """
-    if not pcm:
+    if not pcm or src_rate <= 0:
         return b""
-    usable = len(pcm) - (len(pcm) % 6)   # 三个采样一组的整倍数
-    if not usable:
-        return b""
-    src = array("h")
-    src.frombytes(pcm[:usable])
-    out = array("h")
-    for i in range(0, len(src), 3):
-        out.append((src[i] + src[i + 1] + src[i + 2]) // 3)
-    return out.tobytes()
+    channels = max(1, src_channels)
+    if channels > 1:
+        block = 2 * channels
+        usable = len(pcm) - (len(pcm) % block)
+        if not usable:
+            return b""
+        raw = np.frombuffer(pcm[:usable], dtype="<i2").reshape(-1, channels)
+        pcm = np.round(raw.mean(axis=1)).astype("<i2").tobytes()
+    else:
+        usable = len(pcm) - (len(pcm) % 2)
+        if not usable:
+            return b""
+        pcm = pcm[:usable]
+    if src_rate == dst_rate:
+        return pcm
+    if src_rate % dst_rate == 0:
+        # 整数倍（48k→16k）用切片平均一次算完，比逐点插值快得多，顺手当低通
+        step = src_rate // dst_rate
+        data = np.frombuffer(pcm, dtype="<i2")
+        n = (data.size // step) * step
+        if not n:
+            return b""
+        return np.round(data[:n].reshape(-1, step).mean(axis=1)).astype("<i2").tobytes()
+    return Resampler(src_rate, dst_rate).push(pcm)
 
 
 def write_wav(pcm: bytes, path: Path, rate: int = 16000, channels: int = 1) -> Path:

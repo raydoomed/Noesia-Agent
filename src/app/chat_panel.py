@@ -208,6 +208,22 @@ STYLE = """
     font-size: 13px;
 }
 #input:focus { border: none; }
+/* 输入框长到 5 行以上才冒出来的细滚动条：低调些，别把字挤窄 */
+#input QScrollBar:vertical {
+    background: transparent;
+    width: 5px;
+    margin: 2px 0;
+}
+#input QScrollBar::handle:vertical {
+    background: rgba(255, 255, 255, 55);
+    border-radius: 2px;
+    min-height: 18px;
+}
+#input QScrollBar::handle:vertical:hover { background: rgba(255, 255, 255, 95); }
+#input QScrollBar::add-line:vertical,
+#input QScrollBar::sub-line:vertical { height: 0; }
+#input QScrollBar::add-page:vertical,
+#input QScrollBar::sub-page:vertical { background: transparent; }
 #send {
     background-color: rgba(154, 208, 255, 60);
     border: none;
@@ -261,6 +277,10 @@ _APPROVAL_MODES = (
     ("smart", "智能 · 自动评估操作，并在需要时询问"),
     ("off", "关闭 · 不显示审批提示，直接运行"),
 )
+
+# 输入框最多长到几行，再多就在框里滚动。
+# 窗口只有 360 宽时一行放不下几个字，行数给多了整条输入区会吃掉聊天区。
+INPUT_MAX_LINES = 5
 
 # 思考档位清单，
 # 中文标签照 `shell.modelOptions`。`none` 不是一档，是「关掉思考」，只在模型允许关时才摆。
@@ -761,15 +781,29 @@ class ChatPanel(QtWidgets.QWidget):
         box_row.addWidget(self._attach_button)
 
         # 输入区在最左，两个图标键贴右边（按钮放输入框右侧，不放左侧）
-        self.input = QtWidgets.QLineEdit(box)
+        # 多行输入：Enter 发送、Shift+Enter 换行；写到换行才长高，最多 5 行，再多内部滚动。
+        self.input = QtWidgets.QPlainTextEdit(box)
         self.input.setObjectName("input")
         self.input.setPlaceholderText("和 Noesia 说点什么…")
-        self.input.installEventFilter(self)  # 焦点时把高亮画在整条外壳上
-        self.input.setAcceptDrops(True)  # 拖文件进来：DragEnter/Drop 也在同一个 eventFilter 里接
+        self.input.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.input.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.input.setTabChangesFocus(True)            # Tab 用来换焦点，不往正文里塞制表符
+        self.input.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.input.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        # 文档默认有 4px 边距，会让字比外壳往里缩一格；单行框时对齐的是 padding，这里抹平
+        self.input.document().setDocumentMargin(0)
+        self.input.installEventFilter(self)  # 焦点高亮 / Enter 发送 / 粘贴接附件
+        # 拖放要装在视口上：多行控件是 QAbstractScrollArea，拖进来的目标其实是 viewport，
+        # 挂在控件本身收不到（单行框不是滚动区，所以以前挂在上面就够）
+        self.input.viewport().installEventFilter(self)
+        self.input.setAcceptDrops(True)
+        self.input.textChanged.connect(self._fit_input_height)
         box_row.addWidget(self.input, 1)
+        self._ime_composing = False   # 输入法正在组字：这时回车是确认候选词，不是发送
+        self._fit_input_height()
 
         # 语音模式的输入区：跟输入框抢同一个位置，同一时刻只露一个。
-        # 切模式只做 hide/show，不销毁 QLineEdit——草稿、光标位置、焦点都在控件自己身上，
+        # 切模式只做 hide/show，不销毁输入框——草稿、光标位置、焦点都在控件自己身上，
         # 藏起来不会丢，切回来还是原样。
         # 球按居中摆：语音模式下其余按钮都藏起来，整条输入区就剩这一颗球。
         self._box_row = box_row
@@ -880,7 +914,7 @@ class ChatPanel(QtWidgets.QWidget):
         layout.addLayout(row)
 
         send.clicked.connect(self._emit)
-        self.input.returnPressed.connect(self._emit)
+        # 回车发送放 eventFilter 里判：多行控件没有 returnPressed，还要区分 Shift+回车和输入法组字
 
         # 边框这一圈（14px 内容边距之外的 frame 空白）由 panel 接管：拖它缩放
         self._frame = frame
@@ -2601,6 +2635,10 @@ class ChatPanel(QtWidgets.QWidget):
             self._interrupted = False
         self._send_button.setText("停止" if self._busy else "发送")
         self._send_button.setToolTip("叫住这一轮（已进行的对话仍留在上下文里）" if self._busy else "")
+        if not self._busy:
+            # 这一轮结束了：「正在调用 X…」那句是靠 tool.start 撤掉的，
+            # 按停时那个工具的 start 永远不会来了，不清就一直挂在输入框上方，看着像还在跑
+            self.set_activity("")
 
     # ---- 附件：「＋」菜单、粘贴、拖进来，三条路进同一个地方 ----
 
@@ -2671,7 +2709,8 @@ class ChatPanel(QtWidgets.QWidget):
 
     def insert_text(self, text: str) -> None:
         """往输入框里补一段（@folder: / @url: / 提示词片段都用它）。"""
-        self.input.setText((self.input.text() + text).strip())
+        self.input.setPlainText((self.input.toPlainText() + text).strip())
+        self.input.moveCursor(QtGui.QTextCursor.End)   # 光标跟到末尾，接着就能继续打
         self.input.setFocus()
 
     def _attach_paths(self, paths) -> bool:
@@ -2813,11 +2852,41 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self.stop_requested.emit()
 
+    @QtCore.Slot()
+    def _fit_input_height(self) -> None:
+        """输入框按内容长高：一行时跟原来的单行框一样高，写到换行才长，删掉再缩回去。
+
+        软换行也算行数——窗口只有 360 宽，一句话很快就绕行了，只按换行符数会一直不
+        长高，字被截在框外。量的是排版后的真实高度（逐块 `blockBoundingRect`），
+        不是数换行符，也不是 `document().size()`（那个在纯文本控件里给的是块数不是像素）。
+        """
+        fm = self.input.fontMetrics()
+        line = max(1, fm.lineSpacing())
+        pad = 12                      # 上下各 6px，跟样式表 #input 的 padding 对上
+        doc = self.input.document()
+        layout = doc.documentLayout()
+        total = 0.0
+        if layout is not None:
+            block = doc.begin()
+            while block.isValid():
+                total += layout.blockBoundingRect(block).height()
+                block = block.next()
+        shown = int(round(total / line)) if total > 0 else 1
+        shown = max(1, min(INPUT_MAX_LINES, shown))
+        height = shown * line + pad
+        if self.input.height() != height:
+            self.input.setFixedHeight(height)
+        self.input.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAsNeeded
+            if shown >= INPUT_MAX_LINES
+            else QtCore.Qt.ScrollBarAlwaysOff
+        )
+
     def _emit(self) -> None:
         if self._busy:  # 在跑的时候这个键是「停止」
             self._stop_turn()
             return
-        message = self.input.text().strip()
+        message = self.input.toPlainText().strip()
         attachments = list(self._attachments)
         if not message and not attachments:  # 只粘了图/只选了文件也能发（跟桌面一样）
             return
@@ -2872,7 +2941,7 @@ class ChatPanel(QtWidgets.QWidget):
             for button in (self._attach_button, self._approval_button,
                            self._reasoning_button, self._voice_button, self._send_button):
                 button.hide()
-            self._box_row.setContentsMargins(9, 10, 4, 10)  # 球别贴着上下边框
+            self._box_row.setContentsMargins(9, 7, 4, 7)  # 球别贴着上下边框
             self._set_inputbox_voice(True)
             self._voice_orb.show()
             self._float_mode_button(True)
@@ -2896,9 +2965,11 @@ class ChatPanel(QtWidgets.QWidget):
             self._set_inputbox_voice(False)
             self._float_mode_button(False)
             self.input.show()
+            # 藏起来的时候量不到宽度，显示之后重新按当前宽度算行数
+            QtCore.QTimer.singleShot(0, self._fit_input_height)
             self._mic_button.setIcon(_glyph_icon("mic"))
             self._mic_button.setToolTip("语音输入（右键选麦克风）")
-            if self._voice_draft_focus or self.input.text():
+            if self._voice_draft_focus or self.input.toPlainText():
                 self.input.setFocus()
 
     def _float_mode_button(self, floating: bool) -> None:
@@ -3196,8 +3267,30 @@ class ChatPanel(QtWidgets.QWidget):
         self.setCursor(cursor_for(edge))
         return True
 
+    def _handle_input_drag(self, event) -> bool:
+        """拖文件/图进输入框：接成附件，不往正文里塞一串路径。
+
+        两条路径都要接：拖放的目标可能是视口（QAbstractScrollArea 的正常派发），
+        也可能是控件本身（某些平台/合成源直接发给控件）。
+        """
+        kind = event.type()
+        if kind in (
+            QtCore.QEvent.Type.DragEnter,
+            QtCore.QEvent.Type.DragMove,
+        ):
+            if self._drop_paths(event.mimeData()):
+                event.acceptProposedAction()   # 接住：光标才会变成「可以放这儿」
+                return True
+        elif kind is QtCore.QEvent.Type.Drop:
+            paths = self._drop_paths(event.mimeData())
+            if paths:
+                event.acceptProposedAction()
+                self._attach_paths(paths)
+                return True
+        return False
+
     def _mark_input_focus(self, focused: bool) -> None:
-        """高亮画在输入框外壳上（#inputbox[focused]），框里的 QLineEdit 自己是无边框的。"""
+        """高亮画在输入框外壳上（#inputbox[focused]），框里的输入控件自己是无边框的。"""
         box = getattr(self, "_inputbox", None)
         if box is None:
             return
@@ -3396,28 +3489,45 @@ class ChatPanel(QtWidgets.QWidget):
                 self._mark_input_focus(True)
             elif kind is QtCore.QEvent.Type.FocusOut:
                 self._mark_input_focus(False)
-            elif kind is QtCore.QEvent.Type.KeyPress and self._is_paste_key(event):
-                # Ctrl+V / Shift+Insert：剪贴板是图或文件就接成附件（QLineEdit 自己不认图，
-                # 默认粘贴会把图直接丢掉）；是纯文字就放回去让它自己粘。
-                # 注意 `text/uri-list`（资源管理器 Ctrl+C）在 Qt 里 hasText() 也为真，
-                # 所以「有 urls」要先按文件算，不能让纯文字那条把它挡掉。
-                mime = QtWidgets.QApplication.clipboard().mimeData()
-                plain_text = bool(
-                    mime is not None
-                    and not mime.hasUrls()
-                    and mime.hasText()
-                    and mime.text().strip()
-                )
-                if not plain_text and self._attach_from_clipboard():
-                    event.accept()
+            elif kind is QtCore.QEvent.Type.InputMethod:
+                # 组字中的回车是「确认候选词」，不是发送——不然打「nihao」按回车会直接发出去
+                self._ime_composing = bool(event.preeditString())
+            elif kind is QtCore.QEvent.Type.KeyPress:
+                if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter) and not getattr(
+                    self, "_ime_composing", False
+                ):
+                    if event.modifiers() & QtCore.Qt.ShiftModifier:
+                        return super().eventFilter(obj, event)  # 放行：插一个换行
+                    self._emit()
+                    return True                                 # 吞掉，别让它再插一个换行
+                if self._is_paste_key(event):
+                    # Ctrl+V / Shift+Insert：剪贴板是图或文件就接成附件；是纯文字就放回去让它自己粘。
+                    # 注意 `text/uri-list`（资源管理器 Ctrl+C）在 Qt 里 hasText() 也为真，
+                    # 所以「有 urls」要先按文件算，不能让纯文字那条把它挡掉。
+                    mime = QtWidgets.QApplication.clipboard().mimeData()
+                    plain_text = bool(
+                        mime is not None
+                        and not mime.hasUrls()
+                        and mime.hasText()
+                        and mime.text().strip()
+                    )
+                    if not plain_text and self._attach_from_clipboard():
+                        event.accept()
+                        return True
+            elif kind in (
+                QtCore.QEvent.Type.DragEnter,
+                QtCore.QEvent.Type.DragMove,
+                QtCore.QEvent.Type.Drop,
+            ):
+                if self._handle_input_drag(event):
                     return True
-            elif kind in (QtCore.QEvent.Type.DragEnter, QtCore.QEvent.Type.Drop):
-                paths = self._drop_paths(event.mimeData())
-                if paths:
-                    event.acceptProposedAction()
-                    if kind is QtCore.QEvent.Type.Drop:
-                        self._attach_paths(paths)
-                    return True
+            elif kind is QtCore.QEvent.Type.Resize:
+                self._fit_input_height()   # 宽度变了软换行的位置就变，行数要重算
+            return super().eventFilter(obj, event)
+        if getattr(self, "input", None) is not None and obj is self.input.viewport():
+            # 拖放通常落在这儿：多行控件是滚动区，拖进来的目标其实是 viewport
+            if self._handle_input_drag(event):
+                return True
             return super().eventFilter(obj, event)
         if obj is getattr(self, "_inputbox", None) and event.type() is QtCore.QEvent.Type.Resize:
             # 语音模式下那颗「切回打字」的按钮是浮在右上角的，输入框一变宽就得重摆
