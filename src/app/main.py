@@ -2242,6 +2242,7 @@ def main() -> int:
     def _after_ready(_payload: dict) -> None:
         """引擎就绪后再问东西：模型清单、上次的会话、两个档位。"""
         say("[引擎] 已就绪")
+        window._engine_ready = True
         engine_restarts["n"] = 0  # 连上了：重连次数归零
         if window.chat_panel is not None:
             # 「正在重连（第 N 次）」是当前状态，连上了就该消失——不能再留一行在聊天记录里
@@ -2372,7 +2373,18 @@ def main() -> int:
 
     wire.start()
     window.boot_step("正在启动引擎…")
-    QtCore.QTimer.singleShot(30000, lambda: window.boot_failed("引擎还没就绪，先打开界面"))
+    def _boot_timeout() -> None:
+        """三十秒还没开完：说清楚卡在哪，别一律甩锅给引擎。
+
+        引擎早就绪、只是模型清单还没回来时写「引擎还没就绪」是假话，
+        用户照着这句去查引擎会白查一轮。
+        """
+        if getattr(window, "_engine_ready", False):
+            window.boot_failed("模型清单还没回来，先打开界面")
+        else:
+            window.boot_failed("引擎还没就绪，先打开界面")
+
+    QtCore.QTimer.singleShot(30000, _boot_timeout)
 
     def _shutdown_engine() -> None:
         """退出顺序：收起窗口 → 关引擎通道让它自己收尾 → 退出。"""
