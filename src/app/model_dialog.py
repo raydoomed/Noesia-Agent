@@ -1567,7 +1567,6 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if text.strip().splitlines() == self._initial["soul"].strip().splitlines():
             # 这页没动过（哪怕本来就是空的/还没有 SOUL.md）：不写、也不拦着别的页保存
             self._soul_changed = False
-            self._saved_soul = True
             self._mark_saved("soul")
             self._soul_hint.setStyleSheet("")  # 没改动也算这一次走通了：把之前的红字撤掉
             return "ok"
@@ -1581,7 +1580,6 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 按行比：CRLF 与 LF 不算改动，行尾多空一行也不算（引擎那边同样是先 strip 再比）。
         self._soul_changed = text.strip().splitlines() != current.strip().splitlines()
         if not self._soul_changed:
-            self._saved_soul = True
             self._mark_saved("soul")
             return "ok"
         try:
@@ -1592,7 +1590,6 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._soul_hint.setStyleSheet(self.FAIL_STYLE)
             self._soul_hint.setText(f"写不进去：{exc}")
             return "fail"
-        self._saved_soul = True
         self._mark_saved("soul")
         self._soul_hint.setStyleSheet("")  # 存好了：把上一次的红字撤掉
         return "ok"
@@ -1600,10 +1597,6 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def soul_changed(self) -> bool:
         """刚才保存的人设是真的改了，还是原样保存（`main.py` 据此用不同措辞）。"""
         return bool(getattr(self, "_soul_changed", False))
-
-    def saved_soul(self) -> bool:
-        """刚才保存的是不是人设（`main.py` 据此回一句确认）。"""
-        return getattr(self, "_saved_soul", False)
 
     def _current_workspace(self) -> Path:
         """现在生效的工作目录：语义只有一处定义，和启动时用的是同一个函数。"""

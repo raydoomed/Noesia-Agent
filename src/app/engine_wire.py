@@ -1499,6 +1499,14 @@ class EngineWire(QtCore.QObject):
             # 用户如果还挑了模型，就接着切过去——「设置模型」一步做完，不用再点一次。
             row = result.get("provider") or {}
             self.notice.emit(f"已保存 {row.get('slug') or '密钥'}")
+            # 供应商表缓存（60 秒 TTL）里这家还是「没配密钥」的旧结论：先失效再问，
+            # 否则刚存完 Key 的菜单要等满一分钟才把它变亮。
+            try:
+                from backends import catalog  # noqa: PLC0415 - 只在这条路上用
+
+                catalog.invalidate_providers()
+            except Exception:  # noqa: BLE001 - 刷不动就靠 TTL 过期，别让保存本身失败
+                logger.warning("供应商表缓存没失效，等 TTL 自然过期", exc_info=True)
             self.request_models()
             self.key_saved.emit(str(row.get("slug") or ""))  # 引导可能正等着这个 provider
             # 设置窗口在等这一条：只有拿到它才知道这把 Key 到底写进去没有

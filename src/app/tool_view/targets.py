@@ -14,10 +14,6 @@ from .helpers import is_windows_absolute_path, source_field
 _URL_SCHEME_RE = re.compile(r'^https?://', re.IGNORECASE)
 _FILE_URL_RE = re.compile(r'^file://', re.IGNORECASE)
 _LOCAL_PATH_RE = re.compile(r'^(?:/|\.{1,2}/|~/).+')
-_HTML_RE = re.compile(r'\.html?$', re.IGNORECASE)
-_LOCAL_HOST_RE = re.compile(
-    r'^https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])', re.IGNORECASE
-)
 
 
 def looks_like_url(value: str) -> bool:
@@ -29,21 +25,6 @@ def looks_like_path(value: str) -> bool:
         bool(_FILE_URL_RE.match(value))
         or bool(_LOCAL_PATH_RE.match(value))
         or is_windows_absolute_path(value)
-    )
-
-
-def is_previewable_target(target: str) -> bool:
-    # 渲染进程的元数据不是可交付物；app.asar.unpacked 才是真实目录
-    if _FILE_URL_RE.match(target) and 'app.asar' in target.replace('\\', '/').split('/'):
-        return False
-
-    return bool(
-        target
-        and (
-            _FILE_URL_RE.match(target)
-            or (looks_like_path(target) and _HTML_RE.search(target))
-            or _LOCAL_HOST_RE.match(target)
-        )
     )
 
 

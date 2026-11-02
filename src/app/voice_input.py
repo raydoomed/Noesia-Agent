@@ -22,7 +22,6 @@
 
 from __future__ import annotations
 
-import io
 import logging
 import threading
 import time
@@ -545,12 +544,3 @@ def write_wav(pcm: bytes, path: Path, rate: int = 16000, channels: int = 1) -> P
     return path
 
 
-def wav_bytes(pcm: bytes, rate: int = 16000, channels: int = 1) -> bytes:
-    """内存里包一个 WAV（不落盘时用，比如日志留样）。"""
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as handle:
-        handle.setnchannels(channels)
-        handle.setsampwidth(2)
-        handle.setframerate(rate)
-        handle.writeframes(pcm)
-    return buffer.getvalue()

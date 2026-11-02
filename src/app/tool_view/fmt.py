@@ -75,29 +75,6 @@ def context_value(value: Any) -> str:
 MAX_TOOL_RENDER_CHARS = 20_000
 
 
-def clamp_for_display(value: str, max_chars: int = MAX_TOOL_RENDER_CHARS) -> str:
-    if len(value) <= max_chars:
-        return value
-
-    omitted = len(value) - max_chars
-
-    # JS: omitted.toLocaleString()（en-US 千分位）
-    return (
-        f'{value[:max_chars]}\n\n… {omitted:,} more characters truncated'
-        ' — use Copy for the full output.'
-    )
-
-
-def pretty_json(value: Any) -> str:
-    if isinstance(value, str):
-        raw = value
-    else:
-        try:
-            raw = json.dumps(value, indent=2, ensure_ascii=False)
-        except (TypeError, ValueError):
-            raw = ''
-
-    return clamp_for_display(raw if raw is not None else '')
 
 
 def parse_maybe_object(value: Any) -> dict:

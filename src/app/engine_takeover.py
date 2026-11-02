@@ -34,19 +34,6 @@ def looks_like_occupied(message: str) -> bool:
     return "被另一个 Noesia 后台进程占着" in text or "is owned by a running gateway" in text
 
 
-def describe(clients, owner) -> str:
-    """把「谁挡着、接下来会发生什么」说成一句人话。"""
-    parts: list[str] = []
-    if clients:
-        pids = "、".join(str(pid) for pid in clients)
-        parts.append(f"命令行里还开着一台 noesia（pid {pids}），会先替它按 Ctrl+C 退出")
-    if owner is not None:
-        parts.append(f"后台还有一条占了数据目录的进程（pid {owner}），接着结束它")
-    if not parts:
-        return "数据目录空着，可以直接启动。"
-    return "；".join(parts) + "，然后重新启动引擎。"
-
-
 def occupied_pid(message: str) -> int | None:
     """引擎报错那句话里写着的那个 pid（`describe_engine_exit()` 是从 `gateway.lock` 读出来的）。
 

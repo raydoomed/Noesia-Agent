@@ -18,10 +18,6 @@ DEFAULT_LOCALE = "en"
 _runtime_locale = DEFAULT_LOCALE
 
 
-def runtime_locale() -> str:
-    return _runtime_locale
-
-
 def set_runtime_i18n_locale(locale: str) -> None:
     """切语言只影响之后画的那些行。"""
     global _runtime_locale

@@ -80,15 +80,3 @@ def diff_rows(text: str) -> list[tuple[str, str]]:
     return rows
 
 
-def looks_like_diff(text: str) -> bool:
-    """值不值得当 diff 画：至少有一行 `@@` 或一对 `+++`/`---`，或者以 `diff --git` 开头。"""
-    if not text.strip():
-        return False
-    head = text.lstrip()
-    if head.startswith("diff --git ") or "\n@@ " in text or head.startswith("@@ "):
-        return True
-    rows = diff_rows(text)
-    has_add = any(kind == ADD for kind, _ in rows)
-    has_del = any(kind == DEL for kind, _ in rows)
-    has_meta = any(kind == META for kind, _ in rows)
-    return has_meta and (has_add or has_del)

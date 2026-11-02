@@ -326,17 +326,3 @@ def quiet_exit(pid: int, timeout: float = 2.5, press_budget: float = 1.5) -> tup
     return False, f"结束 pid {pid} 失败（还剩 {'、'.join(map(str, left))}）"
 
 
-def project_ancestor(pid: int, project_root: "Path | str", depth: int = 4) -> int | None:
-    """从 *pid* 往上找第一个跑在这个项目目录里的祖先进程（= 那条命令行会话）。
-
-    之所以要找祖先：`gateway.lock` 里只有后台进程自己，没有把它拉起来的那个 TUI；
-    但「谁拉起来的」就记在进程树的父链上（实测：gateway ← CLI 客户端 ← noesia.exe）。
-    """
-    root = os.path.normcase(str(Path(project_root).resolve()))
-    for ancestor in ancestors(pid, depth=depth):
-        image = image_path(ancestor)
-        if not image:
-            continue
-        if os.path.normcase(os.path.abspath(image)).startswith(root) and ancestor != os.getpid():
-            return ancestor
-    return None

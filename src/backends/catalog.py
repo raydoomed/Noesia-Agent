@@ -34,17 +34,6 @@ class LlmOption:
     available: bool = True
     reason: str = ""
 
-    def as_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "label": self.label,
-            "backend": self.backend,
-            "model": self.model,
-            "available": self.available,
-            "reason": self.reason,
-        }
-
-
 def option_id(provider: str, model: str) -> str:
     return f"{provider}:{model}"
 

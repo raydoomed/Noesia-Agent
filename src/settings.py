@@ -41,14 +41,6 @@ def window_state_path(root: Path | None = None) -> Path:
     return (Path(root) if root else ROOT) / WINDOW_STATE
 
 
-def engine_config_path(root: Path | None = None) -> Path:
-    """唯一的一份配置：`<引擎家目录>/config.yaml`。外壳不读它，只负责把路径指过去。"""
-    env = os.environ.get(ENV_HOME, "").strip()
-    if env:
-        return Path(env).expanduser().resolve() / "config.yaml"
-    return (Path(root) if root else ROOT) / "data" / "NoesiaHome" / "config.yaml"
-
-
 @dataclass(frozen=True)
 class _Reference:
     front: str

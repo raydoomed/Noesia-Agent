@@ -81,19 +81,6 @@ def _round_half_up(value: float) -> int:
     return int(math.floor(value + 0.5))
 
 
-def _get(value: Any, name: str, default: Any = None) -> Any:
-    """读对象字段：既接受 dataclass 的 snake_case 属性，也接受事件里的 camelCase 字典。"""
-    if value is None:
-        return default
-    if isinstance(value, Mapping):
-        if name in value:
-            return value[name]
-        camel = re.sub(r"_([a-z])", lambda m: m.group(1).upper(), name)
-        return value.get(camel, default)
-    if hasattr(value, name):
-        return getattr(value, name)
-    camel = re.sub(r"_([a-z])", lambda m: m.group(1).upper(), name)
-    return getattr(value, camel, default)
 
 
 # ---- countDiffLineStats ----
@@ -1567,26 +1554,6 @@ def dynamic_title(
             return ToolTitleParts(title=file_edit_basename(path))
 
     return fallback
-
-
-@dataclass
-class ToolPreviewOutcome:
-    """预览结果：只算预览目标 + 状态。"""
-
-    preview_target: str
-    status: ToolStatus
-
-
-# 状态 + 探测到的预览目标 —— 给那些从不渲染整行（实时完成处理器）的流用，
-# 不该为标题/正文付开销。
-def tool_preview_outcome(part: ToolPart | Mapping[str, Any]) -> ToolPreviewOutcome:
-    part = ToolPart.from_mapping(part)
-    result_record = tool_result_record(part)
-
-    return ToolPreviewOutcome(
-        preview_target=tool_preview_target(part.tool_name, parse_maybe_object(part.args), result_record),
-        status=tool_status(part, result_record),
-    )
 
 
 # ---- buildToolView ----

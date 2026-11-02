@@ -44,9 +44,6 @@ PKEY_Device_FriendlyName = 14
 PKEY_Device_EnumeratorName = 24
 
 DEVICE_STATE_ACTIVE = 0x1
-DEVICE_STATE_DISABLED = 0x2
-DEVICE_STATE_NOTPRESENT = 0x4
-DEVICE_STATE_UNPLUGGED = 0x8
 
 E_RENDER = 0
 E_CAPTURE = 1
@@ -117,18 +114,6 @@ class Endpoint:
     @property
     def active(self) -> bool:
         return bool(self.state & DEVICE_STATE_ACTIVE)
-
-    @property
-    def state_text(self) -> str:
-        for value, label in (
-            (DEVICE_STATE_ACTIVE, "已连接"),
-            (DEVICE_STATE_UNPLUGGED, "已拔出"),
-            (DEVICE_STATE_DISABLED, "已停用"),
-            (DEVICE_STATE_NOTPRESENT, "不在场"),
-        ):
-            if self.state & value:
-                return label
-        return "未知"
 
 
 # ---------------------------------------------------------------- 枚举

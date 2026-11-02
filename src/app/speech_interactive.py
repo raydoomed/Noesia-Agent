@@ -66,6 +66,7 @@ class StreamSpeaker(QtCore.QObject):
         parent: QtCore.QObject | None = None,
         limit_fn=None,
         quiet_fn=None,
+        idle_fn=None,
         play_local: bool = True,
     ) -> None:
         super().__init__(parent)
@@ -78,6 +79,9 @@ class StreamSpeaker(QtCore.QObject):
         self._limit_off = limit_fn is None
         self._play_local = play_local
         self._quiet_fn = quiet_fn
+        # idle_fn：云端多久没回任何一个字节（连静音都不来）。安静 ≠ 断流：
+        # 前者是念完了，后者是 RTC 那头没数据了，得当场收尾，别让球卡在「播放中」。
+        self._idle_fn = idle_fn
         self._play_start = None
         self._on_chunk = on_chunk  # 给数字人用的转发钩子（主线程调用）
         self._chunk.connect(self._on_chunk_internal)
@@ -244,8 +248,10 @@ class StreamSpeaker(QtCore.QObject):
             # 硬给一个就会出现 0:06/0:04 这种；传 0 = 只显示已播时间 + 不确定进度条。
             self.progress.emit(int(elapsed * 1000), 0)
             quiet = float(self._quiet_fn() or 0) if self._quiet_fn is not None else 0.0
+            idle = float(self._idle_fn() or 0) if self._idle_fn is not None else 0.0
             # 收尾：① TTS 合成完（长度才是真的）② 真的听见过她出声
             #       ③ 远端静了 1.5 秒（句中停顿一般不到 1 秒半）或 时间已过句长 +2 秒
+            #       ④ 云端连帧都不回了（断流）：安静和断流不是一回事，前者是念完，后者是没数据
             # 每一条都写日志，下次出问题能直接从日志看出是哪条提前收的。
             if self._play_start is not None and not self._pulling:
                 why = ""
@@ -255,12 +261,14 @@ class StreamSpeaker(QtCore.QObject):
                     why = "远端静了 %.1fs" % quiet
                 elif dur and elapsed >= dur + 2.0:
                     why = "时间到句长 +2s"
+                elif idle >= 5.0 and elapsed >= 0.5:
+                    why = "云端断流 %.1fs" % idle
                 if not why and elapsed > 180:
                     why = "合成卡住兜底"
                 if why:
                     logger.info(
-                        "[语音] 收尾（%s）：已知句长 %.1fs，已过 %.1fs，远端静 %.1fs，合成完=%s",
-                        why, dur, elapsed, quiet, not self._pulling,
+                        "[语音] 收尾（%s）：已知句长 %.1fs，已过 %.1fs，远端静 %.1fs，断流 %.1fs，合成完=%s",
+                        why, dur, elapsed, quiet, idle, not self._pulling,
                     )
                     self._ticker.stop()
                     self._active = False

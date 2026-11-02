@@ -85,36 +85,6 @@ def _flag(value, *, default: bool = True) -> bool:
 
 
 
-def _tool_args_text(event: dict) -> str:
-    """工具行里「参数」那几行：引擎给了什么就放什么，不改写。
-
-    引擎只在 verbose 模式下才给 `args_text`；没有就退回 `args`。
-    """
-    args = event.get("args_text") or event.get("args")
-    if isinstance(args, dict) and args:
-        return json.dumps(args, ensure_ascii=False, indent=1)[:1200]
-    if isinstance(args, str) and args.strip():
-        return args.strip()[:1200]
-    return ""
-
-
-def _tool_result_text(event: dict) -> str:
-    """工具行里「改动 + 结果」那几行：`inline_diff`、`result_text` / `result`。
-
-    开始帧没有结果，返回空串——参数只放一次，别在完成帧里再铺一遍。
-    """
-    lines: list[str] = []
-    diff = event.get("inline_diff")
-    if diff:
-        lines.append(str(diff)[:3000])
-    result = event.get("result_text") or event.get("result")
-    if isinstance(result, str) and result.strip():
-        lines.append(result.strip()[:3000])
-    elif isinstance(result, dict) and result:
-        lines.append(json.dumps(result, ensure_ascii=False, indent=1)[:3000])
-    return "\n".join(lines)
-
-
 def build_model_choices(items: list[dict]) -> list[dict]:
     """「设置模型」对话框的数据：引擎支持的**每一家**（不只是现在能用的那几家）。
 
@@ -481,6 +451,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return
         # 换会话等于这件事结束了：正在念的话要掐掉，按钮也别卡在「停止」
         self._stop_voice()
+        self._stop_process_watch()  # 旧会话的后台进程不再问（新会话连上时会重新开始）
         if self.chat_panel is not None:
             self.chat_panel.set_busy(False)
         say("[会话] 请求开新会话")
@@ -770,6 +741,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 on_chunk=avatar.feed_pcm,
                 limit_fn=lambda: avatar.audio_timeline_bytes,  # 进度看云端念到哪了
                 quiet_fn=lambda: avatar.quiet_seconds,         # 收尾看远端音频有没有声音
+                idle_fn=lambda: avatar.audio_idle_seconds,     # 兜底：云端断流（连静音帧都不回）
                 play_local=False,                              # 声音由 RTC 出（和画面同一路，天然同步）
                 parent=self,
             )
@@ -1959,6 +1931,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             panel.release_audio()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._stop_process_watch()  # 窗口都要没了：那个 5 秒轮询没有意义，别再问引擎
         self._save_geometry()
         self.release_audio()
         super().closeEvent(event)

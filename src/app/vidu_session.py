@@ -353,34 +353,3 @@ class ViduSession:
         self._ws = None
         self._closed = self._closed or "本地挂断"
 
-    def billing(self) -> str:
-        try:
-            data = requests.get(
-                f"{HTTP}/live/v1/lives/{self.live_id}",
-                headers={"Authorization": f"Token {self.token}"},
-                timeout=20,
-            ).json()
-            live = data.get("live", data)
-            return f"秒={live.get('billed_seconds')} 积分={live.get('credits_cost')}"
-        except Exception as exc:  # noqa: BLE001
-            return f"查询失败 {exc}"
-
-
-def load_wav(path: pathlib.Path) -> bytes:
-    """读 PCM16 wav → 24k 单声道 s16le 原始字节。"""
-    import wave
-
-    with wave.open(str(path)) as handle:
-        channels, width, rate = handle.getnchannels(), handle.getsampwidth(), handle.getframerate()
-        raw = handle.readframes(handle.getnframes())
-    if width != 2:
-        raise SystemExit("只支持 16bit wav")
-    data = np.frombuffer(raw, dtype=np.int16)
-    if channels > 1:
-        data = data.reshape(-1, channels).mean(axis=1).astype(np.int16)
-    if rate != SAMPLE_RATE:
-        count = int(len(data) * SAMPLE_RATE / rate)
-        data = np.interp(
-            np.linspace(0, len(data) - 1, count), np.arange(len(data)), data.astype(np.float32)
-        ).astype(np.int16)
-    return data.tobytes()
