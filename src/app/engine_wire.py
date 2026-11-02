@@ -637,6 +637,7 @@ class EngineWire(QtCore.QObject):
     tool = QtCore.Signal(dict)             # tool.start / tool.progress / tool.complete（带 kind）
     subagent = QtCore.Signal(dict)         # subagent.start / .tool / .complete：子代理在跑什么
     completed = QtCore.Signal(dict)        # message.complete 的 payload
+    turn_settled = QtCore.Signal(str)      # turn.done：这一轮彻底完了（被中断的轮次没有 complete，只有这个）
     status = QtCore.Signal(str)            # status.update / state
     approval = QtCore.Signal(dict)         # 引擎发来的审批请求（含 request_id、prompt…）
     setup_beat = QtCore.Signal(dict)       # 引导卡片：只接名字那张（beat == "name"），带 reply_id
@@ -853,23 +854,34 @@ class EngineWire(QtCore.QObject):
         """要一份 config.yaml 的 display 段：界面照它决定画不画思考段、工具行。"""
         self._call("config.get", {"key": "full", "session_id": self._session_id}, tag="config.get:full")
 
-    def submit(self, text: str) -> None:
-        """发一句话。会话没好（或正在起）就先攒着并去起会话，好了再发。"""
+    def submit(self, text: str, queued: bool = True) -> None:
+        """发一句话。会话没好（或正在起）就先攒着并去起会话，好了再发。
+
+        `queued=True`（默认，打字那条路）：明确告诉引擎「这句排在后面跑」，不是「插到这一轮里说」。
+        不带它，引擎按默认模式处理——收尾那几十毫秒里发出去的话会被当成插话塞进正在死的那一轮，
+        然后跟着一起作废（日志实测 `/steer ... as new user message` 之后 9 毫秒
+        `Turn ended: reason=interrupted_by_user`）。
+
+        `queued=False` 只给语音用：语音是插话，就是要引擎把这句话作为纠正递进当前这一轮。
+        """
         if not self._session_id or self._attaching:
             # 冷启动窗口期连着打了两句：都攒着，别后一句把前一句顶掉；会话只起一场
             self._pending_text = f"{self._pending_text}\n\n{text}" if self._pending_text else text
             self._ensure_session()
             return
-        self._call("prompt.submit", {"session_id": self._session_id, "text": text})
+        params: dict = {"session_id": self._session_id, "text": text}
+        if queued:
+            params["queued"] = True
+        self._call("prompt.submit", params)
 
     # 一句话 + 附件：附件的回包决定这句话怎么发，所以整轮当成一件事做完再发
     IMAGE_ONLY_CAPTION = "What do you see in this image?"  # 只发图不打字时的兜底话（引擎/桌面同一句）
 
-    def submit_with_attachments(self, text: str, items=()) -> None:
+    def submit_with_attachments(self, text: str, items=(), queued: bool = True) -> None:
         """发一句话，附件先挂上：文件带回的 `@file:` 引用拼在正文前（跟桌面 buildContextText 一致）。"""
         items = list(items or ())
         if not items:
-            self.submit(text)
+            self.submit(text, queued=queued)
             return
         if not self._session_id or self._attaching:
             # 会话还没起来：整轮排进队列（连着发两轮不能互相顶掉），会话好了从附件开始走
@@ -1620,6 +1632,10 @@ class EngineWire(QtCore.QObject):
             self.subagent.emit(event)
         elif kind == "message.complete":
             self.completed.emit(payload)
+        elif kind == "turn.done":
+            # 这一轮彻底完了。被中断的轮次走不到 message.complete，只有这一帧能告诉界面
+            # 「后面再来的字都是下一轮的了」（残片一定排在它前面，同一条连接有先后）。
+            self.turn_settled.emit(str(payload.get("status") or ""))
         elif kind in {"status.update", "session.info"}:
             self.status.emit(str(payload.get("state") or payload.get("status") or ""))
             effort = payload.get("reasoning_effort")

@@ -1497,6 +1497,7 @@ class ChatPanel(QtWidgets.QWidget):
         box_row.addWidget(self.input, 1)
         self._ime_composing = False   # 输入法正在组字：这时回车是确认候选词，不是发送
         self.input.textChanged.connect(self._sync_input_ph)
+        self.input.textChanged.connect(self._sync_send_button)  # 框里有字，「停止」变「排队」
         self._sync_input_ph()
         self._fit_input_height()
 
@@ -1605,6 +1606,17 @@ class ChatPanel(QtWidgets.QWidget):
         self._attach_row.setSpacing(6)
         self._attach_row.addStretch(1)  # 附件靠左排，别让一条撑满整行
         self._attach_bar.hide()
+        # 排队中：这一轮还在跑时你发的话先排在这儿，等它完了自动发。
+        # 和桌面端一样，排队的东西不进正文——正文里出现的必须是已经交给引擎的。
+        self._queued: list[dict] = []
+        self._queue_chips: list[QtWidgets.QFrame] = []
+        self._queue_bar = QtWidgets.QFrame(frame)
+        self._queue_bar.setObjectName("attachbar")
+        self._queue_col = QtWidgets.QVBoxLayout(self._queue_bar)
+        self._queue_col.setContentsMargins(6, 3, 6, 3)
+        self._queue_col.setSpacing(3)
+        self._queue_bar.hide()
+        layout.addWidget(self._queue_bar)
         layout.addWidget(self._attach_bar)
 
         row.addWidget(box, 1)
@@ -1657,6 +1669,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._reason_started = 0.0
         self._tool_folds = {}
         self._clarify = None
+        self._clear_queue()  # 换会话了：上一段还没发出去的那几句跟着作废，别串到新会话里
         self.stack.clear_all()
         # 清屏顺带把语音球退回待机：不然它会一直停在「识别中」转圈
         self._voice_orb.set_state(STATE_IDLE)
@@ -1755,7 +1768,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._insert_html("<span style='color:#ffd7e6;'><b>Noesia</b></span><br>")
         self._streaming = True
         self._bubble_has_text = False
-        self._interrupted = False  # 新的一段：重新开始收字
+        # 注意：这里**不能**放开 `_interrupted`。按停之后引擎还飘在半路的 token 会先到，
+        # 到达时正是由它触发新的一段——在这儿放闸，那段残片就正好被写进新气泡，
+        # 于是「512`（」这种半截回答挂在你新消息下面。放闸只认 turn.done（settle_turn）。
 
     def append_chunk(self, chunk: str) -> None:
         if self._interrupted:
@@ -3639,10 +3654,18 @@ class ChatPanel(QtWidgets.QWidget):
 
     def stop_streaming(self) -> None:
         """叫住这一轮：手上这段先收尾（半条回答留着），之后飘回来的字丢掉，末尾留一个「已停止」。"""
+        if not (self._busy or self._streaming or self._assistant_pending or self._tool_started):
+            # 本来就没有一轮在跑：不关闸。关了以后没有 turn.done 来开它，
+            # 接下来整场对话都收不到字（语音模式「先说话再发」就撞这个）。
+            return
         already_stopped = self._interrupted
         if self._streaming:
             self.end_assistant()
         self._interrupted = True
+        # 这一轮已经作废：手里那张「等你选一个」的卡不会再有人来接答案。
+        # 不清的话它一直挂在「等回答」上，你下一句话会被当成这张卡的答案吃掉、
+        # 不当新一轮发出去——屏幕上就是发了没反应（2026-11-03 查到的）。
+        self._clarify = None
         # 按停的那一刻，手上还在跑的工具行也要收尾：表停、钟换成它自己的图标、标成「已停止」。
         # 不然行下面写着已停止，上面那只钟还在跳秒，看着像根本没停住。
         self._settle_running_tools("已停止")
@@ -3692,6 +3715,7 @@ class ChatPanel(QtWidgets.QWidget):
         if self._interrupted:
             return  # 已经写过「已停止」，别叠第二条
         self._interrupted = True
+        self._clarify = None  # 这一轮废了：那张等回答的卡也跟着作废（原因同 stop_streaming）
         if self._streaming:
             self.end_assistant()
         self._provider_wait = ""
@@ -3700,18 +3724,130 @@ class ChatPanel(QtWidgets.QWidget):
         )
 
     def set_busy(self, busy: bool) -> None:
-        """一轮在跑：发送键变「停止」；停的是引擎那一轮，已经说过的话仍留在上下文里。"""
+        """一轮在跑：发送键换成「停止」（框里有字就换成「排队」）；停的是引擎那一轮，说过的话仍在上下文里。
+
+        这里**不放开** `_interrupted`：让按钮回「发送」只是为了你能接着打字，
+        那一刻引擎手里上一轮的话还可能在路上。放闸是 `settle_turn()` 的事。
+        """
         self._busy = bool(busy)
-        if self._busy:
-            # 新一轮开始：上一轮被叫停留下的那道"别再收字"的闸必须放开，
-            # 否则按过一次停止之后，后面每一条回答都会被静默丢掉（2026-10-25 就是这个 bug）。
-            self._interrupted = False
-        self._send_button.setText("停止" if self._busy else "发送")
-        self._send_button.setToolTip("叫住这一轮（已进行的对话仍留在上下文里）" if self._busy else "")
+        self._sync_send_button()
         if not self._busy:
             # 这一轮结束了：「正在调用 X…」那句是靠 tool.start 撤掉的，
             # 按停时那个工具的 start 永远不会来了，不清就一直挂在输入框上方，看着像还在跑
             self.set_activity("")
+
+    def settle_turn(self) -> None:
+        """这一轮彻底完了（引擎的 turn.done）：可以重新收字了，排在后面的那句也该发了。
+
+        被中断的轮次走不到 message.complete，只有这一帧能划出「残片到这儿为止」的界线。
+        """
+        self._interrupted = False
+        self._drain_queue()
+
+    def _send_label(self) -> str:
+        """发送键上写什么——按「此刻按下它会做什么」定，跟桌面端一致。
+
+        框里有字：发送（忙的时候是交给引擎排队，这轮跑完自己接上）；
+        框里空着、又在跑：停止。
+        """
+        typing = bool(self.input.toPlainText().strip() or self._attachments)
+        if not self._busy:
+            return "发送"
+        return "排队" if typing else "停止"
+
+    def _sync_send_button(self) -> None:
+        if not hasattr(self, "_send_button"):
+            return  # 按钮还没建（__init__ 里文本框先连接）：等 set_busy 时再来一次
+        label = self._send_label()
+        self._send_button.setText(label)
+        self._send_button.setToolTip(
+            "这一轮还在跑：点了先排队，它跑完接着发" if label == "排队"
+            else "叫住这一轮（已进行的对话仍留在上下文里）" if label == "停止"
+            else ""
+        )
+
+    # ---- 排队：这一轮还在跑时你说的话，先排着，轮次完了自动发 ----
+
+    def _enqueue(self, text: str, attachments: list[dict], from_input: bool = True,
+                 source: str = "typed") -> None:
+        """这一轮还在跑：这句话先排队，等它完了再发出去。
+
+        正文里不提前出现你要说的话——和桌面端一样，「排着队」和「已经交给引擎」是两回事。
+        前面那条要是被你按停了，后面这条就成了「说了却没发生」的假记录。
+
+        `from_input=False` 是语音那条路：语音模式下输入框藏着，里面可能压着草稿，
+        清掉等于替人扔了东西，所以不许动它。
+        """
+        entry = {"text": text, "attachments": attachments, "source": source}
+        chip = QtWidgets.QFrame(self._queue_bar)
+        chip.setObjectName("attachchip")
+        chip.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Preferred
+        )
+        line = QtWidgets.QHBoxLayout(chip)
+        line.setContentsMargins(6, 2, 2, 2)
+        line.setSpacing(6)
+        mark = QtWidgets.QLabel("排队中", chip)
+        line.addWidget(mark)
+        shown = text or f"{len(attachments)} 个附件"
+        preview = QtWidgets.QLabel(shown if len(shown) <= 40 else shown[:40] + "…", chip)
+        preview.setToolTip(text or "、".join(str(held.get("name") or "") for held in attachments))
+        line.addWidget(preview)
+        close = QtWidgets.QToolButton(chip)
+        close.setObjectName("icon")
+        close.setText("×")
+        close.setFixedSize(16, 16)
+        close.setCursor(QtCore.Qt.PointingHandCursor)
+        close.setToolTip("不发了")
+        close.clicked.connect(lambda _checked=False, target=entry: self._drop_queued(target))
+        line.addWidget(close)
+        self._queue_col.addWidget(chip)
+        self._queued.append(entry)
+        self._queue_chips.append(chip)
+        self._queue_bar.show()
+        if from_input:
+            self.input.clear()
+            self._clear_attachments()
+        self._sync_send_button()
+
+    def _drop_queued(self, entry: dict) -> None:
+        """撤掉一条还没轮到的。按对象认，不按文字认：同一句话排两次是两条。"""
+        index = next((i for i, held in enumerate(self._queued) if held is entry), None)
+        if index is None:
+            return
+        self._queued.pop(index)
+        chip = self._queue_chips.pop(index)
+        chip.setParent(None)
+        chip.deleteLater()
+        if not self._queued:
+            self._queue_bar.hide()
+
+    def _clear_queue(self) -> None:
+        if not hasattr(self, "_queue_chips"):
+            return  # 还没建队列区（__init__ 早期清屏）：没东西可清
+        for chip in self._queue_chips:
+            chip.setParent(None)
+            chip.deleteLater()
+        self._queue_chips.clear()
+        self._queued.clear()
+        self._queue_bar.hide()
+
+    def _drain_queue(self) -> None:
+        """这一轮真的完了：把排在最前面的那条交给引擎——到这一刻它才进正文。"""
+        if self._busy or not self._queued:
+            return
+        entry = self._queued.pop(0)
+        chip = self._queue_chips.pop(0)
+        chip.setParent(None)
+        chip.deleteLater()
+        if not self._queued:
+            self._queue_bar.hide()
+        text = str(entry.get("text") or "")
+        attachments = list(entry.get("attachments") or [])
+        self.append_user(text, attachments)
+        if attachments:
+            self.attachment_picked.emit(attachments)
+        self.submitted.emit(text, str(entry.get("source") or "typed"))
 
     # ---- 附件：「＋」菜单、粘贴、拖进来，三条路进同一个地方 ----
 
@@ -3833,6 +3969,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attachments.append(item)
         self._attach_chips.append(chip)
         self._attach_bar.show()
+        self._sync_send_button()  # 只挂了附件也算有内容：忙的时候那个键该是「排队」
 
     def _drop_attachment(self, item: dict) -> None:
         """撤掉一条（还没发出去）。按对象认，别按文件名认——同名两张图是两回事。"""
@@ -3845,6 +3982,7 @@ class ChatPanel(QtWidgets.QWidget):
         chip.deleteLater()
         if not self._attachments:
             self._attach_bar.hide()
+        self._sync_send_button()  # 撤掉最后一条：忙的时候那个键该从「排队」变回「停止」
 
     def drop_attachment_by_name(self, name: str) -> None:
         """引擎说这个附件没收下：从条上撤掉，别让人以为发出去了。"""
@@ -3859,6 +3997,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attach_chips.clear()
         self._attachments.clear()
         self._attach_bar.hide()
+        self._sync_send_button()  # 附件撤光了：忙的时候那个键该变回「停止」
 
     @staticmethod
     def _attachment_pixmap(item: dict):
@@ -3958,14 +4097,18 @@ class ChatPanel(QtWidgets.QWidget):
         )
 
     def _emit(self) -> None:
-        if self._busy:  # 在跑的时候这个键是「停止」
-            self._stop_turn()
-            return
         message = self.input.toPlainText().strip()
         attachments = list(self._attachments)
+        if self._busy:
+            if message or attachments:
+                self._enqueue(message, attachments)  # 这一轮跑完再发：正文里先不出现
+            else:
+                self._stop_turn()  # 框里空着：这会儿这个键就是「停止」
+            return
         if not message and not attachments:  # 只粘了图/只选了文件也能发（跟桌面一样）
             return
         self.input.clear()
+        self._sync_send_button()
         self._clear_attachments()
         self.append_user(message, attachments)
         if attachments:
@@ -4218,9 +4361,18 @@ class ChatPanel(QtWidgets.QWidget):
             self._voice_flash("这句没听清，再说一次")
             return
         self._voice_orb.set_state(STATE_IDLE)  # 球先回待机，能接着按住说下一句
-        # 人开口就是要打断：还在跑就先终止这一轮，跟 Enter 变「停止」走同一条路
-        # （停朗读、半条回答收尾、工具行标「已停止」、发 interrupt 全在里面）。
-        self._stop_turn()
+        if self._busy:
+            # 语音是插话，不是排队：这一轮不能掐死。掐了插进去的这句跟着一起作废——
+            # 日志实测 `/steer ... as new user message` 之后 9 毫秒就
+            # `Turn ended: reason=interrupted_by_user`，屏幕上就是一个回答都没有。
+            # 所以只把手上这段收尾、把你的话插进去，这句话照常发出去（不带 queued），
+            # 引擎按「纠正」递进这一轮，她接着往下说，后面的字进新的一段。
+            # 闸也不关：这一轮还在跑，关了就把它剩下的字也丢了。
+            if self._streaming:
+                self.end_assistant()
+            self.append_user(text, [])
+            self.submitted.emit(text, "voice")
+            return
         self.append_user(text, [])
         # 标成 voice：这一条是模型听出来的，可能有错字，不能拿去当学词的语料
         self.submitted.emit(text, "voice")

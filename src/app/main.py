@@ -1279,7 +1279,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 voice_vocab.remember(message)
             except Exception:  # noqa: BLE001
                 logger.debug("[词表] 这条语料没记上", exc_info=True)
-        self.client.submit_with_attachments(message, items)
+        # 打字排在后面跑（queued）：忙的时候点发送不该把你正在等的那一轮掐掉。
+        # 语音是插话（不带 queued）：引擎把它当纠正递进当前这一轮，她接着往下说。
+        self.client.submit_with_attachments(message, items, queued=source != "voice")
         self._maybe_learn_vocab()
 
     def _maybe_learn_vocab(self) -> None:
@@ -1361,6 +1363,21 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if reply and not self._turn_stopped:  # 按过停止：正文已经按增量显示过，别再整段念
             self._speak_reply(reply)
         self._turn_stopped = False
+
+    def on_turn_settled(self, status: str) -> None:
+        """`turn.done`：这一轮真的完了（被中断的轮次走不到 message.complete，只有这一帧）。
+
+        界面在收到它之后才可以重新收字——按停后飘回来的残片都排在这一帧前面，
+        放闸早了就会被写进下一轮的气泡。顺带把按钮收回「发送」：引擎自己中断的轮次
+        （不是用户按的停）以前没人叫醒按钮，会一直停在「停止」上。
+        """
+        panel = self.chat_panel
+        if panel is None:
+            return
+        # 顺序要紧：先把这一轮收掉，再放开闸。反过来会把它刚排上队、
+        # 正要发出去的那一条的「在跑」状态又抹回去（按钮显示成「发送」，引擎其实在跑）。
+        panel.set_busy(False)
+        panel.settle_turn()
 
     def on_tool_event(self, event: dict) -> None:
         """tool.start / tool.complete：标题、副标题、计数、正文全部由模型层算（`app/tool_view`）。
@@ -2311,6 +2328,7 @@ def main() -> int:
     wire.error.connect(window.on_engine_error)
     wire.setup_needed.connect(window.on_setup_needed)
     wire.completed.connect(window.on_complete)
+    wire.turn_settled.connect(window.on_turn_settled)
     wire.tool.connect(window.on_tool_event)
     wire.subagent.connect(window.on_subagent_event)
     wire.status.connect(window.on_status)

@@ -1196,6 +1196,14 @@ def _run_prompt_submit(
                     sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
                     status, st.error_retained, time.monotonic() - _turn_started_monotonic,
                     st.error_detail)
+                # A turn is over for good: every delta of it has already gone out ahead of this frame on
+                # the same socket, so a client that parked its streaming on interrupt can reopen here
+                # without the tail of a cancelled answer leaking into the next one. Emitted in `finally`
+                # because an interrupted turn never reaches `message.complete`.
+                try:
+                    _emit("turn.done", sid, {"status": status})
+                except Exception:  # 收尾帧发不出去也不能连累下面的清理
+                    logger.debug("failed to emit turn.done", exc_info=True)
                 # Backstop for turns that never reached a terminal frame.
                 if st.receipt_committed:
                     _retire_turn_marker(session, st.marker_key)
