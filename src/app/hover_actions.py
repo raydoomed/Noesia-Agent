@@ -29,7 +29,8 @@ COPIED_RESET_MS = 1500
 DIFF_PREVIEW_LABEL = "看完整 diff"
 
 
-def _pixmap(icon_name: str, color: str, px: int) -> QtGui.QPixmap | None:
+def icon_pixmap(icon_name: str, color: str, px: int) -> QtGui.QPixmap | None:
+    """把描边图标画成一张 pixmap；调用方不止悬停按钮，所以是公开的。"""
     svg = ui_icon_svg(icon_name, color, px)
     if not svg:
         return None
@@ -114,14 +115,14 @@ class HoverActionButton(QtWidgets.QToolButton):
         self._slot()
         if not self._flash:
             return
-        icon = _pixmap("check", self.DONE_COLOR, self.ICON_PX)
+        icon = icon_pixmap("check", self.DONE_COLOR, self.ICON_PX)
         if icon is not None:
             self.setIcon(QtGui.QIcon(icon))
         self.setToolTip(self._done_tooltip)
         self._reset.start()
 
     def _back_to_idle(self) -> None:
-        icon = _pixmap(self._icon_name, self.IDLE_COLOR, self.ICON_PX)
+        icon = icon_pixmap(self._icon_name, self.IDLE_COLOR, self.ICON_PX)
         if icon is not None:
             self.setIcon(QtGui.QIcon(icon))
         self.setToolTip(self._idle_tooltip)

@@ -311,6 +311,7 @@ class StatusStack(QtWidgets.QFrame):
         text = self._bg_head.text()
         if text.startswith(("▸", "▾")):
             self._bg_head.setText(("▾" if opened else "▸") + text[1:])
+        self._sync()  # 展开/收起都变了高度：不重算就还是收起时那个高度，列表被切掉一截
 
     # ---- 收摊 ----
 
@@ -342,6 +343,13 @@ class StatusStack(QtWidgets.QFrame):
             if label is None:
                 continue
             need += max(label.heightForWidth(width), label.fontMetrics().height()) + 2
+        # 「N 个后台任务」那张卡和「正在调用」那行也在这一叠里，以前没算进去：
+        # 只有后台任务、没有普通提示的时候 need 停在 8，整块被压到 24px，
+        # 卡片自己 minima 就是 25px，于是标题上下各切一半，看着像一行糊掉的残字。
+        spacing = self._box.spacing()
+        for extra in (self._bg, self._activity):
+            if extra is not None and extra.isVisible():
+                need += extra.sizeHint().height() + spacing
         cap = int(self.window().height() * 0.45) if self.window() else 400
         height = max(24, min(need, cap))
         inner.setMinimumHeight(need)

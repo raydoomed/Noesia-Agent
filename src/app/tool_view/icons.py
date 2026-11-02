@@ -84,6 +84,7 @@ UI_PATHS: dict[str, str] = {
         '<polyline points="7 10 12 15 17 10" />'
         '<line x1="12" x2="12" y1="15" y2="3" />'
     ),
+    "arrow-down": '<line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" />',
 }
 
 
