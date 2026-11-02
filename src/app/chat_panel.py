@@ -39,6 +39,39 @@ def _error_key(text: str) -> str:
     return _ERROR_NOISE.sub("#", (text or "").strip().lower())
 
 
+class _Input(QtWidgets.QPlainTextEdit):
+    """输入框：Qt 自带的 placeholder 只认 document 有没有内容，而输入法组着字时那几个字
+    还在预编辑里、没进 document，于是它照样画，跟正在打的拼音叠在一起。这里自己画，
+    位置直接取光标矩形——跟正文第一行同一条基线，不用手算 padding。"""
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._ph_text = ""
+        self._ph_on = False
+
+    def set_placeholder(self, text: str) -> None:
+        self._ph_text = text
+        self.viewport().update()
+
+    def set_placeholder_visible(self, on: bool) -> None:
+        if self._ph_on != on:
+            self._ph_on = on
+            self.viewport().update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if not self._ph_on or not self._ph_text:
+            return
+        painter = QtGui.QPainter(self.viewport())
+        painter.setPen(QtGui.QColor(255, 255, 255, 88))
+        painter.setFont(self.font())
+        # cursorRect 宽只有 1px（就光标那么宽），直接拿它画会把字裁光：只取 y 和行高，宽度给满
+        rect = self.cursorRect()
+        rect.setWidth(max(0, self.viewport().width() - rect.x() - 2))
+        painter.drawText(rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self._ph_text)
+        painter.end()
+
+
 class _CodeMark(QtGui.QTextBlockUserData):
     """「这一块是代码块」——复制按钮靠它命中，不再靠底色猜（底色的 HTML 行为不稳）。"""
 
@@ -1015,9 +1048,9 @@ class ChatPanel(QtWidgets.QWidget):
 
         # 输入区在最左，两个图标键贴右边（按钮放输入框右侧，不放左侧）
         # 多行输入：Enter 发送、Shift+Enter 换行；写到换行才长高，最多 5 行，再多内部滚动。
-        self.input = QtWidgets.QPlainTextEdit(box)
+        self.input = _Input(box)
         self.input.setObjectName("input")
-        self.input.setPlaceholderText("和 Noesia 说点什么…")
+        self.input.set_placeholder("和 Noesia 说点什么…")  # 自己画，见 _Input 的说明
         self.input.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.input.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
         self.input.setTabChangesFocus(True)            # Tab 用来换焦点，不往正文里塞制表符
@@ -1033,6 +1066,8 @@ class ChatPanel(QtWidgets.QWidget):
         self.input.textChanged.connect(self._fit_input_height)
         box_row.addWidget(self.input, 1)
         self._ime_composing = False   # 输入法正在组字：这时回车是确认候选词，不是发送
+        self.input.textChanged.connect(self._sync_input_ph)
+        self._sync_input_ph()
         self._fit_input_height()
 
         # 语音模式的输入区：跟输入框抢同一个位置，同一时刻只露一个。
@@ -3624,6 +3659,16 @@ class ChatPanel(QtWidgets.QWidget):
         box.style().unpolish(box)
         box.style().polish(box)
 
+    def _sync_input_ph(self) -> None:
+        """提示文字：输入框里有字、或者输入法正组着字，就让开。
+        组字那半截不在 document 里，只看 document 会漏掉，中文打一半时提示压在拼音上。"""
+        inp = getattr(self, "input", None)
+        if inp is None:
+            return
+        inp.set_placeholder_visible(
+            inp.document().isEmpty() and not getattr(self, "_ime_composing", False)
+        )
+
     # ---- 悬停小动作：代码块复制 / 工具行看完整 diff ----
 
     def _hover_at(self, pos: QtCore.QPoint) -> None:
@@ -3818,6 +3863,7 @@ class ChatPanel(QtWidgets.QWidget):
             elif kind is QtCore.QEvent.Type.InputMethod:
                 # 组字中的回车是「确认候选词」，不是发送——不然打「nihao」按回车会直接发出去
                 self._ime_composing = bool(event.preeditString())
+                self._sync_input_ph()  # 组字也算有内容：提示立刻让开，别压着拼音
             elif kind is QtCore.QEvent.Type.KeyPress:
                 if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter) and not getattr(
                     self, "_ime_composing", False
