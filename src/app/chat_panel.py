@@ -11,11 +11,13 @@ import json
 import html
 import re
 import ctypes
+import hashlib
 import logging
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
 
 from app import (
     audio_devices,
@@ -27,6 +29,7 @@ from app import (
     voice_input_prefs,
 )
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton
+from app.photo_view import PhotoView
 from app.speech_bar import SpeechBar
 from app.status_stack import StatusStack
 from app.voice_input import SILENT_PEAK, VoiceRecorder, peak_of, write_wav
@@ -117,6 +120,57 @@ def _keep_edge_spaces(markup: str) -> str:
     if not core:  # 整段都是空格
         return "&nbsp;" * len(markup)
     return lead.replace(" ", "&nbsp;") + core + trail.replace(" ", "&nbsp;")
+
+
+_PHOTO_CACHE = 24  # 最多记着多少张取回来的图：只挡重复下载，不是显示上限
+_ORIGINAL_CACHE = 6  # 另外记着几张原图（字节），点开就能看清、能存；再多就别占内存了
+_THUMB_WIDTH = 200  # 正文里的图按缩略图显示：看得清大概，又不把气泡撑满
+
+
+def _photo_name(url: str) -> str:
+    """从网址里挑个像文件名的做保存时的默认名。"""
+    tail = unquote(urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]) or "图片"
+    if "." not in tail:
+        tail += ".jpg"
+    return tail
+
+
+def save_photo_bytes(parent: QtWidgets.QWidget, data: bytes, name: str) -> bool:
+    """问存哪儿、把原图字节写下去。存成了返回真，取消或者写失败返回假。"""
+    path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        parent,
+        "保存图片",
+        name,
+        "图片 (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;所有文件 (*)",
+    )
+    if not path:
+        return False
+    try:
+        Path(path).write_bytes(data)
+    except OSError as err:
+        QtWidgets.QMessageBox.warning(parent, "存不下来", str(err))
+        return False
+    return True
+
+
+def _open_link(text: str) -> bool:
+    """这一段里有个图片或链接还没写完（`![说明](地址` 还差最后那个括号）。
+
+    回复是一小块一小块推来的：`![冰岛极光](https://thumb.wiki` 这时候照行内画出去，
+    屏幕上就留下那行原始 markdown，后面几块再补也接不回成图片——只能等括号到齐再整块画。
+    """
+    start = text.rfind("[")
+    if start < 0:
+        return False
+    rest = text[start:]
+    closing = rest.find("]")
+    if closing < 0:
+        return True  # `![冰岛` —— 连说明都没写完
+    opened = rest.find("(", closing)
+    if opened < 0:
+        return False  # `[1]` 这种引用标记，不是链接
+    return ")" not in rest[opened:]  # `![说明](地址` —— 就等最后那个括号
+
 
 from app.user_state import window_settings
 from app.tool_view.ansi import has_ansi_codes as ansi_codes, parse_ansi
@@ -1108,7 +1162,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
 class ChatPanel(QtWidgets.QWidget):
     """打字对话窗。"""
 
-    submitted = QtCore.Signal(str)
+    submitted = QtCore.Signal(str, str)  # (正文, 来源)：来源区分打字和语音，语音结果不算干净语料
     model_chosen = QtCore.Signal(str)  # 下拉框选了模型 → 交给窗口发 SET_MODEL
     # 「设置」：还没配模型（或下拉框里全是灰的）时的明确入口，不能让人对着一个空下拉框猜
     model_settings_requested = QtCore.Signal()
@@ -1232,6 +1286,14 @@ class ChatPanel(QtWidgets.QWidget):
         self._para_break = False  # 空行记的账：下一段来时再开新段（当场开就是白留一行）
         self._md_fence = False  # 是否在 ``` 围栏代码块里
         self._media_roots: tuple = ()  # 相对路径从哪些目录找（由窗口按配置塞进来）
+        # 正文里的网络图片：Qt 自己不下载，得先取回来注册成文档资源才画得出来
+        self._photos: dict[str, QtGui.QPixmap] = {}  # 网址 → 取回来的图
+        self._photo_keys: dict[str, str] = {}  # 网址 → 文档里的资源名
+        self._photo_sources: dict[str, str] = {}  # 资源名 → 网址：点图时要知道点的是哪张
+        self._originals: dict[str, bytes] = {}  # 网址 → 原图字节：留着才能看原图、存原图
+        self._photo_pending: set[str] = set()  # 正在取的，别重复发
+        self._press_pos: QtCore.QPoint | None = None  # 正文里按下的位置：松手时判断是点击还是拖选
+        self._net = QtNetwork.QNetworkAccessManager(self)
         # 思考段 / 工具行都是「可折叠的一段」（见 app/disclosure.py）
         self._reason_fold: disclosure.Fold | None = None  # 正在攒的思考段
         self._reason_started = 0.0  # 这段思考从什么时候开始（算「思考了 3s」）
@@ -1284,6 +1346,7 @@ class ChatPanel(QtWidgets.QWidget):
         # （只开窗，不冒充复制成功）。靠 CSS 的 group-hover，Qt 没有，所以自己盯鼠标摆位。
         self._hover_copy: HoverActionButton | None = None
         self._hover_expand: HoverActionButton | None = None
+        self._hover_download: HoverActionButton | None = None
         self._diff_texts: dict[int, tuple[str | None, str]] = {}  # 折叠段 key → (路径, 整段 diff)
         self._tool_payloads: dict[int, tuple[str, str]] = {}  # 折叠段 key → (复制按钮文案, 待复制的文本)
         self.view.viewport().setMouseTracking(True)
@@ -1661,6 +1724,7 @@ class ChatPanel(QtWidgets.QWidget):
             or data.count("**") % 2  # 粗体标记还被切在两半里：先画就会漏出 `**`
             or data.rstrip().endswith("*")  # 标记只到了一半（行尾一个 `*`），等它配对
             or data.count("`") % 2  # 行内代码没闭合，同理
+            or _open_link(data)  # 图片/链接的括号还没到齐：先画出来就是那行原始 markdown
         )
         if (
             data
@@ -1741,6 +1805,303 @@ class ChatPanel(QtWidgets.QWidget):
             else:
                 self._insert_html(markdown_render.block(body))
 
+    # ---- 正文里的网络图片：Qt 不下载，得自己取回来注册成文档资源 ----
+
+    def _photo_placeholder(self, text: str) -> QtGui.QPixmap:
+        """取图期间的占位（灰底一行小字），免得空一块让人不知道发生了什么。"""
+        width = max(120, min(_THUMB_WIDTH, self.view.viewport().width() - 40))
+        pixmap = QtGui.QPixmap(width, 48)
+        pixmap.fill(QtGui.QColor(0, 0, 0, 0))
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setBrush(QtGui.QColor("#242630"))
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(0, 0, width, 48, 6, 6)
+        painter.setPen(QtGui.QColor("#8f9bb0"))
+        painter.drawText(pixmap.rect(), QtCore.Qt.AlignmentFlag.AlignCenter, text)
+        painter.end()
+        return pixmap
+
+    def _photo_key(self, url: str) -> str:
+        """给这个网址安排一个文档资源名；还没取过的顺手发起下载。"""
+        key = self._photo_keys.get(url)
+        if key is None:
+            digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
+            key = f"noesia-photo://{digest}"
+            self._photo_keys[url] = key
+            self._photo_sources[key] = url
+            self.view.document().addResource(
+                QtGui.QTextDocument.ResourceType.ImageResource,
+                QtCore.QUrl(key),
+                self._photo_placeholder("图片加载中…"),
+            )
+        if url not in self._photos and url not in self._photo_pending:
+            self._photo_fetch(url, key)
+        return key
+
+    def _photo_fetch(self, url: str, key: str) -> None:
+        """取图放后台跑：取不回来只是这块图空着，绝不能拖累正文渲染。"""
+        self._photo_pending.add(url)
+        try:
+            request = QtNetwork.QNetworkRequest(QtCore.QUrl(url))
+            # 有些图床不认没有 UA 的请求
+            request.setHeader(
+                QtNetwork.QNetworkRequest.KnownHeaders.UserAgentHeader, "Noesia Agent"
+            )
+            request.setTransferTimeout(10000)  # 网络不通时别一直挂着
+            reply = self._net.get(request)
+            reply.finished.connect(lambda: self._photo_arrived(reply, url, key))
+        except Exception:
+            self._photo_pending.discard(url)
+            logger.warning("正文图片没发出去：%s", url, exc_info=True)
+
+    def _photo_arrived(self, reply, url: str, key: str) -> None:
+        """图取回来了：换成真图重画；取不回来就如实说没加载出来。"""
+        self._photo_pending.discard(url)
+        bar = self.view.verticalScrollBar()
+        # 占位是个矮灰条，真图比它高一大截：换上去正文会长高。
+        # 本来贴着底看最新消息的，长高以后得跟到底，不能把人晾在半空。
+        stuck = bar.value() >= bar.maximum() - 4
+        try:
+            failed = reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError
+            data = bytes(reply.readAll().data())
+            reply.deleteLater()
+
+            pixmap = QtGui.QPixmap()
+            if failed or not pixmap.loadFromData(data) or pixmap.isNull():
+                pixmap = self._photo_placeholder("图片没加载出来")
+            else:
+                # 正文里只放缩略图：想看仔细、想存原图，点开或用右上角的下载
+                limit = max(120, min(_THUMB_WIDTH, self.view.viewport().width() - 40))
+                if pixmap.width() > limit:
+                    pixmap = pixmap.scaledToWidth(
+                        limit, QtCore.Qt.TransformationMode.SmoothTransformation
+                    )
+                self._remember_original(url, data)  # 原图字节留着：点开能看清、能存
+            self._photos[url] = pixmap
+            # 长会话里一路看下去不能把每张图都攥着：超过上限就先松掉最早的。
+            # 已经画进文档的那几张不受影响（文档自己是资源的持有者），这里只是不再挡重复下载。
+            while len(self._photos) > _PHOTO_CACHE:
+                self._photos.pop(next(iter(self._photos)))
+            self.view.document().addResource(
+                QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(key), pixmap
+            )
+            self.view.document().markContentsDirty(0, self.view.document().characterCount())
+            self.view.viewport().update()
+            if stuck:
+                # 排版是下一拍才算完的，等它算完再贴底，不然拿到的还是旧的最大值
+                QtCore.QTimer.singleShot(0, self._follow_bottom)
+        except Exception:
+            logger.warning("正文图片落地时出错：%s", url, exc_info=True)
+
+    def _follow_bottom(self) -> None:
+        """正文刚长高：刚才贴着底的，还贴回去。"""
+        bar = self.view.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _adopt_images(self, markup: str) -> str:
+        """把正文里的网络图片换成文档资源名。
+
+        Qt 的富文本不会去下载 `http(s)` 的图，直接插 `<img src="https://…">` 只剩一块空白；
+        换成注册过的资源名，取回来以后才画得出来。被流式切开的那种半截网址到这里已经完整
+        （`_open_link` 会压到括号到齐才放行）。
+        """
+        if "http" not in markup:
+            return markup
+        try:
+            return self._swap_image_sources(markup)
+        except Exception:
+            # 图这块出事不能连累正文：原样插进去，最多是这块图显示不出来
+            logger.warning("正文图片处理失败，按原文插入", exc_info=True)
+            return markup
+
+    def _swap_image_sources(self, markup: str) -> str:
+        marker = 'src="'
+        pieces: list[str] = []
+        index = 0
+        while True:
+            found = markup.find(marker, index)
+            if found < 0:
+                pieces.append(markup[index:])
+                break
+            closing = markup.find('"', found + len(marker))
+            if closing < 0:
+                pieces.append(markup[index:])
+                break
+            url = markup[found + len(marker) : closing]
+            pieces.append(markup[index : found + len(marker)])
+            if url.lower().startswith(("http://", "https://")):
+                pieces.append(self._photo_key(url))
+            else:
+                pieces.append(url)
+            pieces.append('"')
+            index = closing + 1
+        return "".join(pieces)
+
+    def _remember_original(self, url: str, data: bytes) -> None:
+        """记着原图字节（只留最近几张）：点开看原图、存原图都靠它。"""
+        if not data:
+            return
+        self._originals[url] = data
+        while len(self._originals) > _ORIGINAL_CACHE:
+            self._originals.pop(next(iter(self._originals)))
+
+    def _image_at(self, pos: QtCore.QPoint) -> str:
+        """这一点落在哪张图上？返回资源名，不是图就返回空。"""
+        fmt = self.view.cursorForPosition(pos).charFormat()
+        if not fmt.isImageFormat():
+            return ""
+        return fmt.toImageFormat().name()
+
+    def _point_at_photo(self, pos: QtCore.QPoint) -> None:
+        """鼠标压在图上给个手型，告诉人这是能点开的。"""
+        if self._photo_at(pos):
+            self.view.viewport().setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        else:
+            self.view.viewport().unsetCursor()
+
+    def _photo_rect_at(self, pos: QtCore.QPoint, key: str) -> QtCore.QRect | None:
+        """这张图在视口里占的那块地方；鼠标不在图上就返回 None。
+
+        别用 `cursorForPosition` 的横坐标来回推：图片只占一个字符位，紧挨着图片右边的空白
+        也可能被算成「图片那个字」，而且返回的位置比图片右边还靠右，退一个图宽也退不回来。
+        横坐标改用所在行块的左边界（图片在正文里独家占一行、左对齐），纵坐标和高度用光标
+        矩形——这两个是准的。
+        """
+        pixmap = self._photos.get(self._photo_sources.get(key, ""))
+        if pixmap is None:
+            return None
+        cursor = self.view.cursorForPosition(pos)
+        line = self.view.cursorRect(cursor)
+        block = self.view.document().documentLayout().blockBoundingRect(cursor.block())
+        left = int(block.left() - self.view.horizontalScrollBar().value())
+        rect = QtCore.QRect(left, line.top(), pixmap.width(), line.height())
+        return rect if rect.contains(pos) else None
+
+    def _photo_at(self, pos: QtCore.QPoint) -> tuple[str, QtCore.QRect] | None:
+        """鼠标是不是真落在某张图上。
+
+        不能只看 `_image_at`：图片在文档里只占一个字符位，那个字符格式会往图片左右延伸，
+        紧挨着图片的空白也算「在图片上」。于是鼠标一出图，按钮就被重新摆到图外面去。
+        这里拿矩形再验一次，图画到哪儿就只认到哪儿。
+        """
+        key = self._image_at(pos)
+        if not key:
+            return None
+        rect = self._photo_rect_at(pos, key)
+        return (key, rect) if rect is not None else None
+
+    def _show_hover_download(self, key: str, rect: QtCore.QRect) -> None:
+        """图上悬停时右上角的下载按钮：点一下直接存原图，不用先打开看原图。"""
+        if self._hover_download is None:
+            self._hover_download = HoverActionButton(
+                self.view.viewport(),
+                "download",
+                "下载原图",
+                lambda: None,
+                flash=False,  # 存完不换成 ✓：存到哪个目录已经由对话框说过了
+            )
+            # 图片深浅不定，垫一层半透明底，压在浅色照片上也看得清
+            self._hover_download.setStyleSheet(
+                "QToolButton { border: none; border-radius: 6px;"
+                " background: rgba(16, 18, 24, 150); padding: 0; }"
+                "QToolButton:hover { background: rgba(16, 18, 24, 225); }"
+            )
+        self._hover_download.retarget(
+            "download", "下载原图", lambda k=key: self._download_photo(k)
+        )
+        self._hover_download.place_at(rect)
+        self._hover_download.show()
+
+    def _hide_download(self) -> None:
+        if self._hover_download is not None:
+            self._hover_download.hide()
+
+    def _download_photo(self, key: str) -> None:
+        """存这张图的原图。手上还有原图字节就直接问存哪儿，没有就先取回来。"""
+        url = self._photo_sources.get(key)
+        if not url:
+            return
+        data = self._originals.get(url)
+        if data:
+            save_photo_bytes(self.window(), data, _photo_name(url))
+            return
+        self._fetch_then_save(url)
+
+    def _fetch_then_save(self, url: str) -> None:
+        """原图字节早被松手了：取回来再问存哪儿。"""
+        try:
+            request = QtNetwork.QNetworkRequest(QtCore.QUrl(url))
+            request.setHeader(
+                QtNetwork.QNetworkRequest.KnownHeaders.UserAgentHeader, "Noesia Agent"
+            )
+            request.setTransferTimeout(15000)
+            reply = self._net.get(request)
+            reply.finished.connect(lambda: self._save_after_fetch(reply, url))
+        except Exception:
+            logger.warning("取原图失败：%s", url, exc_info=True)
+
+    def _save_after_fetch(self, reply, url: str) -> None:
+        try:
+            ok = reply.error() == QtNetwork.QNetworkReply.NetworkError.NoError
+            data = bytes(reply.readAll().data())
+            reply.deleteLater()
+            if not ok or not data:
+                return
+            self._remember_original(url, data)
+            save_photo_bytes(self.window(), data, _photo_name(url))
+        except Exception:
+            logger.warning("存原图出错：%s", url, exc_info=True)
+
+    def _open_photo(self, key: str) -> None:
+        """点图：开窗看原图。原图字节还在就直接给，松过手的先拿缩略图顶着、同时去取。"""
+        url = self._photo_sources.get(key)
+        if not url:
+            return  # 用户自己贴的附件走的是另一套，这里不管
+        dialog = PhotoView(_photo_name(url), self.window())
+        data = self._originals.get(url)
+        if data:
+            pixmap = QtGui.QPixmap()
+            if pixmap.loadFromData(data) and not pixmap.isNull():
+                dialog.set_photo(pixmap)
+                dialog.exec()
+                return
+        thumb = self._photos.get(url)
+        if thumb is not None:
+            dialog.set_photo(thumb, pending=True)
+        else:
+            dialog.set_waiting("正在取原图…")
+        self._refetch_original(url, dialog)
+        dialog.exec()
+
+    def _refetch_original(self, url: str, dialog: PhotoView) -> None:
+        """原图字节被松手了：单独再取一次，回来直接换到窗口上。"""
+        try:
+            request = QtNetwork.QNetworkRequest(QtCore.QUrl(url))
+            request.setHeader(
+                QtNetwork.QNetworkRequest.KnownHeaders.UserAgentHeader, "Noesia Agent"
+            )
+            request.setTransferTimeout(15000)
+            reply = self._net.get(request)
+            reply.finished.connect(lambda: self._original_arrived(reply, url, dialog))
+        except Exception:
+            logger.warning("原图没发出去：%s", url, exc_info=True)
+            dialog.set_failed("原图取不回来")
+
+    def _original_arrived(self, reply, url: str, dialog: PhotoView) -> None:
+        try:
+            ok = reply.error() == QtNetwork.QNetworkReply.NetworkError.NoError
+            data = bytes(reply.readAll().data())
+            reply.deleteLater()
+            pixmap = QtGui.QPixmap()
+            if not ok or not data or not pixmap.loadFromData(data) or pixmap.isNull():
+                dialog.set_failed("原图没加载出来")
+                return
+            self._remember_original(url, data)
+            dialog.set_photo(pixmap)
+        except Exception:
+            logger.warning("原图落地出错：%s", url, exc_info=True)
+
     def _insert_inline(self, markup: str) -> None:
         """行内片段：接在当前段里，不另起一段（普通句子不该每行一个大间距）。"""
         if not markup:
@@ -1757,7 +2118,7 @@ class ChatPanel(QtWidgets.QWidget):
             cursor.setCharFormat(QtGui.QTextCharFormat())
             cursor.setBlockFormat(_plain_block_format())
         self._para_break = False
-        cursor.insertHtml(_keep_edge_spaces(markup))
+        cursor.insertHtml(_keep_edge_spaces(self._adopt_images(markup)))
         self.view.setTextCursor(cursor)
         self._scroll_to_end()
 
@@ -2981,7 +3342,7 @@ class ChatPanel(QtWidgets.QWidget):
                 cursor.setCharFormat(QtGui.QTextCharFormat())
                 cursor.setBlockFormat(_plain_block_format())
         self._para_break = False
-        cursor.insertHtml(markup)
+        cursor.insertHtml(self._adopt_images(markup))
         if first_new is not None:
             # 段间距只由块格式给（5px），所以 Qt 新开的这几段也要设成普通段落
             block = document.findBlockByNumber(first_new)
@@ -3456,7 +3817,7 @@ class ChatPanel(QtWidgets.QWidget):
         if attachments:
             # 到这一刻才交给引擎：没点发送的附件既不会落盘、也不会被模型看见
             self.attachment_picked.emit(attachments)
-        self.submitted.emit(message)
+        self.submitted.emit(message, "typed")
 
     # ---- 语音输入 ----
 
@@ -3707,7 +4068,8 @@ class ChatPanel(QtWidgets.QWidget):
         # （停朗读、半条回答收尾、工具行标「已停止」、发 interrupt 全在里面）。
         self._stop_turn()
         self.append_user(text, [])
-        self.submitted.emit(text)
+        # 标成 voice：这一条是模型听出来的，可能有错字，不能拿去当学词的语料
+        self.submitted.emit(text, "voice")
 
     def voice_transcribe_failed(self, message: str, source_path: str = "") -> None:
         self._discard_voice_file(source_path)
@@ -4134,6 +4496,12 @@ class ChatPanel(QtWidgets.QWidget):
                 self._hide_expand()
             return
 
+        # 正文里的网络图片：右上角给个下载按钮，不必先点开看原图
+        hit = self._photo_at(pos)
+        if hit:
+            self._show_hover_download(*hit)
+            return
+
         self._hide_hover()
 
     def _block_at(self, pos: QtCore.QPoint) -> QtGui.QTextBlock | None:
@@ -4254,6 +4622,7 @@ class ChatPanel(QtWidgets.QWidget):
     def _hide_hover(self) -> None:
         self._hide_copy()
         self._hide_expand()
+        self._hide_download()
 
     def _copy_to_clipboard(self, text: str) -> None:
         QtWidgets.QApplication.clipboard().setText(text)
@@ -4278,9 +4647,26 @@ class ChatPanel(QtWidgets.QWidget):
         if obj is self.view.viewport():
             kind = event.type()
             if kind is QtCore.QEvent.Type.MouseMove:
-                self._hover_at(event.position().toPoint())
+                point = event.position().toPoint()
+                self._hover_at(point)
+                self._point_at_photo(point)
+            elif kind is QtCore.QEvent.Type.MouseButtonPress:
+                self._press_pos = event.position().toPoint()
+            elif kind is QtCore.QEvent.Type.MouseButtonRelease and (
+                event.button() is QtCore.Qt.LeftButton
+            ):
+                start = self._press_pos
+                point = event.position().toPoint()
+                # 拖过一段的是在选字，不是点图；按下没挪动才算「点这张图」
+                still = start is not None and (point - start).manhattanLength() <= 5
+                if still:
+                    hit = self._photo_at(point)
+                    if hit:
+                        # 松手这会儿还在处理事件，延到下一拍再开窗
+                        QtCore.QTimer.singleShot(0, lambda k=hit[0]: self._open_photo(k))
             elif kind in (QtCore.QEvent.Type.Leave, QtCore.QEvent.Type.Wheel):
                 self._hide_hover()
+                self.view.viewport().unsetCursor()
             return super().eventFilter(obj, event)
         if obj is getattr(self, "input", None):
             kind = event.type()
