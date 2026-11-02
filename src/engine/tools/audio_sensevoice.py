@@ -205,7 +205,28 @@ class _Engine:
             "language": np.array([0], dtype=np.int32),   # 0 = 自动判语种
             "textnorm": np.array([0], dtype=np.int32),   # 0 = 数字带标点
         })
-        return _decode(np, logits[0], int(lengths[0]), self.tokens)
+        # 有词表就走前缀搜索（把同音的错字按词表纠正回来），
+        # 没词表还走原来的贪心。词表出任何问题都退回贪心，绝不让识别失败。
+        try:
+            words = _vocab()
+        except Exception:  # noqa: BLE001
+            words = []
+        text = ""
+        decoded = False
+        if words:
+            try:
+                text = _decode_beam(np, logits[0], int(lengths[0]), self.tokens, words)
+                decoded = True
+            except Exception:  # noqa: BLE001
+                logger.warning("[语音] 词表解码失败，这一句退回普通解码", exc_info=True)
+        if not decoded:
+            text = _decode(np, logits[0], int(lengths[0]), self.tokens)
+        # 攒词表用的语料：和上面怎么解码无关，只用模型自己的把握程度挑可信片段
+        try:
+            _remember_speech(_learnable(np, logits[0], int(lengths[0]), self.tokens))
+        except Exception:  # noqa: BLE001
+            logger.debug("[语音] 这段语料没记上", exc_info=True)
+        return text
 
 
 def _read_cmvn(path: Path):
@@ -296,6 +317,208 @@ def _decode(np, logits, length: int, tokens: list[str]) -> str:
     text = "".join(pieces)
     text = _TAG.sub("", text)
     return text.replace("▁", " ").strip()
+
+
+# ---------------------------------------------------------------- 词表偏置
+
+# 词表由 app 侧算好写进 data/settings/voice_vocab.json，这里只读。
+# 内容是按用户自己打的字统计出来的专有名词；引擎不认识它们，
+# 但解码时给这些词的路径一点概率补偿，能把同音的错字拉回来。
+_VOCAB_BOOST = 1.6
+_BEAM_WIDTH = 8
+_BEAM_TOP_K = 12
+
+_vocab_lock = threading.Lock()
+_vocab_words: tuple[str, ...] = ()
+_vocab_stamp: float | None = None
+
+
+def _vocab_path() -> Path:
+    return model_dir().parent.parent / "settings" / "voice_vocab.json"
+
+
+def _vocab() -> list[str]:
+    """当前词表。按文件修改时间缓存：文件没动过就不重读。
+
+    文件不在、读不了、内容不对，一律当空表 —— 那就走原来的贪心解码，
+    识别照常出结果。词表出任何问题都不能让识别失败。
+    """
+    global _vocab_words, _vocab_stamp
+    path = _vocab_path()
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        with _vocab_lock:
+            _vocab_words, _vocab_stamp = (), None
+        return []
+    with _vocab_lock:
+        if stamp == _vocab_stamp:
+            return list(_vocab_words)
+    words: tuple[str, ...] = ()
+    read_ok = False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = payload.get("words") if isinstance(payload, dict) else None
+        if isinstance(raw, list):
+            words = tuple(w for w in raw if isinstance(w, str) and w)
+            read_ok = True
+    except (OSError, ValueError):
+        pass
+    with _vocab_lock:
+        # 只有读成功才把 stamp 记下：读失败（文件正好在换、权限、编码问题）
+        # 也记 stamp 的话，这个 mtime 就一直钉着空表，直到下次重算才恢复。
+        if read_ok:
+            _vocab_stamp = stamp
+        _vocab_words = words
+    return list(words)
+
+
+def _decode_beam(np, logits, length: int, tokens: list[str], vocab: list[str]) -> str:
+    """CTC 前缀搜索解码：保留多条候选，拼出词表词的路径概率乘一个奖励。
+
+    为什么要这么做：贪心每帧只看最大的那个，一旦在模糊音上选错就没法回头。
+    这里同时留着若干条路径，候选里出现词表词（或正在拼一个词）时给它加分，
+    于是「诺基亚」和「诺西亚」这种只差一个韵母的分叉，会按哪边是已知词来定。
+
+    没法做好的部分说清楚：如果模型把音听岔了（塞→载），奖励拉不回来 ——
+    那不是选字问题，是声学判断本身错了。
+    """
+    horizon = max(0, length)
+    if horizon == 0 or not vocab:
+        return _decode(np, logits, length, tokens)
+
+    log_boost = math.log(_VOCAB_BOOST)
+    max_word = max(len(w) for w in vocab)
+    # 词表和「每个词的所有 ≥2 字前缀」摊进集合：判定只看末尾几个字的每种后缀，
+    # 是 O(max_word) 次查表，而不是逐词比一遍字符串。
+    index: set[str] = set()
+    for word in vocab:
+        index.add(word)
+        for cut in range(2, len(word)):
+            index.add(word[:cut])
+
+    blank_ids = (0, 1, 2)
+    # 前缀 -> [全是空白的对数概率, 以非空白结尾的对数概率]
+    beams: dict[tuple[int, ...], list[float]] = {(): [0.0, -1e30]}
+    for frame_index in range(horizon):
+        frame = logits[frame_index]
+        # 只展开概率最高的若干个字：整张表两万多个 token，全展开没意义
+        top = np.argsort(frame)[-_BEAM_TOP_K:]
+        grown: dict[tuple[int, ...], list[float]] = {}
+
+        def bump(prefix: tuple[int, ...], slot: int, value: float) -> None:
+            cell = grown.setdefault(prefix, [-1e30, -1e30])
+            cell[slot] = float(np.logaddexp(cell[slot], value))
+
+        for prefix, (p_blank, p_non_blank) in beams.items():
+            reachable = float(np.logaddexp(p_blank, p_non_blank))
+            for raw in top:
+                token = int(raw)
+                step = float(frame[token])
+                if token in blank_ids:
+                    bump(prefix, 0, reachable + step)
+                    continue
+                if prefix and prefix[-1] == token:
+                    # 同一个字连着出：这一帧的概率仍归到同一条前缀（合并），状态是「非空白」
+                    bump(prefix, 1, p_non_blank + step)
+                    # 要真的变两个字，只能上一帧是空白——所以起点是 p_blank，不是合并后的总数。
+                    # 用总数会让「诺诺诺」解成「诺诺」，所有叠字都会多出一个。
+                    longer = prefix + (token,)
+                    bump(longer, 1, p_blank + step + _tail_boost(tokens, longer, index, max_word, log_boost))
+                else:
+                    longer = prefix + (token,)
+                    bump(longer, 1, reachable + step + _tail_boost(tokens, longer, index, max_word, log_boost))
+
+        ranked = sorted(
+            grown.items(),
+            key=lambda item: -float(np.logaddexp(item[1][0], item[1][1])),
+        )[:_BEAM_WIDTH]
+        beams = dict(ranked)
+
+    best = max(beams.items(), key=lambda item: float(np.logaddexp(item[1][0], item[1][1])))[0]
+    text = "".join(tokens[i] for i in best)
+    text = _TAG.sub("", text)
+    return text.replace("▁", " ").strip()
+
+
+def _tail_boost(tokens, prefix: tuple[int, ...], index: set[str], max_word: int, log_boost: float) -> float:
+    """这条候选末尾正好拼出一个词表词（或它的开头一段）时给的奖励，否则 0。"""
+    tail = "".join(tokens[i] for i in prefix[-max_word:]).replace("▁", "")
+    for size in range(min(max_word, len(tail)), 1, -1):
+        if tail[-size:] in index:
+            return log_boost
+    return 0.0
+
+
+# ---------------------------------------------------------------- 语音语料
+
+# 模型自己有多确信这一个字，低于这个值就算「拿不准」。
+# 实测：听错的那个字概率掉到 0.50~0.75，同一句其余字都在 0.94 以上。
+_CONFIDENT = 0.8
+
+# 至少要有一段连着两个字，才当得成语料（切开后的碎片不值得记）
+_WHOLE = re.compile(r"[\u4e00-\u9fff]{2,}|[A-Za-z]{2,}")
+
+
+def _learnable(np, logits, length: int, tokens: list[str]) -> str:
+    """按把握程度切开的识别文本，专给攒词表用。
+
+    拿不准的字前后断开：那个字很可能就是听错的，连着写下去会把错词学进词表。
+    断了以后，同一句里其余八九个字照常可用 —— 语音说话也能攒词表，不必靠打字。
+    宁可少学，不能学歪。
+    """
+    horizon = max(0, length)
+    if horizon == 0:
+        return ""
+    window = logits[:horizon]
+    peak = window.max(axis=1, keepdims=True)
+    prob = np.exp(window - peak)
+    prob /= prob.sum(axis=1, keepdims=True)
+    sure = prob.max(axis=1)
+    ids = window.argmax(axis=1)
+
+    merged: list[list] = []  # [这个字, 它覆盖的几帧里最确信的那一次]
+    previous = -1
+    for frame in range(horizon):
+        token = int(ids[frame])
+        if token in (0, 1, 2):
+            previous = token
+            continue
+        if token == previous and merged:
+            merged[-1][1] = max(merged[-1][1], float(sure[frame]))
+        else:
+            merged.append([tokens[token], float(sure[frame])])
+        previous = token
+
+    parts: list[str] = []
+    for piece, confidence in merged:
+        piece = _TAG.sub("", piece).replace("▁", " ")
+        if not piece:
+            continue
+        parts.append(piece if confidence >= _CONFIDENT else " ")
+    return " ".join("".join(parts).split())
+
+
+def _speech_corpus_path() -> Path:
+    return model_dir().parent.parent / "settings" / "speech_corpus.jsonl"
+
+
+def _remember_speech(text: str) -> None:
+    """把这次识别里可信的片段写进语音语料；app 那边攒够了会拿去算词表。
+
+    和打字的语料分开放：两个进程各写各的文件，不用抢同一个文件。
+    切开后只剩孤零零一两个字的（连不成词）直接丢掉，省得白占一条。
+    """
+    line = (text or "").strip()
+    if not _WHOLE.search(line):
+        return
+    path = _speech_corpus_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"t": line}, ensure_ascii=False) + "\n")
+    except OSError:
+        logger.debug("[语音] 这段语料没记上", exc_info=True)
 
 
 # ---------------------------------------------------------------- 对外

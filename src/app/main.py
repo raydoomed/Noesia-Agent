@@ -13,10 +13,10 @@ from __future__ import annotations
 import ctypes
 import json
 import logging
+import threading
 import time
 import math
 import sys
-import time
 from pathlib import Path
 
 from paths import project_root
@@ -306,6 +306,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         # 又能念了：下次再出问题要重新提醒（别被上次那条挡掉）
         self.speaker.started.connect(lambda _text: self._voice_ok())
         self._reply_text = ""  # 本轮回答的原文，on_complete 时整段丢给 Speaker
+        self._vocab_learning = False  # 后台正在重算识别词表：同一时刻只跑一个
         self._turn_stopped = False  # 这一轮被用户叫停：complete 到达时别再整段念
         self._voice_model_downloading = False  # 识别模型正在下：别因为再查一次又发一遍
         self._voice_model_tried = False  # 这一轮已经下过一次了：失败后别再反复拉 230 MB
@@ -769,7 +770,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """设置里可能改过语音，回到聊天窗把输入框旁那个开关同步过来。"""
         if self.chat_panel is None:
             return
-        from app import speech_prefs
 
         self.chat_panel.refresh_voice_state()
 
@@ -1251,7 +1251,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._approval_dialog = ApprovalDialog(ask, answer)
         self._approval_dialog.show_near(self.geometry())
 
-    def _send_user_text(self, message: str) -> None:
+    def _send_user_text(self, message: str, source: str = "typed") -> None:
         panel = self.chat_panel
         if panel is not None and getattr(panel, "pending_clarify", None) and panel.pending_clarify():
             # 她在等一个回答（没有选项那种问题）：这句话就是答案，不发出去当新一轮
@@ -1270,7 +1270,43 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         items, self._sending_attachments = self._sending_attachments, []
         logger.info("[附件] 这一轮带 %d 个附件", len(items))
         self._start_process_watch()
+        if source == "typed":
+            # 只有打字才算干净语料：语音识别出来的文字是模型听出来的，可能带错字。
+            # 记不上只是词表不更新，绝不能拦着这句话发出去。
+            try:
+                from app import voice_vocab
+
+                voice_vocab.remember(message)
+            except Exception:  # noqa: BLE001
+                logger.debug("[词表] 这条语料没记上", exc_info=True)
         self.client.submit_with_attachments(message, items)
+        self._maybe_learn_vocab()
+
+    def _maybe_learn_vocab(self) -> None:
+        """攒够新语料就在后台重算一次识别词表。
+
+        不够量时只读一个文件，几乎不花时间；真要算的时候要扫全部语料，
+        所以一律放后台线程，不占界面。起线程失败也只是词表不更新。
+        """
+        if self._vocab_learning:
+            return
+        try:
+            self._vocab_learning = True
+            threading.Thread(target=self._learn_vocab_worker, daemon=True).start()
+        except Exception:  # noqa: BLE001
+            self._vocab_learning = False
+            logger.debug("[词表] 起不了后台线程", exc_info=True)
+
+    def _learn_vocab_worker(self) -> None:
+        try:
+            from app import voice_vocab
+
+            voice_vocab.learn()
+        except Exception:  # noqa: BLE001
+            # 学不出来只是词表不更新，识别照常；不能因为这个给用户弹错误
+            logger.debug("[词表] 这次没算成", exc_info=True)
+        finally:
+            self._vocab_learning = False
 
     def _attach_picked(self, items: list) -> None:
         """点发送那一刻界面把附件交过来：先攒着，等 `_send_user_text` 把整轮交给引擎。"""
