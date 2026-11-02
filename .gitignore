@@ -42,6 +42,13 @@ logs/
 # 内核打包时才生成这个版本文件，工作区里不该有
 src/engine/noesia_cli/_version.py
 
+# 引擎自己写在本机 checkout 根上的状态：`.bytecode-fingerprint` 记「上次清 __pycache__
+# 时是哪个 ref」，变了就整片清掉（`main_web_build.py`）；`.noesia-bootstrap-complete`
+# 是 ZIP 安装装完留的戳。都是每台机器各一份、每次 pull 就变，引擎的更新逻辑
+# （`update_cmd_zip.py`）本来就把它们当已忽略文件处理。
+.bytecode-fingerprint
+.noesia-bootstrap-complete
+
 # 测试只在本机跑，不入库（守护测试里会出现被禁止的旧名字，公开仓库不该带上）
 # 只排项目根这一层：写成 tests/ 会把 src/engine/**/tests/ 也一起挡掉，
 # 而那是技能自带的测试文件，属于技能内容，必须跟着包走。
