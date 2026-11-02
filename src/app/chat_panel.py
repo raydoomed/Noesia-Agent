@@ -422,6 +422,10 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
         for x in (5.2, 7.8, 10.4, 13.0):
             painter.drawPoint(QtCore.QPointF(x, 8.2))
         painter.drawLine(QtCore.QPointF(7.0, 10.6), QtCore.QPointF(11.0, 10.6))
+    elif kind == "keycap":
+        # 一个键帽：表示「按住说话的键」，跟整把键盘那颗切换键区分开
+        painter.drawRoundedRect(QtCore.QRectF(3.2, 5.0, 11.6, 8.0), 2.2, 2.2)
+        painter.drawLine(QtCore.QPointF(7.2, 9.0), QtCore.QPointF(10.8, 9.0))
     else:  # spark：思考档位
         star = QtGui.QPainterPath()
         points = [(9.0, 2.4), (11.0, 7.0), (15.6, 9.0), (11.0, 11.0),
@@ -541,6 +545,235 @@ PROMPT_SNIPPETS = (
     ("解释这段", "讲解所选代码的工作方式，并链接到关键文件。",
      "请解释这是如何工作的，并指给我关键文件。"),
 )
+
+
+_PTT_DIALOG_QSS = """
+#pttcard {
+    background: #1a1d24;
+    border: 1px solid rgba(255, 255, 255, 20);
+    border-top: 1px solid rgba(255, 255, 255, 34);
+    border-radius: 14px;
+}
+#pttlabel {
+    color: #ffb877;
+    font-size: 12px;
+    font-weight: 600;
+}
+#pttclose {
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 95);
+    font-size: 16px;
+}
+#pttclose:hover { color: rgba(255, 255, 255, 225); }
+#pttcap {
+    color: #f4f7fc;
+    font-family: "Consolas", "Microsoft YaHei UI", "Microsoft YaHei";
+    font-weight: 600;
+}
+#pttcap[len="s"] { font-size: 28px; }
+#pttcap[len="m"] { font-size: 22px; }
+#pttcap[len="l"] { font-size: 17px; }
+#ptthr {
+    background: rgba(255, 255, 255, 18);
+    border: none;
+}
+#pttdesc {
+    color: rgba(255, 169, 77, 165);
+    font-size: 11px;
+}
+QPushButton {
+    color: rgba(255, 255, 255, 190);
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 32);
+    border-radius: 8px;
+    padding: 8px 18px;
+    font-size: 12px;
+}
+QPushButton:hover {
+    background: rgba(255, 255, 255, 16);
+    color: #ffffff;
+}
+QPushButton#primary {
+    background: #e9eef7;
+    border: 1px solid #e9eef7;
+    color: #14171d;
+    font-weight: 600;
+}
+QPushButton#primary:hover { background: #ffffff; }
+QPushButton#primary:disabled {
+    background: rgba(255, 255, 255, 10);
+    border: 1px solid rgba(255, 255, 255, 18);
+    color: rgba(255, 255, 255, 60);
+    font-weight: 400;
+}
+"""
+
+
+def _cap_size(text: str) -> str:
+    """键名档位：字越长字号越小，长的组合键才放得下不折行。"""
+    if len(text) <= 3:
+        return "s"
+    if len(text) <= 7:
+        return "m"
+    return "l"
+
+
+def _key_name(sequence: QtGui.QKeySequence | None) -> str:
+    """键名给人看：空格 / F2 / Ctrl+空格。"""
+    if sequence is None or sequence.count() != 1:
+        return "空格"
+    text = sequence.toString(QtGui.QKeySequence.NativeText)
+    if text in ("Space", ""):
+        return "空格"
+    return text.replace("Space", "空格")
+
+
+class _PttKeyDialog(QtWidgets.QDialog):
+    """改「按住说话的键」：窗口里按一下新键，确定后返回；Esc 不改。"""
+
+    def __init__(self, current: QtGui.QKeySequence | None, parent=None) -> None:
+        super().__init__(parent)
+        self._pending: QtGui.QKeySequence | None = None
+        self._drag_offset: QtCore.QPoint | None = None
+
+        # 跟审批卡片、引擎卡片同一套：无边框圆角、压在最上面、不进任务栏
+        self.setWindowFlags(
+            QtCore.Qt.Tool
+            | QtCore.Qt.FramelessWindowHint
+            | QtCore.Qt.WindowStaysOnTopHint
+        )
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)  # 圆角外不留一块方底
+        self.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
+        self.setStyleSheet(_PTT_DIALOG_QSS)
+
+        card = QtWidgets.QFrame(self)
+        card.setObjectName("pttcard")
+        lay = QtWidgets.QVBoxLayout(card)
+        lay.setContentsMargins(24, 20, 24, 18)
+        lay.setSpacing(0)
+
+        head = QtWidgets.QHBoxLayout()
+        head.setSpacing(8)
+        label = QtWidgets.QLabel("按住说话的键", card)
+        label.setObjectName("pttlabel")
+        head.addWidget(label)
+        head.addStretch(1)
+        close = QtWidgets.QToolButton(card)
+        close.setObjectName("pttclose")
+        close.setText("×")
+        close.setCursor(QtCore.Qt.PointingHandCursor)
+        close.setFixedSize(20, 20)
+        close.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        close.clicked.connect(self.reject)
+        head.addWidget(close)
+        lay.addLayout(head)
+        lay.addSpacing(12)
+
+        # 键名的字本身就是焦点，不再套框套底
+        self._cap = QtWidgets.QLabel(card)
+        self._cap.setObjectName("pttcap")
+        self._cap.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self._cap.setMinimumHeight(42)
+        lay.addWidget(self._cap)
+        self._set_cap(_key_name(current))
+        lay.addSpacing(6)
+
+        desc = QtWidgets.QLabel("按一下想用的键，回车确定", card)
+        desc.setObjectName("pttdesc")
+        lay.addWidget(desc)
+        lay.addSpacing(18)
+
+        hr = QtWidgets.QWidget(card)
+        hr.setObjectName("ptthr")
+        hr.setFixedHeight(1)
+        lay.addWidget(hr)
+        lay.addSpacing(14)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
+        cancel = QtWidgets.QPushButton("取消", card)
+        cancel.setCursor(QtCore.Qt.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        self._ok = QtWidgets.QPushButton("确定", card)
+        self._ok.setObjectName("primary")
+        self._ok.setCursor(QtCore.Qt.PointingHandCursor)
+        self._ok.setEnabled(False)
+        self._ok.clicked.connect(self.accept)
+        row.addWidget(self._ok)
+        lay.addLayout(row)
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(card)
+
+        self.adjustSize()
+        self.setFixedWidth(340)
+
+        # 按钮不吃焦点：空格、回车都要落回弹窗自己身上，不然按空格等于点「取消」
+        cancel.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self._ok.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.setFocus()   # 一打开就能直接按键
+
+    # 无边框卡片得自己处理拖动，不然挡住内容也挪不开；按钮会吃掉自己的按下事件
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if event.button() == QtCore.Qt.LeftButton:
+            self._drag_offset = (
+                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            )
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        self._drag_offset = None
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
+        key = event.key()
+        if key == QtCore.Qt.Key_Escape:
+            self.reject()
+            return
+        if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+            # 回车留给「确定」：它不能当按住说话的键
+            if self._pending is not None:
+                self.accept()
+            return
+        if key in (
+            QtCore.Qt.Key_Shift,
+            QtCore.Qt.Key_Control,
+            QtCore.Qt.Key_Alt,
+            QtCore.Qt.Key_Meta,
+        ):
+            return   # 光按修饰键不算，等真正的键
+        if event.isAutoRepeat():
+            return
+        sequence = QtGui.QKeySequence(event.keyCombination())
+        if not sequence.toString(QtGui.QKeySequence.PortableText):
+            return   # 这个键翻不成名字，当没按
+        self._pending = sequence
+        self._set_cap(_key_name(sequence))   # 字变了就是反馈，不再加发光边
+        self._ok.setEnabled(True)
+
+    def _set_cap(self, text: str) -> None:
+        """换键名并按长短选字号档位，长的组合键不折行。"""
+        self._cap.setText(text)
+        self._cap.setProperty("len", _cap_size(text))
+        self._cap.style().unpolish(self._cap)
+        self._cap.style().polish(self._cap)
+
+    def sequence(self) -> QtGui.QKeySequence | None:
+        """确认下来的键；没选就是 None。"""
+        return self._pending
 
 
 class ChatPanel(QtWidgets.QWidget):
@@ -2907,6 +3140,17 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_prefs = None
         self._voice_draft_focus = False
         self._audio_released = False
+        # 「按住说话的键」：单独一颗键帽外形的按钮，点开在弹窗里改；外形不随键名变
+        self._ptt_button = QtWidgets.QToolButton(self._inputbox)
+        self._ptt_button.setObjectName("icon")
+        self._ptt_button.setIcon(_glyph_icon("keycap"))
+        self._ptt_button.setIconSize(QtCore.QSize(14, 14))
+        self._ptt_button.setFixedSize(22, 22)
+        self._ptt_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._ptt_button.setFocusPolicy(QtCore.Qt.NoFocus)
+        self._ptt_button.clicked.connect(self._ask_ptt_key)
+        self._ptt_button.hide()
+        self._refresh_ptt_button()
         try:
             from app import voice_input_prefs
 
@@ -2945,8 +3189,16 @@ class ChatPanel(QtWidgets.QWidget):
             self._set_inputbox_voice(True)
             self._voice_orb.show()
             self._float_mode_button(True)
+            # 空格要留给「按住说话」：面板自己拿着焦点，右上那颗按钮不许吃空格
+            self._mic_button.setFocusPolicy(QtCore.Qt.NoFocus)
+            # 点聊天记录会把焦点抢走、空格变成翻页：语音模式下让它不吃焦点
+            self.view.setFocusPolicy(QtCore.Qt.NoFocus)
+            self.setFocus()
             self._mic_button.setIcon(_glyph_icon("keyboard", "#ffffff"))
-            self._mic_button.setToolTip("语音已开：按住球说话，松手就发（点一下回到打字，右键换麦克风）")
+            self._mic_button.setToolTip(
+                f"语音已开：按住球或 {self._ptt_label()} 说话，松手就发"
+                "（点一下回到打字，右键换麦克风）"
+            )
             try:
                 self._recorder.open_stream()
             except Exception as exc:  # noqa: BLE001 - 开流崩了别让整条输入区跟着塌
@@ -2964,6 +3216,8 @@ class ChatPanel(QtWidgets.QWidget):
             self._box_row.setContentsMargins(9, 0, 4, 0)
             self._set_inputbox_voice(False)
             self._float_mode_button(False)
+            self._mic_button.setFocusPolicy(QtCore.Qt.StrongFocus)
+            self.view.setFocusPolicy(QtCore.Qt.StrongFocus)
             self.input.show()
             # 藏起来的时候量不到宽度，显示之后重新按当前宽度算行数
             QtCore.QTimer.singleShot(0, self._fit_input_height)
@@ -2982,19 +3236,27 @@ class ChatPanel(QtWidgets.QWidget):
         if floating:
             self._box_row.removeWidget(button)
             button.setParent(self._inputbox)
-            self._place_mode_button()
             button.show()
+            self._ptt_button.show()
+            self._place_mode_button()
             self._inputbox.installEventFilter(self)
             return
+        self._ptt_button.hide()
         self._inputbox.removeEventFilter(self)
         button.setParent(self._inputbox)
         self._box_row.addWidget(button)
         button.show()
 
     def _place_mode_button(self) -> None:
-        """贴着输入框右上角摆，留 6px 内边距。"""
+        """贴着输入框右上角摆，留 6px 内边距；「按住说话的键」键帽排在它下面。"""
         button = self._mic_button
         button.move(max(0, self._inputbox.width() - button.width() - 6), 6)
+        ptt = getattr(self, "_ptt_button", None)
+        if ptt is not None:
+            ptt.move(
+                max(0, self._inputbox.width() - ptt.width() - 6),
+                6 + button.height() + 4,
+            )
 
     def _set_inputbox_voice(self, on: bool) -> None:
         """切输入条的样子：语音模式下它只是球的托盘，不要框也不要底色。"""
@@ -3127,6 +3389,70 @@ class ChatPanel(QtWidgets.QWidget):
             Path(path).unlink(missing_ok=True)
         except OSError:
             logger.debug("[语音] 删不掉临时录音 %s", path, exc_info=True)
+
+    # ---------------------------------------------------------- 按住说话的键
+
+    def _ptt_sequence(self) -> QtGui.QKeySequence:
+        """按住说话用的键；没配过或配坏了就当空格。"""
+        stored = ""
+        if self._voice_prefs is not None:
+            try:
+                stored = self._voice_prefs.hotkey()
+            except Exception:  # noqa: BLE001 - 配置读坏了也得能按住说话
+                stored = ""
+        if stored:
+            sequence = QtGui.QKeySequence(stored)
+            # Qt 拿到不认识的字符串不报错，只是转回来是空的：这种当没配过
+            if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.PortableText):
+                return sequence
+        return QtGui.QKeySequence(QtCore.Qt.Key_Space)
+
+    def _ptt_label(self) -> str:
+        """给人看的键名：空格 / F2 / Ctrl+空格。"""
+        return _key_name(self._ptt_sequence())
+
+    def _refresh_ptt_button(self) -> None:
+        """外形永远是那颗键盘图标，只换提示文字。"""
+        button = getattr(self, "_ptt_button", None)
+        if button is None:
+            return
+        button.setToolTip(f"按住说话的键：{self._ptt_label()}（点一下改）")
+
+    def _ptt_matches(self, event) -> bool:
+        """这个按键算不算按住说话那个键：键本身和修饰键都要对上。"""
+        sequence = self._ptt_sequence()
+        if sequence.count() != 1:
+            return False
+        expected = sequence[0]
+        actual = event.keyCombination()
+        return (
+            expected.key() == actual.key()
+            and expected.keyboardModifiers() == actual.keyboardModifiers()
+        )
+
+    def _ask_ptt_key(self) -> None:
+        """改按住说话的键：弹个小窗，在里面按一下新键。"""
+        dialog = _PttKeyDialog(self._ptt_sequence(), self.window())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        sequence = dialog.sequence()
+        if sequence is None:
+            return
+        portable = sequence.toString(QtGui.QKeySequence.PortableText)
+        if not portable:
+            return
+        if self._voice_prefs is not None:
+            try:
+                # 存 PortableText：换系统语言也认得回来；空格存空串跟默认值同写法
+                self._voice_prefs.remember_hotkey("" if portable == "Space" else portable)
+            except OSError as exc:
+                logger.warning("[语音] 记不住快捷键：%s", exc)
+        self._refresh_ptt_button()
+        self._mic_button.setToolTip(
+            f"语音已开：按住球或 {self._ptt_label()} 说话，松手就发"
+            "（点一下回到打字，右键换麦克风）"
+        )
+        self.show_notice("voice-input", f"按住「{self._ptt_label()}」说话", ttl_ms=3000)
 
     def _show_mic_menu(self, pos: QtCore.QPoint) -> None:
         """右键：把所有能录的设备列出来，勾上当前那只。"""
@@ -3605,7 +3931,23 @@ class ChatPanel(QtWidgets.QWidget):
         super().hideEvent(event)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
+        if self._voice_mode_on and self._ptt_matches(event):
+            event.accept()
+            if event.isAutoRepeat():
+                return
+            if self._voice_orb.state() != STATE_RECORDING:
+                self._voice_hold_start()
+            return
         if event.key() == QtCore.Qt.Key_Escape:
             self.hide()  # 只收起，进程和对话都留着
             return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
+        if self._voice_mode_on and self._ptt_matches(event):
+            event.accept()
+            if event.isAutoRepeat():
+                return
+            self._voice_hold_end()
+            return
+        super().keyReleaseEvent(event)

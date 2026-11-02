@@ -1,9 +1,10 @@
-"""语音输入记住用哪只麦克风。
+"""语音输入记住用哪只麦克风、用哪个键按住说话。
 
-只存一个键：设备 GUID。**不存设备名**——名字会随系统语言变、用户能改，GUID 不会；
+设备只存 GUID、**不存设备名**——名字会随系统语言变、用户能改，GUID 不会；
 蓝牙重连、换 USB 口之后名字可能跟着变，GUID 是端点的身份证。
 
-文件 `data/settings/voice_input.json`，首次运行写全模板。空串表示「跟随系统默认」。
+文件 `data/settings/voice_input.json`，首次运行写全模板。
+`device` 空串表示「跟随系统默认」，`hotkey` 空串表示空格。
 """
 
 from __future__ import annotations
@@ -18,6 +19,8 @@ PREFS_PATH = "data/settings/voice_input.json"
 _TEMPLATE: dict = {
     # 空 = 跟随系统默认录音设备；否则是 WASAPI 端点 GUID
     "device": "",
+    # 按住说话用的键，Qt 写法（"Space" / "Ctrl+Space" / "F2"）；空 = 空格
+    "hotkey": "",
 }
 
 _REQUIRED = ("device",)
@@ -59,6 +62,24 @@ def remember(guid: str) -> None:
     """记住这次用的麦克风。传空串 = 恢复跟随系统默认。"""
     data = load()
     data["device"] = (guid or "").strip()
+    target = path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def hotkey() -> str:
+    """按住说话用的键，Qt 写法；空串 = 空格。"""
+    try:
+        return str(load().get("hotkey") or "").strip()
+    except ConfigError:
+        # 配置坏了不该让键按不动：当作没改过，回落到空格
+        return ""
+
+
+def remember_hotkey(sequence: str) -> None:
+    """记住按住说话的键。传空串 = 恢复空格。"""
+    data = load()
+    data["hotkey"] = (sequence or "").strip()
     target = path()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
