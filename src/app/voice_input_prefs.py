@@ -19,8 +19,10 @@ PREFS_PATH = "data/settings/voice_input.json"
 _TEMPLATE: dict = {
     # 空 = 跟随系统默认录音设备；否则是 WASAPI 端点 GUID
     "device": "",
-    # 按住说话用的键，Qt 写法（"Space" / "Ctrl+Space" / "F2"）；空 = 空格
+    # 窗口内按住说话用的键，Qt 写法（"Space" / "Ctrl+Space" / "F2"）；空 = 空格
     "hotkey": "",
+    # 系统级（窗口在后台也生效）按住说话用的键；空 = Shift+Space
+    "global_hotkey": "",
 }
 
 _REQUIRED = ("device",)
@@ -80,6 +82,24 @@ def remember_hotkey(sequence: str) -> None:
     """记住按住说话的键。传空串 = 恢复空格。"""
     data = load()
     data["hotkey"] = (sequence or "").strip()
+    target = path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def global_hotkey() -> str:
+    """系统级按住说话的键，Qt 写法；空串 = Shift+Space。"""
+    try:
+        return str(load().get("global_hotkey") or "").strip()
+    except ConfigError:
+        # 配置坏了不该让快捷键失效：当作没改过
+        return ""
+
+
+def remember_global_hotkey(sequence: str) -> None:
+    """记住系统级的键。传空串 = 恢复 Shift+Space。"""
+    data = load()
+    data["global_hotkey"] = (sequence or "").strip()
     target = path()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")

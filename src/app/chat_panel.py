@@ -10,13 +10,22 @@ import json
 
 import html
 import re
+import ctypes
 import logging
 import time
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from app import audio_devices, disclosure, file_preview, markdown_render, media_links
+from app import (
+    audio_devices,
+    disclosure,
+    file_preview,
+    global_hotkey,
+    markdown_render,
+    media_links,
+    voice_input_prefs,
+)
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton
 from app.speech_bar import SpeechBar
 from app.status_stack import StatusStack
@@ -607,12 +616,34 @@ _PTT_DIALOG_QSS = """
 #pttcap[len="s"] { font-size: 28px; }
 #pttcap[len="m"] { font-size: 22px; }
 #pttcap[len="l"] { font-size: 17px; }
+/* 两条键槽并排看，字号必须一样大；按长度缩是给单行大字用的 */
+#pttrow #pttcap { font-size: 19px; }
 #ptthr {
     background: rgba(255, 255, 255, 18);
     border: none;
 }
 #pttdesc {
     color: rgba(255, 169, 77, 165);
+    font-size: 11px;
+}
+#pttrow {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 9px;
+}
+#pttrow[act="1"] {
+    background: rgba(255, 255, 255, 10);
+    border: 1px solid rgba(255, 255, 255, 26);
+}
+#pttrowname {
+    color: rgba(255, 255, 255, 105);
+    font-size: 12px;
+}
+#pttrow[act="1"] #pttrowname {
+    color: rgba(255, 255, 255, 165);
+}
+#pttwarn {
+    color: #ff7b72;
     font-size: 11px;
 }
 QPushButton {
@@ -653,22 +684,171 @@ def _cap_size(text: str) -> str:
 
 
 def _key_name(sequence: QtGui.QKeySequence | None) -> str:
-    """键名给人看：空格 / F2 / Ctrl+空格。"""
+    """键名给人看：空格 / F2 / Ctrl+空格 / Win+空格。"""
     if sequence is None or sequence.count() != 1:
         return "空格"
     text = sequence.toString(QtGui.QKeySequence.NativeText)
     if text in ("Space", ""):
         return "空格"
-    return text.replace("Space", "空格")
+    # Qt 管 Windows 键叫 Meta，中文界面上没人认得这个称呼
+    return text.replace("Meta", "Win").replace("Space", "空格")
+
+
+def _to_native(sequence: QtGui.QKeySequence) -> tuple[int, int] | None:
+    """Qt 的键序列 → (修饰位, 虚拟键码)。钩子只认这两个。"""
+    if sequence.count() != 1:
+        return None
+    combo = sequence[0]
+    mods = 0
+    flags = combo.keyboardModifiers()
+    if flags & QtCore.Qt.KeyboardModifier.ShiftModifier:
+        mods |= global_hotkey.MOD_SHIFT
+    if flags & QtCore.Qt.KeyboardModifier.ControlModifier:
+        mods |= global_hotkey.MOD_CONTROL
+    if flags & QtCore.Qt.KeyboardModifier.AltModifier:
+        mods |= global_hotkey.MOD_ALT
+    if flags & QtCore.Qt.KeyboardModifier.MetaModifier:
+        mods |= global_hotkey.MOD_WIN
+    name = QtCore.Qt.Key(combo.key()).name[4:]     # "Key_Slash" -> "Slash"
+    # 小键盘是另一套键码，先认掉
+    if flags & QtCore.Qt.KeyboardModifier.KeypadModifier:
+        return (mods, 0x60 + ord(name) - 0x30) if name in "0123456789" else None
+    vk = _qt_key_to_vk(name)
+    return (mods, vk) if vk is not None else None
+
+
+# Qt 的键值只在字母、数字、空格这几段恰好等于 Win32 虚拟键码。标点、
+# 方向键、Delete 全都不同号：硬套会把 Ctrl+/ 当成 VK_HELP(47)、Ctrl+. 当成
+# VK_DELETE(46)，按下去没反应还顺手把 Ctrl+Delete 吞掉。下面是固定对应关系。
+_OEM_KEYS = {
+    "Semicolon": 0xBA, "Equal": 0xBB, "Comma": 0xBC, "Minus": 0xBD,
+    "Period": 0xBE, "Slash": 0xBF, "QuoteLeft": 0xC0,
+    "BracketLeft": 0xDB, "Backslash": 0xDC, "BracketRight": 0xDD,
+    "Apostrophe": 0xDE,
+}
+_NAMED_KEYS = {
+    "Escape": 0x1B, "Tab": 0x09, "Backspace": 0x08, "Return": 0x0D,
+    "Insert": 0x2D, "Delete": 0x2E, "Home": 0x24, "End": 0x23,
+    "PageUp": 0x21, "PageDown": 0x22,
+    "Left": 0x25, "Up": 0x26, "Right": 0x27, "Down": 0x28,
+    "CapsLock": 0x14, "NumLock": 0x90, "ScrollLock": 0x91,
+    "Print": 0x2C, "Pause": 0x13,
+}
+_VK_TO_QT_NAME = {vk: name for name, vk in {**_OEM_KEYS, **_NAMED_KEYS}.items()}
+_VK_TO_QT_NAME[0x0D] = "Return"   # Enter 和 Return 同码，取常用的那个名
+
+
+# 修饰键在系统里成对出现（左右键码不同），任一按着就算这个修饰键按着
+# 一次按住最多这么久。正常人一口气说话到不了两分钟；到了还没收尾就是松开事件丢了，
+# 这是不依赖键态、不依赖事件的最后一道出口，保证话筒不会一直开着。
+_HOLD_MAX_SECONDS = 120.0
+
+_MOD_KEY_CODES = (
+    (QtCore.Qt.KeyboardModifier.ShiftModifier, (0x10, 0xA0, 0xA1)),
+    (QtCore.Qt.KeyboardModifier.ControlModifier, (0x11, 0xA2, 0xA3)),
+    (QtCore.Qt.KeyboardModifier.AltModifier, (0x12, 0xA4, 0xA5)),
+    (QtCore.Qt.KeyboardModifier.MetaModifier, (0x5B, 0x5C)),
+)
+
+
+def _sequence_down(sequence: QtGui.QKeySequence) -> bool:
+    """这个组合现在是不是完整按着——直接问系统键态。
+
+    按住说话不能靠事件推：keyup 会被系统截走（Ctrl+空格 是输入法切换）、
+    切窗口时收不到、安全桌面期间整组丢失。键态不会骗人。
+    """
+    if sequence.count() != 1:
+        return False
+    native = _to_native(sequence)
+    if native is None:
+        return False
+    mods, vk = native
+    user32 = ctypes.windll.user32
+    if not user32.GetAsyncKeyState(vk) & 0x8000:
+        return False
+    for bit, codes in _MOD_KEY_CODES:
+        if mods & int(bit) and not any(user32.GetAsyncKeyState(c) & 0x8000 for c in codes):
+            return False
+    return True
+
+
+def _qt_key_to_vk(name: str) -> int | None:
+    """Qt 键名 → 虚拟键码。翻不出来就是 None，不猜。"""
+    if name in _OEM_KEYS:
+        return _OEM_KEYS[name]
+    if name in _NAMED_KEYS:
+        return _NAMED_KEYS[name]
+    if len(name) == 1 and ("A" <= name <= "Z" or "0" <= name <= "9"):
+        return ord(name)
+    if name == "Space":
+        return 0x20
+    if name.startswith("F") and name[1:].isdigit() and 1 <= int(name[1:]) <= 24:
+        return 0x70 + int(name[1:]) - 1
+    return None
+
+
+def _vk_to_qt_key(vk: int) -> QtCore.Qt.Key | None:
+    """虚拟键码 → Qt 键。翻不出来就是 None。"""
+    name = _VK_TO_QT_NAME.get(vk)
+    if name is not None:
+        return QtCore.Qt.Key["Key_" + name]
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return QtCore.Qt.Key(vk)
+    if vk == 0x20:
+        return QtCore.Qt.Key.Key_Space
+    if 0x70 <= vk <= 0x87:
+        return QtCore.Qt.Key(int(QtCore.Qt.Key.Key_F1) + (vk - 0x70))
+    return None
+
+
+def _from_native(mods: int, vk: int) -> QtGui.QKeySequence | None:
+    """钩子给的 (修饰位, 虚拟键码) → Qt 键序列。改键靠钩子收键，收到的得转回来。"""
+    if not vk:
+        return None
+    modifier = QtCore.Qt.KeyboardModifier.NoModifier
+    if mods & global_hotkey.MOD_SHIFT:
+        modifier |= QtCore.Qt.KeyboardModifier.ShiftModifier
+    if mods & global_hotkey.MOD_CONTROL:
+        modifier |= QtCore.Qt.KeyboardModifier.ControlModifier
+    if mods & global_hotkey.MOD_ALT:
+        modifier |= QtCore.Qt.KeyboardModifier.AltModifier
+    if mods & global_hotkey.MOD_WIN:
+        modifier |= QtCore.Qt.KeyboardModifier.MetaModifier
+    if 0x60 <= vk <= 0x69:                       # 小键盘 0-9
+        modifier |= QtCore.Qt.KeyboardModifier.KeypadModifier
+        key = QtCore.Qt.Key(int(QtCore.Qt.Key.Key_0) + (vk - 0x60))
+    else:
+        key = _vk_to_qt_key(vk)
+        if key is None:
+            return None
+    return QtGui.QKeySequence(QtCore.QKeyCombination(modifier, key))
 
 
 class _PttKeyDialog(QtWidgets.QDialog):
-    """改「按住说话的键」：窗口里按一下新键，确定后返回；Esc 不改。"""
+    """改「按住说话的键」：窗口内和系统级各一条，点哪条改哪条，Esc 不改。"""
 
-    def __init__(self, current: QtGui.QKeySequence | None, parent=None) -> None:
+    def __init__(
+        self,
+        window_current: QtGui.QKeySequence | None,
+        global_current: QtGui.QKeySequence | None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
-        self._pending: QtGui.QKeySequence | None = None
+        # 改之前的原样留着：没动的那些要原封不动带回去
+        self._before: dict[str, QtGui.QKeySequence | None] = {
+            "window": window_current,
+            "global": global_current,
+        }
+        self._pending: dict[str, QtGui.QKeySequence | None] = dict(self._before)
+        self._target = "window"
         self._drag_offset: QtCore.QPoint | None = None
+        self._caps: dict[str, QtWidgets.QLabel] = {}
+        self._rows: dict[str, QtWidgets.QFrame] = {}
+
+        # 改键必须靠低层钩子收键：Win+空格、Alt+Tab 这类系统保留组合会被系统
+        # 直接接走，Qt 的 keyPressEvent 根本不来，只靠窗口事件等于没反应
+        self._capture = global_hotkey.GlobalHotkey(self)
+        self._capture.captured.connect(self._on_captured)
 
         # 跟审批卡片、引擎卡片同一套：无边框圆角、压在最上面、不进任务栏
         self.setWindowFlags(
@@ -701,27 +881,24 @@ class _PttKeyDialog(QtWidgets.QDialog):
         close.clicked.connect(self.reject)
         head.addWidget(close)
         lay.addLayout(head)
-        lay.addSpacing(12)
+        lay.addSpacing(10)
 
-        # 键名的字本身就是焦点，不再套框套底
-        self._cap = QtWidgets.QLabel(card)
-        self._cap.setObjectName("pttcap")
-        self._cap.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        self._cap.setMinimumHeight(42)
-        lay.addWidget(self._cap)
-        self._set_cap(_key_name(current))
-        lay.addSpacing(6)
+        # 两条键槽：点哪条，接下来按的键就记给哪条
+        lay.addWidget(self._make_row(card, "window", "窗口内"))
+        lay.addSpacing(4)
+        lay.addWidget(self._make_row(card, "global", "系统级"))
+        lay.addSpacing(10)
 
-        desc = QtWidgets.QLabel("按一下想用的键，回车确定", card)
-        desc.setObjectName("pttdesc")
-        lay.addWidget(desc)
-        lay.addSpacing(18)
+        self._desc = QtWidgets.QLabel("按一下想用的键，回车确定", card)
+        self._desc.setObjectName("pttdesc")
+        lay.addWidget(self._desc)
+        lay.addSpacing(14)
 
         hr = QtWidgets.QWidget(card)
         hr.setObjectName("ptthr")
         hr.setFixedHeight(1)
         lay.addWidget(hr)
-        lay.addSpacing(14)
+        lay.addSpacing(12)
 
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(8)
@@ -733,7 +910,6 @@ class _PttKeyDialog(QtWidgets.QDialog):
         self._ok = QtWidgets.QPushButton("确定", card)
         self._ok.setObjectName("primary")
         self._ok.setCursor(QtCore.Qt.PointingHandCursor)
-        self._ok.setEnabled(False)
         self._ok.clicked.connect(self.accept)
         row.addWidget(self._ok)
         lay.addLayout(row)
@@ -750,9 +926,132 @@ class _PttKeyDialog(QtWidgets.QDialog):
         self._ok.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
 
+        self._set_target("window")
+
+    def _make_row(self, card: QtWidgets.QWidget, key: str, name: str) -> QtWidgets.QFrame:
+        """一条键槽：左边是哪里的键，右边是键名。整条可点。"""
+        frame = QtWidgets.QFrame(card)
+        frame.setObjectName("pttrow")
+        frame.setCursor(QtCore.Qt.PointingHandCursor)
+        line = QtWidgets.QHBoxLayout(frame)
+        line.setContentsMargins(10, 4, 10, 4)
+        line.setSpacing(12)
+
+        tag = QtWidgets.QLabel(name, frame)
+        tag.setObjectName("pttrowname")
+        tag.setMinimumWidth(52)
+        line.addWidget(tag)
+
+        cap = QtWidgets.QLabel(card)
+        cap.setObjectName("pttcap")
+        cap.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        cap.setFixedHeight(26)
+        line.addWidget(cap, 1)
+
+        self._caps[key] = cap
+        self._rows[key] = frame
+        self._paint_cap(key)
+        frame.mousePressEvent = lambda _e, k=key: self._set_target(k)  # noqa: ARG005
+        return frame
+
+    def _paint_cap(self, key: str) -> None:
+        """换键名并按长短选字号档位，长的组合键不折行。"""
+        cap = self._caps[key]
+        text = _key_name(self._pending[key])
+        cap.setText(text)
+        cap.setProperty("len", _cap_size(text))
+        cap.style().unpolish(cap)
+        cap.style().polish(cap)
+
+    def _set_target(self, key: str) -> None:
+        """切到哪一条：名片上高亮它，按键记给它。"""
+        self._target = key
+        for name, frame in self._rows.items():
+            frame.setProperty("act", "1" if name == key else "0")
+            frame.style().unpolish(frame)
+            frame.style().polish(frame)
+        self._refresh()
+
+    def _conflict(self) -> tuple[str, str]:
+        """系统级这条的真实占用：向系统注册一次，系统怎么回就怎么显示。
+
+        窗口内不查占用——它只在窗口有焦点时生效，不跟任何程序抢同一个键。
+        """
+        window = self._pending["window"]
+        globe = self._pending["global"]
+
+        # 两条设成同一个键：按下去分不清该走哪个，这是真冲突不是规则
+        if window is not None and globe is not None and window == globe:
+            return "block", "两条键不能一样，按下去分不清是哪一个"
+
+        native = _to_native(globe) if globe is not None else None
+        if native is None:
+            # 转成虚拟键码这一步失败的键（界面上的名字翻不出键码）装不上钩子，
+            # 这里不拦就会存进去，然后系统级按住说话静默失效
+            return "block", "这个键当系统级用不了，换成字母、数字、F 键或标点"
+        mods, vk = native
+        if mods == 0:
+            # 这是钩子的物理限制，不是规则：不带修饰键就分不清「要说话」和「在打字」
+            return "block", "系统级的键必须带修饰键（Ctrl / Alt / Shift / Win），不然分不清是在打字还是要说话"
+        ok, why = global_hotkey.probe(mods, vk)
+        if ok:
+            return "", ""
+        # 被占用就别存：存下去会把那个程序的快捷键抢掉，这是坏行为不是本事
+        return "block", why
+
+    def _refresh(self) -> None:
+        """确定键能不能按、下面那行提示说什么。"""
+        level, warn = self._conflict()
+        changed = self._pending != self._before
+        self._ok.setEnabled(changed and level != "block")
+        if warn:
+            # 冲突优先说：哪怕这次一个字没改，当前这个键也用不了
+            self._desc.setText(warn)
+            self._desc.setStyleSheet("color: #ff7b72;")
+        elif not changed:
+            self._desc.setText("按一下想用的键，回车确定")
+            self._desc.setStyleSheet("")
+        else:
+            self._desc.setText("回车确定，现在按的是「%s」" % _key_name(self._pending[self._target]))
+            self._desc.setStyleSheet("")
+
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
         self.setFocus()   # 一打开就能直接按键
+        # 改键期间把系统级的钩子停了：不然按一下 Shift+空格 当场就开始录音
+        panel = self.parent()
+        running = getattr(panel, "_global_ptt", None)
+        if running is not None:
+            running.stop()
+        self._capture.start_capture()
+
+    def done(self, result: int) -> None:
+        """改键结束（确定、取消、Esc、点外面关掉都走这里）先卸钩子。"""
+        self._capture.stop_capture()
+        super().done(result)
+        # 语音模式还开着就把系统级键按新配置重新装上
+        panel = self.parent()
+        if getattr(panel, "_voice_mode_on", False):
+            apply = getattr(panel, "_apply_global_ptt", None)
+            if apply is not None:
+                apply()
+
+    def _on_captured(self, mods: int, vk: int) -> None:
+        """钩子收到一个键：跟窗口事件走同一套——填进当前那行，再看冲不冲突。"""
+        # 弹窗还开着但人已经切到别的程序去了：那边按的键不算，不然会把
+        # 不相干的键绑进来。不用 isActiveWindow()——无边框窗口上它恒为 False，
+        # 会把正常改键也一起拦死，得直接问系统现在前台是谁。
+        if ctypes.windll.user32.GetForegroundWindow() != int(self.winId()):
+            return
+        sequence = _from_native(mods, vk)
+        if sequence is None:
+            return
+        # 回车留给「确定」，不当成要绑的键
+        if vk in (0x0D, 0x0A):
+            return
+        self._pending[self._target] = sequence
+        self._paint_cap(self._target)
+        self._refresh()
 
     # 无边框卡片得自己处理拖动，不然挡住内容也挪不开；按钮会吃掉自己的按下事件
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
@@ -778,7 +1077,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
             return
         if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
             # 回车留给「确定」：它不能当按住说话的键
-            if self._pending is not None:
+            if self._pending != self._before and self._conflict()[0] != "block":
                 self.accept()
             return
         if key in (
@@ -793,20 +1092,17 @@ class _PttKeyDialog(QtWidgets.QDialog):
         sequence = QtGui.QKeySequence(event.keyCombination())
         if not sequence.toString(QtGui.QKeySequence.PortableText):
             return   # 这个键翻不成名字，当没按
-        self._pending = sequence
-        self._set_cap(_key_name(sequence))   # 字变了就是反馈，不再加发光边
-        self._ok.setEnabled(True)
+        self._pending[self._target] = sequence
+        self._paint_cap(self._target)
+        self._refresh()
 
-    def _set_cap(self, text: str) -> None:
-        """换键名并按长短选字号档位，长的组合键不折行。"""
-        self._cap.setText(text)
-        self._cap.setProperty("len", _cap_size(text))
-        self._cap.style().unpolish(self._cap)
-        self._cap.style().polish(self._cap)
+    def window_sequence(self) -> QtGui.QKeySequence | None:
+        """窗口内确认下来的键。"""
+        return self._pending["window"]
 
-    def sequence(self) -> QtGui.QKeySequence | None:
-        """确认下来的键；没选就是 None。"""
-        return self._pending
+    def global_sequence(self) -> QtGui.QKeySequence | None:
+        """系统级确认下来的键。"""
+        return self._pending["global"]
 
 
 class ChatPanel(QtWidgets.QWidget):
@@ -921,7 +1217,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._model_button = combo
         self._model_menu = menu
         self._models: list[dict] = []
-        self._current = ""
 
         # 当前这条回答里是否已经落下正文（用来掐掉开头的空行）
         self._bubble_has_text = False
@@ -934,7 +1229,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._review_folded = False  # 超限之后只提示一次
         self._reasoning_pending = ""  # 思考增量先攒着，成段再落（见 flush_reasoning）
         self._md_block: list[str] = []  # 攒着的结构行（列表 / 表格 / 代码块）
-        self._inline_open = False  # 当前段落里有没有已经画过的行内文字（空行要断开）
         self._para_break = False  # 空行记的账：下一段来时再开新段（当场开就是白留一行）
         self._md_fence = False  # 是否在 ``` 围栏代码块里
         self._media_roots: tuple = ()  # 相对路径从哪些目录找（由窗口按配置塞进来）
@@ -1195,7 +1489,6 @@ class ChatPanel(QtWidgets.QWidget):
     def set_models(self, items: list[dict], current: str, *, switching: bool = False) -> None:
         """填模型菜单：一级按供应商分组，二级是那家的模型；按钮上显示当前模型名。"""
         self._models = list(items)
-        self._current = current
         fill_menu(self._model_menu, self._models, current, self.model_chosen.emit)
         text = current_label(self._models, current, fallback="选模型")
         self._model_button.setText(("切换中…" if switching else text) + "  ▾")
@@ -1428,10 +1721,9 @@ class ChatPanel(QtWidgets.QWidget):
         这里只记一笔、不当场开段：空行后面若是列表/表格，Qt 自己会开段（当场开就是白留一整行）；
         若是普通句子，等它真来的时候再开（`_insert_inline`）。
 
-        不看 `_inline_open`：紧随列表/表格之后的那段普通文字也要断开，否则会被并进最后一个列表项。
+        紧随列表/表格之后的那段普通文字也要断开，否则会被并进最后一个列表项。
         但这一轮还什么都没写时不算（回复开头的空行不该在名字底下顶出一行空白）。
         """
-        self._inline_open = False
         if self._bubble_has_text:
             self._para_break = True
 
@@ -1443,7 +1735,6 @@ class ChatPanel(QtWidgets.QWidget):
         if not text.strip():
             return
         self._bubble_has_text = True
-        self._inline_open = False
         for kind, language, body in markdown_render.split_fences(text):
             if kind == "code":
                 self._insert_code_block(body, language)
@@ -1455,7 +1746,6 @@ class ChatPanel(QtWidgets.QWidget):
         if not markup:
             return
         self._bubble_has_text = True
-        self._inline_open = True
         cursor = self.view.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
         if self._para_break or self._folds.owns(cursor.position()) or self._is_code_block(cursor.block()):
@@ -2934,9 +3224,11 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _add_url(self) -> None:
         dialog = self._url_dialog()
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return
+        accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
         url = dialog.textValue().strip()
+        dialog.deleteLater()   # 带 parent 的对话框不销毁，每开一次面板下就多一个
+        if not accepted:
+            return
         if url:
             self.insert_text(f"@url:{url}")
 
@@ -3173,6 +3465,21 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_mode_on = False
         self._recorder = None
         self._voice_prefs = None
+        # 系统级按住说话：窗口在后台也收得到，靠低层键盘钩子（细节见 global_hotkey.py）
+        self._global_ptt = global_hotkey.GlobalHotkey(self)
+        # 安全桌面（Ctrl+Alt+Del）那一下钩子收不到 keyup，修饰键记账会残留，
+        # 此后所有组合都匹配不上。隔几秒按真实键态重记一次。
+        # 兜底：事件可能丢（系统截走 keyup、切窗口、安全桌面），每 150ms 问一次真实键态。
+        # 按下和松开仍然由事件立刻触发，这个定时器只负责发现「已经该收了但没人来说」。
+        self._hold_armed = False   # 按下了但还没收到松开：只有这种才需要定时器兜底
+        self._hold_seen_down = False  # 这个环境读不读得到键态，读得到兜底才可信
+        self._hold_started_at = 0.0   # 这一轮按下的时刻，用来兜住「永远等不到松开」
+        self._hold_lost_at = 0.0   # 定时器第一次发现键不在手上的时刻
+        self._ptt_watch = QtCore.QTimer(self)
+        self._ptt_watch.setInterval(150)
+        self._ptt_watch.timeout.connect(self._hold_watch)
+        self._global_ptt.pressed.connect(self._hold_begin)
+        self._global_ptt.released.connect(self._hold_end)
         self._voice_draft_focus = False
         self._audio_released = False
         # 「按住说话的键」：单独一颗键帽外形的按钮，点开在弹窗里改；外形不随键名变
@@ -3240,7 +3547,11 @@ class ChatPanel(QtWidgets.QWidget):
                 logger.warning("[语音] 打开录音流失败", exc_info=True)
                 self._voice_flash(f"麦克风打不开：{exc}")
             self.voice_input_opened.emit()
+            self._apply_global_ptt()  # 进了语音模式才挂系统级钩子：不开语音时不碰键盘
+            self._ptt_watch.start()
         else:
+            self._ptt_watch.stop()
+            self._global_ptt.stop()  # 回到打字：钩子立刻卸掉，别占着键
             self._recorder.cancel()
             self._recorder.close_stream()
             self._voice_orb.hide()
@@ -3446,6 +3757,48 @@ class ChatPanel(QtWidgets.QWidget):
         """给人看的键名：空格 / F2 / Ctrl+空格。"""
         return _key_name(self._ptt_sequence())
 
+    # ---- 系统级按住说话 ----
+
+    def _global_ptt_sequence(self) -> QtGui.QKeySequence:
+        """系统级按住说话的键；没配过或配坏了就用 Shift+空格。"""
+        stored = ""
+        if self._voice_prefs is not None:
+            try:
+                stored = self._voice_prefs.global_hotkey()
+            except Exception:  # noqa: BLE001 - 配置读坏了也得能按住说话
+                stored = ""
+        if stored:
+            sequence = QtGui.QKeySequence(stored)
+            if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.PortableText):
+                return sequence
+        return QtGui.QKeySequence(QtCore.Qt.SHIFT | QtCore.Qt.Key_Space)
+
+    def _global_ptt_label(self) -> str:
+        return _key_name(self._global_ptt_sequence())
+
+    def _apply_global_ptt(self) -> None:
+        """把配置里的系统级键装进钩子。窗口在后台也生效。"""
+        self._global_ptt.stop()
+        native = _to_native(self._global_ptt_sequence())
+        if native is None:
+            return
+        mods, vk = native
+        ok, why = global_hotkey.probe(mods, vk)
+        if not ok:
+            # 不替人换键：被占就是这个键用不了，说清楚让他自己改
+            logger.warning("[语音] 系统级快捷键 %s 被占用：%s", self._global_ptt_label(), why)
+            self.show_notice(
+                "voice-input",
+                f"系统级 {self._global_ptt_label()} {why}，点键帽换一个",
+                ttl_ms=8000,
+                level="warn",
+            )
+            return
+        self._global_ptt.set_sequence(mods, vk)
+        self._global_ptt.start()
+        if not self._global_ptt.running:
+            logger.warning("[语音] 系统级快捷键装不上（错误码 %s）", self._global_ptt._last_error)
+
     def _refresh_ptt_button(self) -> None:
         """外形永远是那颗键盘图标，只换提示文字。"""
         button = getattr(self, "_ptt_button", None)
@@ -3454,7 +3807,7 @@ class ChatPanel(QtWidgets.QWidget):
         button.setToolTip(f"按住说话的键：{self._ptt_label()}（点一下改）")
 
     def _ptt_matches(self, event) -> bool:
-        """这个按键算不算按住说话那个键：键本身和修饰键都要对上。"""
+        """这个按下算不算按住说话：主键和修饰键都要对上。"""
         sequence = self._ptt_sequence()
         if sequence.count() != 1:
             return False
@@ -3465,26 +3818,101 @@ class ChatPanel(QtWidgets.QWidget):
             and expected.keyboardModifiers() == actual.keyboardModifiers()
         )
 
+    def _ptt_key_is(self, event) -> bool:
+        """这个松开是不是按住说话那个主键。松手只认主键——那时候修饰键可能已经先松了。"""
+        key = event.keyCombination().key()
+        return any(
+            seq.count() == 1 and seq[0].key() == key
+            for seq in (self._ptt_sequence(), self._global_ptt_sequence())
+        )
+
+    def _hold_key_down(self) -> bool:
+        """按住说话那个组合现在还完整按着吗——问系统键态，不问事件。"""
+        return _sequence_down(self._ptt_sequence()) or _sequence_down(
+            self._global_ptt_sequence()
+        )
+
+    def _hold_begin(self) -> None:
+        """按下：事件说按了就开始。这里不查键态——键盘驱动慢半拍时查它是自找漏录。"""
+        if not self._voice_mode_on:
+            return
+        if self._voice_orb.state() != STATE_RECORDING:
+            self._hold_armed = True    # 只记「按下了、还没收到松开」
+            self._hold_seen_down = False
+            self._hold_lost_at = 0.0
+            self._hold_started_at = time.monotonic()
+            self._voice_hold_start()
+
+    def _hold_end(self) -> None:
+        """松开：事件说松了就收。收到松开就不用再靠定时器兜底了。"""
+        self._hold_armed = False
+        self._hold_lost_at = 0.0
+        if self._voice_orb.state() == STATE_RECORDING:
+            self._voice_hold_end()
+
+    def _hold_watch(self) -> None:
+        """兜底：按下说了话却等不到松开，把它收掉。
+
+        三个出口，按可信度排：
+        1. 键态读到过、现在读不到 → 真丢了松开事件（系统截走 keyup、切窗口）；
+        2. 从没读到过键态的环境（远程会话、某些驱动）不做这个判断，
+           否则会把正常说的半句话掐掉；
+        3. 所以再加一道纯时间的上限：正常人一口气说不到两分钟，
+           到了还没收就一定有东西丢了，不能让它一直开着话筒。
+        """
+        if not self._hold_armed or self._voice_orb.state() != STATE_RECORDING:
+            self._hold_lost_at = 0.0
+            return
+        now = time.monotonic()
+        if now - self._hold_started_at >= _HOLD_MAX_SECONDS:
+            self._hold_lost_at = 0.0
+            self._hold_armed = False
+            self._voice_hold_end()
+            return
+        if self._hold_key_down():
+            self._hold_seen_down = True   # 这个环境读得到键态，下面那条才可信
+            self._hold_lost_at = 0.0
+            return
+        if not self._hold_lost_at:
+            self._hold_lost_at = now
+        elif self._hold_seen_down and now - self._hold_lost_at >= 0.4:
+            self._hold_lost_at = 0.0
+            self._hold_armed = False
+            self._voice_hold_end()
+
     def _ask_ptt_key(self) -> None:
-        """改按住说话的键：弹个小窗，在里面按一下新键。"""
-        dialog = _PttKeyDialog(self._ptt_sequence(), self.window())
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            return
-        sequence = dialog.sequence()
-        if sequence is None:
-            return
-        portable = sequence.toString(QtGui.QKeySequence.PortableText)
-        if not portable:
+        """改按住说话的键：窗口内和系统级都在这个小窗里，点哪条改哪条。"""
+        dialog = _PttKeyDialog(
+            self._ptt_sequence(), self._global_ptt_sequence(), self.window()
+        )
+        accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
+        window_sequence = dialog.window_sequence()
+        global_sequence = dialog.global_sequence()
+        dialog.deleteLater()   # 带 parent 的对话框不销毁，每开一次面板下就多一个
+        if not accepted:
             return
         if self._voice_prefs is not None:
             try:
                 # 存 PortableText：换系统语言也认得回来；空格存空串跟默认值同写法
-                self._voice_prefs.remember_hotkey("" if portable == "Space" else portable)
-            except OSError as exc:
+                if window_sequence is not None:
+                    portable = window_sequence.toString(QtGui.QKeySequence.PortableText)
+                    if portable:
+                        self._voice_prefs.remember_hotkey("" if portable == "Space" else portable)
+                if global_sequence is not None:
+                    portable = global_sequence.toString(QtGui.QKeySequence.PortableText)
+                    if portable:
+                        # 默认就是 Shift+Space，选回它也存空串
+                        self._voice_prefs.remember_global_hotkey(
+                            "" if portable == "Shift+Space" else portable
+                        )
+            except (OSError, voice_input_prefs.ConfigError) as exc:
                 logger.warning("[语音] 记不住快捷键：%s", exc)
+                self.show_notice("voice-input", f"快捷键没存上：{exc}", ttl_ms=5000, level="warn")
         self._refresh_ptt_button()
+        self._apply_global_ptt()  # 换了系统级键要当场重装，别等下次开语音
         self._mic_button.setToolTip(
-            f"语音已开：按住球或 {self._ptt_label()} 说话，松手就发"
+            f"语音已开：按住球、{self._ptt_label()}（窗口内）或 "
+            f"{self._global_ptt_label()}（系统级）说话，松手就发"
             "（点一下回到打字，右键换麦克风）"
         )
         self.show_notice("voice-input", f"按住「{self._ptt_label()}」说话", ttl_ms=3000)
@@ -3969,6 +4397,8 @@ class ChatPanel(QtWidgets.QWidget):
         super().mouseReleaseEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
+        self._global_ptt.stop()  # 程序关掉必须把钩子卸了，不然键盘一直被我们截着
+        self._hold_end()           # 正在录就收尾，麦克风不能跟着程序一起留着
         self._save_geometry()
         super().closeEvent(event)
 
@@ -3979,10 +4409,8 @@ class ChatPanel(QtWidgets.QWidget):
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
         if self._voice_mode_on and self._ptt_matches(event):
             event.accept()
-            if event.isAutoRepeat():
-                return
-            if self._voice_orb.state() != STATE_RECORDING:
-                self._voice_hold_start()
+            if not event.isAutoRepeat():
+                self._hold_begin()
             return
         if event.key() == QtCore.Qt.Key_Escape:
             self.hide()  # 只收起，进程和对话都留着
@@ -3990,10 +4418,9 @@ class ChatPanel(QtWidgets.QWidget):
         super().keyPressEvent(event)
 
     def keyReleaseEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
-        if self._voice_mode_on and self._ptt_matches(event):
+        if self._voice_mode_on and self._ptt_key_is(event):
             event.accept()
-            if event.isAutoRepeat():
-                return
-            self._voice_hold_end()
+            if not event.isAutoRepeat():
+                self._hold_end()
             return
         super().keyReleaseEvent(event)
