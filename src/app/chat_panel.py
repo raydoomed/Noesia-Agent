@@ -1402,6 +1402,9 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.setOpenExternalLinks(False)
         self.view.anchorClicked.connect(self._on_anchor)
         self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        # 横向不出条：正文一律按视口宽折行（代码块也是，见 markdown_render._unwrap_pre），
+        # 差一两像素的取整误差也不许在底下弹一条——这个位置以前就因为这个被嫌弃过。
+        self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         layout.addWidget(self.view, 1)
 
         # 折叠段的字体：抬头是一行暗色小字（可点），正文再暗一档；工具正文用等宽

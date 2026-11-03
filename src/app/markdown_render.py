@@ -25,11 +25,18 @@ CODE_BACKGROUND = "#15161c"
 # 代码块**一行一段**画（`<p>`），不用 `<pre>`：往已有内容的文档里追加 `<pre>` 时，
 # Qt 的 HTML 片段导入会丢掉第一段（有时是前几段）的底色，悬停复制的命中判定就认不出代码；
 # 而每行一个 `<p>` 时，外围块底色 + 字符底色双保险，追加多少次都不丢。
+#
+# 这里**不能写 `white-space:pre`**：Qt 一看见它就不给这一行换行，长一点的代码行
+# （ASCII 图、带中文注释的一行）直接把文档撑得比视口宽，聊天窗底下就冒出横向滚动条。
+# 缩进靠 `_nbsp()` 把文本里的空格换成 `&nbsp;` 保住——既不被 HTML 压成一个空格，
+# 也不挡住换行（行太宽时 `WrapAtWordBoundaryOrAnywhere` 允许断在任意处）。
 _CODE_STYLE = (
     f"background-color:{CODE_BACKGROUND};color:#d7dae5;font-family:Consolas,'Cascadia Mono',monospace;"
-    "font-size:9pt;white-space:pre;margin:0 0 0 6px;"
+    "font-size:9pt;margin:0 0 0 6px;"
 )
 _CODE_LINE_SPAN = f"background-color:{CODE_BACKGROUND}"
+
+_TAG = re.compile(r"<[^>]+>")
 
 
 @lru_cache(maxsize=1)
@@ -47,6 +54,22 @@ def _parser() -> Any:
     return md
 
 
+def _nbsp(line: str) -> str:
+    """把一行高亮 HTML 里的文本空格换成 `&nbsp;`（标签内的一律不动）。
+
+    HTML 会把连续空格压成一个，缩进就没了；而 `white-space:pre` 又不让换行。
+    换 `&nbsp;` 两头都占：缩进还在，行太宽照样折行。
+    """
+    out: list[str] = []
+    last = 0
+    for match in _TAG.finditer(line):
+        out.append(line[last : match.start()].replace(" ", "&nbsp;"))
+        out.append(match.group(0))
+        last = match.end()
+    out.append(line[last:].replace(" ", "&nbsp;"))
+    return "".join(out)
+
+
 def _code_lines(painted: str) -> str:
     """把高亮后的整段拆成一行一段的 `<p>`（见 `_CODE_STYLE` 上面那段说明）。"""
     lines = painted.split("\n")
@@ -55,7 +78,7 @@ def _code_lines(painted: str) -> str:
     if not lines:
         lines = [""]
     return "".join(
-        f"<p style='{_CODE_STYLE}'><span style='{_CODE_LINE_SPAN}'>{line or '&nbsp;'}</span></p>"
+        f"<p style='{_CODE_STYLE}'><span style='{_CODE_LINE_SPAN}'>{_nbsp(line) if line else '&nbsp;'}</span></p>"
         for line in lines
     )
 
@@ -150,12 +173,29 @@ def _zero_block_margins(markup: str) -> str:
     return markup
 
 
+def _unwrap_pre(markup: str) -> str:
+    """把围栏代码块外面的 `<pre><code>` 拆掉：内容已经是一行一个 `<p>` 了。
+
+    Qt 认 `<pre>` 就不换行——留着这层壳，代码行再宽也不会折，文档被撑得比视口宽，
+    聊天窗底下就冒出横向滚动条（这是它唯一还会露头的地方）。
+    带语言的围栏会生成 `<pre><code class="language-python">`，所以要按标签整对处理。
+    缩进代码块（四空格）不会走高亮，壳里是裸文本，这里顺手按行画一遍，别让它掉回普通正文。
+    """
+
+    def _unwrap(match: re.Match[str]) -> str:
+        body = match.group(1)
+        return body if body.lstrip().startswith("<p style=") else _code_lines(body)
+
+    markup = re.sub(r"<pre>\s*<code[^>]*>(.*?)</code>\s*</pre>", _unwrap, markup, flags=re.S)
+    return markup.replace("<pre>", "").replace("</pre>", "")
+
+
 def block(text: str) -> str:
     """整段结构（列表 / 表格 / 代码块 / 标题）的渲染。"""
     if not text.strip():
         return ""
     try:
-        return _zero_block_margins(_style_tables(_parser().render(text)))
+        return _zero_block_margins(_style_tables(_unwrap_pre(_parser().render(text))))
     except Exception:  # noqa: BLE001
         return _code_lines(html.escape(text))
 

@@ -14,7 +14,7 @@ help:
 	@echo "normalize-assets  归一化姿态图 → assets/透明_normalized/（统一画布）"
 	@echo "check-cleanroom  干净房间体检：只放会入库的文件，验证 clone 下来能跑"
 	@echo "serve         启动引擎常驻服务（IPC 服务端，等前端连入）"
-	@echo "test          pytest"
+	@echo "test          跑 tests/ 下的回归脚本 + 私有符号护栏（scripts/run_tests.py）"
 	@echo "run-app       启动 Qt 前端（等价于装好后的 noesia-gui）"
 	@echo "clean         清理缓存与测试产物"
 
@@ -39,7 +39,7 @@ serve:
 	$(PY) -m noesia_entry serve
 
 test:
-	$(PY) -m pytest
+	$(PY) scripts/run_tests.py
 
 run-app:
 	cd src && $(abspath $(PY)) -m app
