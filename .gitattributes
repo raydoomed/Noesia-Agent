@@ -9,3 +9,7 @@
 # shell 脚本要在 Linux 容器/WSL 里 exec：CRLF 会让内核报 "no such file or directory"。
 # 其余是 CI/打包规则，这里不需要。
 *.sh    text eol=lf
+
+# vendor 清单要能直接 `sha256sum -c`：每行是「哈希 + 两个空格 + 路径」，行尾多一个 \r 就整条读不到。
+# 锁死不转换，谁 clone 下来拿到的都是发布时那份 LF 文件（core.autocrlf=true 的机器也一样）。
+vendor/MANIFEST.txt  -text

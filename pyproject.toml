@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "noesia"
-version = "0.2.0"
+version = "0.3.0"
 description = "Qt 桌面数字人：桌面形象 + 流式对话 + 语音朗读，口型驱动走 Vidu 云端"
 readme = "README.md"
 requires-python = ">=3.14"
