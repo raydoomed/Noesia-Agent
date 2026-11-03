@@ -243,6 +243,44 @@ def workspace_from_config(home: Path, fallback: Path) -> Path:
     return chosen if chosen.is_absolute() else (fallback.parent / chosen)
 
 
+def read_engine_config(home: Path) -> dict[str, Any]:
+    """盘上那份 `config.yaml`（读不出来就当空表，调用方自己决定要不要报）。"""
+    import yaml
+
+    path = Path(home) / "config.yaml"
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def memory_limits(core_path: Path, home: Path) -> tuple[int, int]:
+    """(记忆上限, 画像上限)：盘上的值优先，盘上没有就用引擎自己的默认表。
+
+    只认这两处来源。界面自己再写一份默认值，就会出现「界面显示 2200、引擎按别的数算」
+    这种谁都看不出来的偏差——用户改完也看不出区别。
+    """
+    from engine_config_view import engine_defaults
+
+    disk = read_engine_config(home)
+    memory = disk.get("memory") if isinstance(disk.get("memory"), dict) else {}
+    try:
+        defaults = (engine_defaults(core_path) or {}).get("memory") or {}
+    except Exception:  # noqa: BLE001 - 引擎目录不在：这一页只读不写，别让整个设置窗打不开
+        logger.exception("读不到引擎默认配置")
+        defaults = {}
+
+    def pick(key: str) -> int:
+        for source in (memory, defaults):
+            value = source.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+        return 0
+
+    return pick("memory_char_limit"), pick("user_char_limit")
+
+
 def set_engine_config(core_path: Path, home: Path, values: dict[str, Any]) -> bool:
     """用户明确改过的键（如工作目录）：写进 `config.yaml`，再照旧重排成带注释的全量文件。
 

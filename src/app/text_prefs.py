@@ -38,9 +38,12 @@ def load() -> dict:
 
 
 def _write(data: dict) -> None:
+    """整份落盘：先写临时文件再改名，别让读的一方拿到写了一半的文件。"""
     target = path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp = target.with_name(target.name + ".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(target)
 
 
 def remembered(provider: str) -> str:

@@ -14,9 +14,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from settings import RESOLVER
-
-ENV_PATH = Path("data/NoesiaHome/.env")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # (id, 界面上显示的名字, .env 里的变量名, 归属)

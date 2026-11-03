@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -37,7 +36,6 @@ class SpeechError(RuntimeError):
 
 # 豆包的接口地址和资源 id 都在 `src/tts_catalog.json`：代码里不写具体值，换资源只改数据文件
 DOUBAO_URL = doubao_voices.url()
-DOUBAO_RESOURCE = doubao_voices.default_resource()  # 默认资源；用户可以在 speech.json 里换成别的
 # 采样率跟声卡首选对齐（这台机是 48000）：少一次驱动重采样，播放走原生 48k。
 DOUBAO_SAMPLE_RATE = 48000
 
@@ -114,6 +112,19 @@ def load() -> dict:
     return data
 
 
+def _write(data: dict) -> None:
+    """整份落盘：先写临时文件再改名。
+
+    引擎随时可能在读这份配置（一按说话就读一次）。直接覆盖时它可能正好读到
+    写了一半的内容——解不开 JSON 就成了「合成失败」，用户只看到一句莫名其妙的错。
+    """
+    target = path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.with_name(target.name + ".tmp")
+    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.replace(target)
+
+
 def save(**changes) -> dict:
     """存音色/开关；`api_key=` 会被转去写 `.env`，不落在 json 里。"""
     changes = dict(changes)
@@ -138,9 +149,7 @@ def save(**changes) -> dict:
         history = dict(data.get("voice_history") or {})
         history[provider] = {"id": data["voice_id"], "name": data.get("voice_name") or ""}
         data["voice_history"] = history
-    target = path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write(data)
     if typed_key is not None:
         write_api_key(str(typed_key), provider)
     return data
@@ -157,9 +166,7 @@ def remember_voice(provider: str, voice_id: str, voice_name: str = "") -> None:
     history = dict(data.get("voice_history") or {})
     history[provider] = {"id": voice_id, "name": voice_name or ""}
     data["voice_history"] = history
-    target = path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write(data)
 
 
 def _doubao_model_id(value) -> str:

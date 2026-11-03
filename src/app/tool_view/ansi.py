@@ -82,9 +82,9 @@ def parse_ansi(text: str) -> list[tuple[str, bool, str | None]]:
                     fg = None
                 elif code in FG_BY_CODE:
                     fg = FG_BY_CODE[code]
-                elif code == 38:
-                    # 256 色 / 真彩色：跳过尾部参数，不做渲染。
-                    # 不跳过的话 `38;2;218;165;32` 里的 `32` 会被当成绿色，整段染错。
+                elif code in (38, 48, 58):
+                    # 前景/背景/下划线色：256 色或真彩色都带尾部参数，一律跳过、不做渲染。
+                    # 只跳 38 的话，`48;2;0;0;31` 里的 `31` 会被当成前景红，整段染错。
                     nxt = codes[index + 1] if index + 1 < len(codes) else None
                     if nxt == 5:
                         index += 2

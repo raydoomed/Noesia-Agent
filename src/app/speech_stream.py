@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from typing import Iterator
@@ -172,7 +173,7 @@ def _stream_doubao(text: str, chosen: dict) -> Iterator[bytes]:
 def _stream_edge(text: str, chosen: dict) -> Iterator[bytes]:
     try:
         import edge_tts
-    except ImportError as exc:  # noqa: F841
+    except ImportError:
         raise SpeechError("没装 edge-tts：先 pip install edge-tts") from None
 
     decoder = subprocess.Popen(
@@ -203,14 +204,25 @@ def _stream_edge(text: str, chosen: dict) -> Iterator[bytes]:
 
     threading.Thread(target=pump, daemon=True).start()
     assert decoder.stdout is not None
-    while True:
-        block = decoder.stdout.read(4096)
-        if block:
-            yield block
-            continue
-        if stop.is_set():
-            break
-    decoder.wait(timeout=10)
+    try:
+        while True:
+            block = decoder.stdout.read(4096)
+            if block:
+                yield block
+                continue
+            # 读到空不等于「合成完了」：ffmpeg 出错自己退了也是空，
+            # 只认 stop 的话这里会一直空转；反过来只认 poll() 又会把末尾几个块丢掉。
+            if stop.is_set() or decoder.poll() is not None:
+                break
+            time.sleep(0.01)
+    finally:
+        # 被中途打断（换句/停止）时，这里必须把 ffmpeg 收掉，否则它挂在管道上等 stdin
+        try:
+            if decoder.poll() is None:
+                decoder.kill()
+            decoder.wait(timeout=5)
+        except Exception:  # noqa: BLE001 — 收尾失败不影响已经拿到的音频
+            pass
 
 
 def _stream_elevenlabs(text: str, chosen: dict) -> Iterator[bytes]:

@@ -151,7 +151,7 @@ class VoiceOrb(QtWidgets.QWidget):
         # 球外那层柔光：光斑溢出来的余晖，让球不像贴图一样浮在底上
         self._paint_halo(painter, center, radius, colors, level)
         # 外圈三段弧：一圈完整圆环太死板，断成三段才像在转
-        self._paint_arcs(painter, center, radius, level)
+        self._paint_arcs(painter, center, radius)
         self._paint_ball(painter, center, radius, colors, level)
         self._paint_label(painter)
 
@@ -172,7 +172,7 @@ class VoiceOrb(QtWidgets.QWidget):
             painter.drawEllipse(center, spread, spread)
         painter.setPen(QtCore.Qt.NoPen)
 
-    def _paint_arcs(self, painter, center, radius, level) -> None:
+    def _paint_arcs(self, painter, center, radius) -> None:
         """三段断续的细弧绕着球跑，各走各的速度。"""
         if self._state == STATE_RECORDING:
             specs = ((1.06, 78, 1.5, 190), (1.14, 52, -1.0, 130), (1.21, 30, 0.6, 82))

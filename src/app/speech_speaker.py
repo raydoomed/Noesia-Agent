@@ -147,6 +147,11 @@ class _StreamPlayback(QtCore.QObject):
             written = self._io.write(bytes(self._pending))
             if written > 0:
                 del self._pending[:written]
+            elif written < 0:
+                # 声卡报错（-1）：再等也不会自己好，这一句就地收尾并说清楚，不然永远收不了尾
+                self.stop()
+                self.failed.emit("写不进音频设备，这一句没念出来")
+                return
         played_us = int(self._sink.processedUSecs())
         self.progress.emit(int(played_us / 1000), 0)
         if not self._synth_done or self._pending:
@@ -212,7 +217,9 @@ class Speaker(QtCore.QObject):
         self._active = True
         self._announced = False
         self._text = plain
-        self._cancel.clear()
+        # 每条一个取消旗：池子只有一条线程，旧那句还在跑时把它自己的旗 clear 掉，
+        # 它就再也看不到「取消」，必须等它整句合成完才轮到新句（表现就是很久没声音）。
+        self._cancel = threading.Event()
         self.preparing.emit()
         self._pool.start(_StreamJob(plain, self, self._seq, self._cancel))
         return True

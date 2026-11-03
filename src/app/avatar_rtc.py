@@ -21,7 +21,7 @@ import time
 from collections import deque
 
 import numpy as np
-from PySide6 import QtCore, QtGui, QtMultimedia
+from PySide6 import QtCore, QtGui
 
 from app.idle_video import key_image
 from app.vidu_session import FRAME_BYTES, SAMPLE_RATE, ViduSession, read_token
@@ -44,7 +44,7 @@ def _i420_to_rgb(y: bytes, u: bytes, v: bytes, width: int, height: int,
     ya = np.frombuffer(y, np.uint8).reshape(height, stride_y)[0::step, 0::step]
     ya = ya[: (height + step - 1) // step, : (width + step - 1) // step].astype(np.float32)
     out_h, out_w = ya.shape
-    cw, ch = (width + 1) // 2, (height + 1) // 2
+    ch = (height + 1) // 2
     ua = np.frombuffer(u, np.uint8).reshape(ch, stride_u)[0::step, 0::step]
     va = np.frombuffer(v, np.uint8).reshape(ch, stride_v)[0::step, 0::step]
     ua = ua[: (out_h + 1) // 2, : (out_w + 1) // 2].astype(np.float32)
@@ -104,6 +104,8 @@ class AvatarRtc(QtCore.QObject):
         self.model = model            # 空 = 用 avatar.json 里的 model（唯一来源，不在代码里兜）
         self._module = None            # _alirtc 扩展模块
         self._session: ViduSession | None = None
+        self._engine_created = False  # create() 是否真的调过：回调失败重试时不许再造一个实例
+        self._dll_dir = None  # add_dll_directory 的句柄必须留着，否则目录会从 DLL 搜索路径里掉出去
         self._target: QtCore.QSize | None = None
         self._lock = threading.Lock()
         self._state = "idle"           # idle / warming / ready
@@ -147,11 +149,18 @@ class AvatarRtc(QtCore.QObject):
         try:
             import os
 
-            os.add_dll_directory(str(RTC_DIR))
+            if not self._engine_created:
+                # 句柄要留着：一回收，这个目录就从 DLL 搜索路径里消失了。
+                # 顺序不能反：_alirtc.pyd 依赖 rtc/ 里的库，目录不在搜索路径上 import 就失败。
+                self._dll_dir = os.add_dll_directory(str(RTC_DIR))
+
             from app import _alirtc
 
-            if not _alirtc.create(""):
-                return "引擎创建失败"
+            if not self._engine_created:
+                if not _alirtc.create(""):
+                    return "引擎创建失败"
+                # 建过就记下：下面回调设置失败时，重试只补回调，不会再 create 出第二个实例
+                self._engine_created = True
             _alirtc.set_video_callback(self._on_yuv)
             _alirtc.set_audio_callback(self._on_remote_audio)
             self._module = _alirtc
@@ -192,6 +201,8 @@ class AvatarRtc(QtCore.QObject):
             # 这一行出现在日志里 = 从这一刻开始按秒计费。只在"按了发送、真要念这句"时才该看到它。
             logger.info("[数字人] 建会话（开始按秒计费）")
             session.create()
+            # create 成功就已经在计费：先挂上，之后任何一步失败 `_fail` 才能把它挂断
+            self._session = session
             rtc = session.rtc
             if not hasattr(self._module, "subscribe_audio"):
                 raise RuntimeError(
@@ -204,7 +215,6 @@ class AvatarRtc(QtCore.QObject):
             if code != 0:
                 raise RuntimeError(f"入会失败，返回 {code}")
             session.open_stream()
-            self._session = session
             session.push_pcm(b"\x00\x00" * (SAMPLE_RATE // 2))  # 1 秒静音：她被叫醒但不说话
             with self._lock:
                 self._state = "ready"
@@ -222,6 +232,14 @@ class AvatarRtc(QtCore.QObject):
     def _fail(self, message: str) -> None:
         """出错了：回到 idle，把原因交给上层（上层会退回纯语音）。"""
         logger.warning("[数字人] %s", message)
+        session, self._session = self._session, None
+        if session is not None:
+            # 会话一建出来就按秒计费：失败路径原来只把状态置回 idle，
+            # 云端那一场一直挂着（还占并发名额，下一次就是 429）。
+            try:
+                session.hangup()
+            except Exception:  # noqa: BLE001 — 收摊失败不能盖住真正的原因
+                logger.warning("[数字人] 挂断失败的会话时出错", exc_info=True)
         with self._lock:
             self._state = "idle"
         self._last_error = message

@@ -32,9 +32,21 @@ def path() -> Path:
     return RESOLVER.resolve(PREFS_PATH)
 
 
+# 按住说话的键在按键/录音心跳里被反复问（每秒十几次），每次都读盘 + 解 JSON 太浪费。
+# 按「路径 + mtime + 大小」记住上一次的结果：文件一被改写立刻失效，读方拿到的还是最新内容。
+_CACHE: dict = {"stamp": None, "data": None}
+
+
 def load() -> dict:
     """读配置；没有就按模板写一份。"""
     target = path()
+    try:
+        stat = target.stat()
+        stamp = (str(target), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        stamp = None
+    if stamp is not None and _CACHE["stamp"] == stamp and _CACHE["data"] is not None:
+        return dict(_CACHE["data"])
     if not target.is_file():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(_TEMPLATE, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -48,7 +60,10 @@ def load() -> dict:
     missing = [key for key in _REQUIRED if key not in stored]
     if missing:
         raise ConfigError(f"{target} 缺 {', '.join(missing)}")
-    return {key: stored.get(key, _TEMPLATE[key]) for key in _TEMPLATE}
+    result = {key: stored.get(key, _TEMPLATE[key]) for key in _TEMPLATE}
+    _CACHE["stamp"] = stamp
+    _CACHE["data"] = dict(result)
+    return result
 
 
 def device_guid() -> str:

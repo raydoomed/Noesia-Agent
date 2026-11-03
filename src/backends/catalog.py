@@ -142,7 +142,7 @@ def _engine_env() -> dict[str, str]:
         return {}
 
 
-def _missing_reason(provider: str, label: str, home_hint: str = "data/NoesiaHome") -> str:
+def _missing_reason(provider: str, label: str, home_hint: str) -> str:
     """没凭据时给一句人话：说清该设哪个变量、写在哪个文件，不猜。"""
     try:
         import providers as engine_providers  # noqa: PLC0415 - 依赖引擎路径
@@ -375,7 +375,7 @@ def invalidate_providers() -> None:
     _MODEL_IDS_CACHE.clear()
 
 
-def _engine_authenticated(models, provider: str) -> bool:
+def _engine_authenticated(provider: str) -> bool:
     """只有「不靠环境变量」的供应商才去问引擎的登录态（OAuth / 本机 CLI）。
 
     api_key 类由 `_usable()` 直接看变量有没有值——快、准；引擎那种问法要重建整个凭据池，
@@ -405,7 +405,7 @@ def _provider_rows(models, *, refresh: bool = False) -> dict[str, dict]:
             if not name:
                 continue
             env_vars = tuple(str(v) for v in (getattr(item, "env_vars", ()) or ()) if v)
-            authenticated = _usable(name, True) if env_vars else _engine_authenticated(models, name)
+            authenticated = _usable(name, True) if env_vars else _engine_authenticated(name)
             rows[name] = {
                 "id": name,
                 "label": str(getattr(item, "label", "") or name),
@@ -418,7 +418,7 @@ def _provider_rows(models, *, refresh: bool = False) -> dict[str, dict]:
     return rows
 
 
-def _provider_state(models, provider: str, home_hint: str = "data/NoesiaHome") -> tuple[bool, str]:
+def _provider_state(models, provider: str, home_hint: str) -> tuple[bool, str]:
     """这个供应商现在能不能用：(可用?, 不可用时给人看的理由)。
 
     引擎表里没有的 provider（自定义模型名）一律当可用——那种情况由引擎在切换/请求时报错，
@@ -449,7 +449,7 @@ def current_option(cfg, *, root: Path | str | None = None) -> LlmOption:
     if not model:
         return UNSET
     provider = provider or "auto"
-    available, reason = _provider_state(models, provider)
+    available, reason = _provider_state(models, provider, str(cfg.engine.home))
     return LlmOption(
         option_id(provider, model),
         f"{provider} · {model}",
@@ -482,7 +482,7 @@ def list_options(
     # 第一项永远是「当前」：没配过就是那句占位（免得菜单里显示成某个其实没用上的供应商）
     options: list[LlmOption] = [current]
     seen: set[str] = {option.id for option in options if option.id}
-    home_hint = str(getattr(cfg.engine, "home", "data/NoesiaHome"))
+    home_hint = str(cfg.engine.home)
     documented = _documented_env_vars(root)
 
     rows = []

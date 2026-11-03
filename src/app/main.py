@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import ctypes
-import json
 import logging
 import threading
 import time
@@ -270,7 +269,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
 
         # 待机视频：拿到帧就盖在静态图上画；失败就退回静态图，不影响窗口可用
         self._frame: QtGui.QImage | None = None
-        self._video_timer: QtCore.QTimer | None = None  # 由它按 30fps 把最新一帧画到屏幕上
         self._painted_frame: QtGui.QImage | None = None  # 上一次画出去的那帧，没新帧就不重画
         # 她说 ily / ♥ 时飘的心：起始时刻 + 那个只在飘的时候才跑的小定时器
         self._hearts_at = -99.0
@@ -320,7 +318,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             timer.setInterval(33)  # 30fps，略高于视频的 24fps，永远画最新的那一帧
             timer.timeout.connect(self._paint_latest_frame)
             timer.start()
-            self._video_timer = timer
             self.idle_player.failed.connect(lambda msg: say(f"[待机视频] {msg}"))
 
     # ---- 尺寸与位置 ----
@@ -491,12 +488,15 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             geometry.moveCenter(screen.availableGeometry().center())
             dialog.move(geometry.topLeft())
         if dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted:
-            # 一次保存可能同时落了五页：按 saved_pages() 逐项收尾，哪页真存了才动哪页，没改的页不碰
+            # 一次保存可能同时落了六页：按 saved_pages() 逐项收尾，哪页真存了才动哪页，没改的页不碰
             pages = dialog.saved_pages()
             # 文本模型那页的 Key 和切换已经在窗口里等回执等完了（engine_save），这里不再重发
             for note in dialog.save_notes():
                 if self.chat_panel is not None:
                     self.chat_panel.show_error(note)
+            for notice in dialog.save_notices():
+                if self.chat_panel is not None:
+                    self.chat_panel.show_info(notice)
             if "avatar" in pages:
                 # 刚填/改了 Token 或模型：之前"用不了"的结论作废，下一句就去重试
                 self._avatar_block_until = 0.0
@@ -513,6 +513,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     self.chat_panel.show_notice("soul", "人设已保存——下一句话就按新的来。", ttl_ms=CONFIRM_TTL_MS)
                 elif dialog.saved_tab() == ModelDialog.TAB_SOUL:
                     self.chat_panel.show_notice("soul", "人设没有改动，还是原来那份。", ttl_ms=CONFIRM_TTL_MS)
+            if "memory" in pages and self.chat_panel is not None and dialog.memory_changed():
+                # 记忆和上限都是引擎建会话时读一次：这一轮已经在跑的不受影响，新会话才按新的来
+                self.chat_panel.show_notice("memory", "记忆已保存——新建会话才带进上下文。", ttl_ms=CONFIRM_TTL_MS)
             if "workspace" in pages and self.client is not None:
                 target = dialog.saved_workspace()
                 # 没真给目录就当没这回事，绝不把工作区清空；目录没变也不提示（"已改为"却和原来一样是假消息）
@@ -702,6 +705,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             # 建好后再念——不能先出声后补画面，那样嘴对不上。
             if panel is not None:
                 panel.speech_preparing()
+            if self._pending_speech:
+                # 上一句还在等会话：它不能被这句话顶掉（那半句就永远没声音了），先交给纯语音念完。
+                self.speaker.speak(self._pending_speech)
             self._pending_speech = text
             avatar.warm()  # 到这一步才建会话：按秒计费，用户按下发送才开始花
             self._warm_idle.start()  # 建了却没念成（比如服务端不吭声）：20 秒挂断，别空转
@@ -909,7 +915,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         QtWidgets.QApplication.quit()
 
     def _show_menu(self, pos: QtCore.QPoint) -> None:
-        self.build_menu().exec(self.mapToGlobal(pos))
+        menu = self.build_menu()
+        try:
+            menu.exec(self.mapToGlobal(pos))
+        finally:
+            menu.deleteLater()   # 带 parent 的菜单 exec 完不销毁，每右键一次就多挂一套
 
     # ---- 聊天：唯一的文字输入入口 ----
 
@@ -1604,15 +1614,16 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
 
     def on_config_value(self, key: str, value: str) -> None:
         panel = self.chat_panel
-        if panel is None:
-            return
+        # 聊天窗是懒建的：它还没开时也得把档位记进 wire，否则之后每次建会话都回落默认档，
+        # 界面上勾着的和实际用的对不上。界面更新才依赖 panel。
         if key in {"approval_mode", "approvals.mode"} and value:
-            panel.set_approval_mode(value)
+            if panel is not None:
+                panel.set_approval_mode(value)
         elif key == "reasoning":
             self._reasoning_current = value
             if self.client is not None:  # 新建会话要把这档带过去，否则新会话回到默认「中」
                 self.client.set_reasoning_effort(value)
-            if not self._reasoning_pending and not self._reasoning_fresh:
+            if panel is not None and not self._reasoning_pending and not self._reasoning_fresh:
                 # pending 期间引擎回的是全局默认（恢复的会话还没建 agent）；已经报过真档时也不许盖回去。
                 # 照着画就成了「显示中、实际低」。
                 panel.set_reasoning_state(
@@ -1735,7 +1746,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     def _on_video_frame(self, image: QtGui.QImage) -> None:
         """显示区的新一帧（已抠像、带 alpha）。待机视频和互动数字人共用这一条。"""
         self._frame = image
-        if self._hit_region is None:
+        if self._hit_size != (self.width(), self.height()):
+            # 按尺寸判，不按「区域是不是 None」判：算出来是空的（开头几帧全透明）时
+            # 原来那个判据会每帧重算一遍整幅轮廓，几万次 pixelColor + united，窗口直接卡住。
             self._rebuild_hit_region()  # 第一帧到手就按她的轮廓定好「点得中」的范围
         # 收帧只存帧，画由 __init__ 里那个定时器负责：这扇透明置顶窗上，从收帧回调里
         # 调 update() 或 repaint() 实测都不会落到屏幕上（送进 2262 帧、paintEvent 只跑 20 次），
@@ -1826,7 +1839,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         缩放时界面就被拖住了。
         """
         size = (self.width(), self.height())
-        if self._hit_region is not None and self._hit_size == size:
+        if self._hit_size == size:
             return
         source = self._frame if (self._frame is not None and not self._frame.isNull()) else self._pixmap
         # 视频帧是 `QImage`（没有 `toImage`），静态图是 `QPixmap`——两种都要收
@@ -2313,7 +2326,8 @@ def main() -> int:
         if sid:
             wire.resume_session(sid)
         else:
-            wire.create_session(str(resolver.root))
+            # 不传 cwd：默认落在工作区。传项目根会把 agent 的当前目录钉在源码树里，工具会往仓库写东西。
+            wire.create_session()
 
     wire.ready.connect(_after_ready)
     wire.attachment_failed.connect(window._attachment_problem)  # 引擎拒收：撤掉条上那一条

@@ -118,14 +118,20 @@ def _discover_chinese(texts: list[str]) -> dict[str, float]:
 def _discover_latin(texts: list[str]) -> dict[str, float]:
     """英文 / 数字串：整段就是一个词，只按频次筛。"""
     counter: Counter = Counter()
+    spellings: dict[str, Counter] = {}
     for text in texts:
-        counter.update(m.group(0) for m in _LATIN.finditer(text))
+        for match in _LATIN.finditer(text):
+            word = match.group(0)
+            key = word.lower()  # 计数按小写归并：Noesia / noesia 是同一个词
+            counter[key] += 1
+            spellings.setdefault(key, Counter())[word] += 1
     found: dict[str, float] = {}
-    for word, freq in counter.items():
+    for key, freq in counter.items():
         if not (_MIN_FREQ <= freq <= _MAX_FREQ):
             continue
-        # 大小写归一到最多出现的那种写法，别把 Noesia / noesia 分成两个词
-        found[word] = math.log2(1 + freq)
+        # 写回出现最多的那种大小写写法（Noesia 而不是 noesia）
+        shown = spellings[key].most_common(1)[0][0]
+        found[shown] = math.log2(1 + freq)
     return found
 
 
@@ -231,19 +237,26 @@ def _read_corpus() -> list[str]:
 
 
 def _trim_corpus() -> None:
-    """每份语料自己裁到上限：只留最近的，让重算的成本封顶。"""
-    for path in corpus_paths():
-        texts = _read_one(path)
-        if len(texts) <= _MAX_CORPUS:
-            continue
-        kept = texts[-_MAX_CORPUS:]
-        try:
-            path.write_text(
-                "".join(json.dumps({"t": t}, ensure_ascii=False) + "\n" for t in kept),
-                encoding="utf-8",
-            )
-        except OSError:
-            logger.debug("[词表] 语料没裁掉", exc_info=True)
+    """把打字语料裁到上限：只留最近的，让重算的成本封顶。
+
+    只裁 app 自己写的那份。语音语料是引擎写的，app 重写它等于和引擎抢文件——
+    引擎刚追加的行会被这里的旧快照覆盖掉。
+    """
+    path = typed_path()
+    texts = _read_one(path)
+    if len(texts) <= _MAX_CORPUS:
+        return
+    kept = texts[-_MAX_CORPUS:]
+    try:
+        # 同样先写临时文件再换名：引擎随时可能来读，不能让它读到裁了一半的语料
+        temp = path.with_name(path.name + ".tmp")
+        temp.write_text(
+            "".join(json.dumps({"t": t}, ensure_ascii=False) + "\n" for t in kept),
+            encoding="utf-8",
+        )
+        temp.replace(path)
+    except OSError:
+        logger.debug("[词表] 语料没裁掉", exc_info=True)
 
 
 def learn() -> dict | None:

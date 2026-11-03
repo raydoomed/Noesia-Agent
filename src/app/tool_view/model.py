@@ -7,12 +7,10 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping
 
 from app.tool_view.i18n import tr
-from app.tool_view import helpers
 from app.tool_view.types import (
     CountMetric,
     SearchResultRow,
@@ -22,7 +20,6 @@ from app.tool_view.types import (
     ToolStatus,
     ToolTitleAction,
     ToolTitleParts,
-    ToolTone,
     ToolView,
 )
 
@@ -472,6 +469,10 @@ def dynamic_count_noun_from_key(key: str, fallback_noun: str) -> str:
 
     stripped = re.sub(r"_(count|total)$", "", normalized, flags=re.I | re.A)
     stripped = re.sub(r"^num_", "", stripped)
+    stripped = re.sub(r"^total_", "", stripped)
+    if stripped in ("", "total", "num"):
+        # `total_count` 只剩 `total`：它不是名词，拼出来是「7 total(s)」，交回通用量词
+        return fallback_noun
 
     return singularize_noun(stripped) or fallback_noun
 
@@ -814,7 +815,13 @@ NON_DELIVERABLE_TOOLS = {
 
 def tool_preview_target(tool_name: str, args: dict[str, Any], result: dict[str, Any]) -> str:
     if tool_name == "tool_call":
-        calls = args.get("calls") if isinstance(args.get("calls"), list) else [args]
+        raw_calls = args.get("calls")
+        if isinstance(raw_calls, list):
+            calls = raw_calls
+        elif isinstance(raw_calls, dict):
+            calls = [raw_calls]  # 引擎偶尔只给一条：它不是列表，但内容一样
+        else:
+            calls = [args]
         call = parse_maybe_object(calls[0]) if calls else {}
 
         if len(calls) == 1 and isinstance(call.get("name"), str):

@@ -41,7 +41,16 @@ def compact_preview(value: Any, max_chars: int = 72) -> str:
     if isinstance(value, str):
         raw: Any = value
     else:
-        raw = parse_maybe_object(value).get('context')
+        parsed = parse_maybe_object(value)
+        raw = parsed.get('context')
+        if not isinstance(raw, str):
+            # 多数结果字典没有 `context`（`{"stdout": …}` / `{"message": …}`）：
+            # 以前这里落到空串，副标题等于没有，词条只剩工具名。
+            for key in ('message', 'text', 'summary', 'stdout', 'stderr', 'output', 'error'):
+                candidate = parsed.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    raw = candidate
+                    break
 
     if not isinstance(raw, str):
         if raw is None:
@@ -69,10 +78,6 @@ def context_value(value: Any) -> str:
 
     return value if isinstance(value, str) else ''
 
-
-# 单条结果会封顶到 ~100KB，但一轮大目录会堆出很多行；全部绘制/序列化会把渲染进程打爆。
-# 每个内联绘制的负载截到这个上界——行内的 Copy 按钮仍读未截断的 view.detail。
-MAX_TOOL_RENDER_CHARS = 20_000
 
 
 

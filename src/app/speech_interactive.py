@@ -95,12 +95,10 @@ class StreamSpeaker(QtCore.QObject):
         self._active = False
         self._pulling = False
         self._pending: deque[bytes] = deque()
-        self._pending_bytes = 0
         self._sink: QtMultimedia.QAudioSink | None = None
         self._io = None
         self._fed_bytes = 0
         self._total_bytes = 0
-        self._cloud_start = 0.0
         self._fmt: QtMultimedia.QAudioFormat | None = None
         self._carry = b""  # 转发给数字人时攒着的半个 20ms 帧
 
@@ -132,10 +130,8 @@ class StreamSpeaker(QtCore.QObject):
             self._active = True
             self._pulling = True
             self._pending.clear()
-            self._pending_bytes = 0
             self._fed_bytes = 0
             self._total_bytes = 0
-            self._cloud_start = time.monotonic()
             self._play_start = None
             self.started.emit(text)
             self._ticker.start()
@@ -160,7 +156,6 @@ class StreamSpeaker(QtCore.QObject):
         self._active = True
         self._pulling = True
         self._pending.clear()
-        self._pending_bytes = 0
         self._fed_bytes = 0
         self._total_bytes = 0
         self.started.emit(text)
@@ -178,13 +173,13 @@ class StreamSpeaker(QtCore.QObject):
         self._pulling = False
         self._ticker.stop()
         self._pending.clear()
-        self._pending_bytes = 0
         if self._sink is not None:
             self._sink.stop()
             self._sink.deleteLater()
         self._sink = None
         self._io = None
         self._fed_bytes = 0
+        self._carry = b""  # 上一句不足 20ms 的残帧不能拼到下一句开头（口型起点会错位）
         if was_active and not silent:
             self.stopped.emit()
 
@@ -194,7 +189,6 @@ class StreamSpeaker(QtCore.QObject):
         if not self.alive(seq) or not pcm:
             return
         self._pending.append(pcm)
-        self._pending_bytes += len(pcm)
         self._total_bytes += len(pcm)
         if self._on_chunk is not None:
             self._forward(pcm)
@@ -285,7 +279,6 @@ class StreamSpeaker(QtCore.QObject):
                 break  # 声卡缓冲满，下次再来
             self._pending[0] = self._pending[0][written:]
             self._fed_bytes += written
-            self._pending_bytes -= written
             if not self._pending[0]:
                 self._pending.popleft()
         fed_us = int(self._fmt.durationForBytes(self._fed_bytes))

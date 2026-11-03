@@ -248,7 +248,7 @@ def close_console_sessions(project_root) -> list[str]:
     """
     notes: list[str] = []
     for pid in winproc.console_sessions(project_root):
-        ok, note = winproc.quiet_exit(pid)
+        _, note = winproc.quiet_exit(pid)
         logger.info("命令行会话 %s：%s", pid, note)
         notes.append(note)
     return notes
@@ -658,19 +658,23 @@ class EngineWire(QtCore.QObject):
     closed = QtCore.Signal()
 
     def __init__(self, project_root: Path, parent: QtCore.QObject | None = None,
-                 workspace: Path | None = None) -> None:
+                 workspace: Path | str | None = None) -> None:
         super().__init__(parent)
         self._root = Path(project_root)
         # 引擎进程的工作目录 = 建会话时的默认 cwd = 工具真正干活的地方。
         # 不能用 `src/engine`（那是源码目录）：引擎配置里 `terminal.cwd: .`，
         # 于是 agent 的「当前工作目录」就成了源码树，工具会往仓库里写东西。
+        # 不给默认值：悄悄退回源码目录正是以前「工具往仓库里写东西」的原因，
+        # 缺工作区就该当场报错，而不是让 agent 在仓库根上乱跑。
+        if workspace is None:
+            raise ValueError("引擎必须有工作区目录：workspace 不能为空")
         self._workspace = Path(workspace)
         self._proc = _EngineProcess(self)
         self._proc.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.SeparateChannels)
         self._proc.readyReadStandardOutput.connect(self._read_stdout)
         self._proc.readyReadStandardError.connect(self._read_stderr)
         self._proc.finished.connect(self._on_finished)
-        self._proc.errorOccurred.connect(lambda err: self.failed.emit(str(err)))
+        self._proc.errorOccurred.connect(self._on_proc_error)
 
         self._buffer = ""
         self._stderr_tail: list[str] = []  # 引擎最后几行 stderr：退出码非 0 时要拿它说人话
@@ -696,7 +700,8 @@ class EngineWire(QtCore.QObject):
         self._recover_rounds = 0  # 连着救了几轮：超了就开新会话，别在同一个错上打转
         self._pending_text = ""  # 会话还没 attach 时打的字，attach 完再发
         self._pending_turns: list[tuple[str, list]] = []  # 会话还没起来时攒下的几轮：(正文, 附件)
-        self._turn: dict | None = None  # 正在交接的这一轮：{"text", "refs", "left", "images"}
+        self._turn: dict | None = None  # 正在交接的这一轮：{"text", "refs", "left", "images", "tag"}
+        self._turn_seq = 0  # 每一轮附件交接自己的编号：回执靠它认领，不能几轮共用同一个 tag
         self._attach_names: dict[int, tuple[str, bool]] = {}  # rid → (名字, 是否必须有 @file: 回执)
         self._started = False
 
@@ -799,10 +804,14 @@ class EngineWire(QtCore.QObject):
         ))
         if self._proc.state() != QtCore.QProcess.ProcessState.NotRunning:
             self._proc.closeWriteChannel()  # 引擎读到 stdin EOF，自己收尾
-            self._proc.terminate()
+            # 先等它自己收：会话落盘、记忆/技能回顾、锁清理都在这一趟里做。
+            # 原来 EOF 之后立刻 terminate()，Windows 上等于 TerminateProcess，收尾全被砍掉，
+            # STOP_TIMEOUT 也永远用不满（waitForFinished 当场返回）。
             if not self._proc.waitForFinished(STOP_TIMEOUT * 1000):
                 logger.warning("引擎 %s 秒内没退出，强杀", STOP_TIMEOUT)
-                self._proc.kill()
+                self._proc.terminate()
+                if not self._proc.waitForFinished(2000):
+                    self._proc.kill()
 
     def is_running(self) -> bool:
         return self._proc.state() == QtCore.QProcess.ProcessState.Running
@@ -826,6 +835,10 @@ class EngineWire(QtCore.QObject):
         self._workspace = Path(text)
 
     def create_session(self, cwd: str | None = None) -> None:
+        # 回包之前不许再往会话里发东西：这会儿 `_session_id` 还是旧那一场，
+        # 而它马上要被替换（界面随后清屏），发进去的话用户再也看不见；
+        # 同时挡住 submit 再发一次 session.create（两场会话并存，对话被劈成两半）。
+        self._attaching = True
         # 默认 cwd 是工作区：新会话的 agent 就在这儿干活，不落到源码目录里
         params = {"cwd": cwd or str(self._workspace)}
         # 档位是会话级的：新会话不带就等于回到全局默认（中），界面却还勾着上一场选的那档。
@@ -840,6 +853,8 @@ class EngineWire(QtCore.QObject):
         # `stored_session_id`），只认回包的话 `_stored_id` 会一直是空，
         # 之后会话被回收（4001）就没法按存储 id 重新挂上，界面只好红字报「session not found」。
         self._stored_id = session_id or self._stored_id
+        # 回包之前打的字先攒着：这会儿 `_session_id` 还是上一场的，直接发就进了旧会话
+        self._attaching = True
         # 恢复的会话是懒加载的：resume 只挂历史、不建 agent，此刻问档位只会回全局默认。
         self.reasoning_pending.emit(True)
         self._call("session.resume", {"session_id": session_id}, tag="session.resume")
@@ -891,15 +906,18 @@ class EngineWire(QtCore.QObject):
         self._dispatch_turn(text, items)
 
     def _dispatch_turn(self, text: str, items: list) -> None:
+        self._turn_seq += 1
+        tag = f"attach:turn:{self._turn_seq}"
         self._turn = {
             "text": text,
             "refs": [],
             "left": len(items),
             "images": sum(1 for item in items if item.get("kind") == "image"),
+            "tag": tag,
         }
         for item in items:
             method, params, name = self._attach_frame(item)
-            rid = self._call(method, {**params, "session_id": self._session_id}, tag="attach:turn")
+            rid = self._call(method, {**params, "session_id": self._session_id}, tag=tag)
             # 文件必须带回 `@file:` 引用才算成立（模型靠它知道有文件）；图片挂上就够
             self._attach_names[rid] = (name, method == "file.attach")
 
@@ -1263,15 +1281,26 @@ class EngineWire(QtCore.QObject):
             chunk = self._outbox[0]
             if len(chunk) > self.WRITE_CHUNK:
                 self._outbox[0] = chunk[self.WRITE_CHUNK:]
-                self._proc.write(chunk[:self.WRITE_CHUNK])
+                written = self._proc.write(chunk[:self.WRITE_CHUNK])
+                if written is not None and written < 0:
+                    # 一个字节都没进去：这一帧已经断了，别把剩下的残片继续灌进管道
+                    self._outbox.clear()
+                    self.failed.emit("引擎没接住指令，这一步没送出去")
+                    return
                 QtCore.QTimer.singleShot(0, self._pump_writes)
                 return
             self._outbox.popleft()
-            self._proc.write(chunk)
+            written = self._proc.write(chunk)
+            if written is not None and written < 0:
+                self.failed.emit("引擎没接住指令，这一步没送出去")
+                return
 
     # ---- 内部：收帧 ----
 
     def _read_stdout(self) -> None:
+        if not self._started:
+            # 上一趟进程的尾巴：`_on_finished` 已经收过摊了，再当帧解析会把界面挂到已死的 sid 上
+            return
         # 增量解码：多字节字符可能被切在两次读取的边界上，逐块 decode 会把残字节变成 U+FFFD，
         # 表现就是偶发中文乱码，最坏一行 JSON 解析失败被当成「引擎断线」。
         decoder = self._out_decoder
@@ -1305,16 +1334,17 @@ class EngineWire(QtCore.QObject):
         del self._stderr_tail[:-6]
         logger.warning("引擎 stderr：%s", text[:400])
 
-    def _exit_reason(self, code: int) -> str:
+    def _exit_reason(self, code: int, tail: list[str] | None = None) -> str:
         """引擎非正常退出时说清到底怎么了（别只丢一句「退出码 1」）。"""
-        return describe_engine_exit(code, self._stderr_tail, self._engine_home())
+        return describe_engine_exit(code, self._stderr_tail if tail is None else tail, self._engine_home())
 
     def _dispatch(self, line: str) -> None:
         try:
             frame = json.loads(line)
         except json.JSONDecodeError:
-            logger.warning("引擎输出了非 JSON 行：%s", line[:200])
-            self.failed.emit("引擎输出了非 JSON 行")
+            # 引擎或它 import 的库偶尔往 stdout 打一行日志/警告：跳过就行。
+            # 原来这里直接 failed → boot_failed，于是一行无关的 print 会被当成「引擎起不来」。
+            logger.warning("引擎输出了非 JSON 行（已跳过）：%s", line[:200])
             return
 
         # 服务端请求：有 method 且 id 不是整数（srq-N），等客户端回答
@@ -1403,6 +1433,10 @@ class EngineWire(QtCore.QObject):
             if tag.startswith("model.save_key") or tag == "config.set:model":
                 # 设置窗口正等这一条：失败原因原样交给那个窗口，别改成「没配供应商」的泛提示，
                 # 也别往聊天区再喷一条无关的英文
+                if tag.startswith("model.save_key"):
+                    # 这把 Key 没存上：排着的那次切换跟着作废，
+                    # 否则下一次存别家成功时会突然切回这个旧选择。
+                    self._pending_switch = ""
                 self.save_result.emit(tag, {"ok": False, "message": str(message)})
                 return
             if code == 5080 or looks_unconfigured(message, code):
@@ -1570,7 +1604,9 @@ class EngineWire(QtCore.QObject):
         self._settle_turn(tag)
 
     def _settle_turn(self, tag: str) -> None:
-        if tag != "attach:turn" or self._turn is None:
+        if self._turn is None or tag != self._turn.get("tag"):
+            # 上一轮附件的回执跑到这一轮来了：不能拿它减这一轮的账，
+            # 否则这一轮会在附件还没挂完时就 prompt.submit（文件被静默漏掉）。
             return
         self._turn["left"] -= 1
         if self._turn["left"] <= 0:
@@ -1659,8 +1695,19 @@ class EngineWire(QtCore.QObject):
             else:
                 self.notice.emit(text)
 
+    def _on_proc_error(self, message: str) -> None:
+        """进程级错误：多半是根本没起来（解释器找不到、权限不够）。
+
+        起不来就不会有 `finished`，`_started` 会一直挂在 True，之后每次 `start()` 直接 return，
+        引擎再也拉不起来。这里只在「确实没在跑」时复位，运行中的偶发错误交给 `finished` 收。
+        """
+        if not self.is_running():
+            self._started = False
+        self.failed.emit(str(message))
+
     def _on_finished(self, code: int, _status) -> None:
         self._started = False
+        stderr_tail = list(self._stderr_tail)  # 复位会清掉它，先留一份给「退出原因」用
         typed_but_unsent = bool(self._pending_text)  # 复位会把它清掉，先记下要不要告诉用户
         # 上一趟的运行时 id、待补发、救回标志、在途标志、附件登记一律作废：不带进下一趟，
         # 否则下一趟一上来就被上一趟的 `_recovering` 挡死（与 `_reset_transport_state` 同一份逻辑）
@@ -1675,4 +1722,4 @@ class EngineWire(QtCore.QObject):
             self.attachment_failed.emit("整条消息", "引擎断开，你刚打的这句还没发出去")
         self.closed.emit()
         if code not in (0, 15):
-            self.failed.emit(self._exit_reason(code))
+            self.failed.emit(self._exit_reason(code, stderr_tail))

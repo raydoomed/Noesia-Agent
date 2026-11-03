@@ -9,7 +9,7 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-from .helpers import is_windows_absolute_path, source_field
+from .helpers import is_windows_absolute_path
 
 _URL_SCHEME_RE = re.compile(r'^https?://', re.IGNORECASE)
 _FILE_URL_RE = re.compile(r'^file://', re.IGNORECASE)

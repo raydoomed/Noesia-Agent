@@ -65,7 +65,10 @@ def highlight_code(text: str, path: str | None) -> list[list[tuple[str, str | No
 
     行数与 `text.splitlines()` 严格对齐——diff 要按行叠底色，少一行就串位。
     """
-    lines = text.split("\n")
+    # 用 splitlines()：按 "\n" 切会在 CRLF 行尾留下 "\r"，也会把尾随换行多切出一个空行，
+    # 与「行数与 splitlines() 对齐」的约定不一致，diff 的底色就串位。
+    # 空文本仍返回一行空行：调用方按 [0] 取首行。
+    lines = text.splitlines() or [""]
     plain = [[(line, None, False)] for line in lines]
     lexer = _lexer_for(path)
     if lexer is None or not text.strip():

@@ -14,7 +14,6 @@ import pathlib
 import tempfile
 import time
 
-import numpy as np
 import requests
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -26,7 +25,6 @@ SAMPLE_RATE = 24000
 FRAME_SECONDS = 0.02          # 20ms 一帧 PCM
 # 数字人模型不在这里定：`data/settings/avatar.json` 的 model 才是唯一来源
 # （s2 输出 888×1184、嘴部和牙齿比 s1 的 624×832 清楚；s1 官方标"稳定性好"）
-SILENCE_SECONDS = 3           # 先推静音把 Vidu 的渲染/推流叫起来
 CONN_ID = "noesia-avatar"     # Vidu 侧认这条连接的名字
 FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_SECONDS)  # 20ms = 960 字节
 

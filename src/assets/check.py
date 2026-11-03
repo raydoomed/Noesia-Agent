@@ -64,6 +64,18 @@ class AssetReport:
         return any(f.level == ERROR for f in self.findings)
 
 
+def _display_path(path: Path, root: Path) -> str:
+    """报告里显示的路径：优先相对项目根。
+
+    素材目录允许配绝对路径（放外置盘）：那时 `relative_to` 会抛 ValueError，
+    整个 `check-assets` 直接崩掉——而这是唯一能发现素材问题的命令，不能因为显示方式就不可用。
+    """
+    try:
+        return str(path.relative_to(root)).replace("\\", "/")
+    except ValueError:
+        return str(path).replace("\\", "/")
+
+
 def _is_gray(rgb: tuple[int, int, int], tolerance: int = 10) -> bool:
     r, g, b = rgb
     return max(abs(r - g), abs(g - b), abs(r - b)) <= tolerance
@@ -124,7 +136,7 @@ def inspect_image(path: Path, display: str | None = None) -> tuple[ImageInfo, li
         )
         if info.has_alpha:
             alpha = image.convert("RGBA").getchannel("A")
-            low, high = alpha.getextrema()
+            low, _high = alpha.getextrema()
             info.alpha_fully_opaque = low == 255
             if info.alpha_fully_opaque:
                 findings.append(Finding(WARN, label, "有 alpha 通道但全不透明（等于没有透明区域）"))
@@ -207,7 +219,7 @@ def inspect_assets(resolver: PathResolver, avatar: AvatarSection) -> AssetReport
 
     sizes: dict[tuple[int, int], list[str]] = {}
     for path in image_paths:
-        display = str(path.relative_to(resolver.root)).replace("\\", "/")
+        display = _display_path(path, resolver.root)
         if not path.is_file():
             report.findings.append(Finding(ERROR, display, "配置里引用的形象图不存在"))
             continue
@@ -220,7 +232,7 @@ def inspect_assets(resolver: PathResolver, avatar: AvatarSection) -> AssetReport
     if not idle_path.is_file():
         report.findings.append(Finding(ERROR, avatar.idle_video, "待机视频不存在"))
     else:
-        display = str(idle_path.relative_to(resolver.root)).replace("\\", "/")
+        display = _display_path(idle_path, resolver.root)
         video, findings = inspect_video(idle_path, display)
         report.videos.append(video)
         report.findings.extend(findings)

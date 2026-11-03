@@ -35,6 +35,38 @@ def _read_soul() -> str:
         return ""
 
 
+def _engine_home() -> Path:
+    """引擎的 home（`NOESIA_HOME`）：`config.yaml`、`.env`、`SOUL.md`、`memories/` 都在这一层。"""
+    return env_file().parent
+
+
+def _memory_file(name: str) -> Path:
+    """她的记忆文件：`NOESIA_HOME/memories/`，和引擎读写的是同一份。"""
+    return env_file().with_name("memories") / name
+
+
+def _read_memory_file(name: str) -> str:
+    """磁盘上那份记忆原文（条目之间单独一行 `§`）；还没写过就是空的。"""
+    try:
+        return _memory_file(name).read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+
+
+# 条目分隔符：和引擎 `memory_tool_store.ENTRY_DELIMITER` 一致，改这里等于改记忆文件格式
+MEMORY_DELIMITER = "\n§\n"
+
+
+def _memory_entries(text: str) -> list[str]:
+    """按引擎的规则切条目：整行 `§` 才算分隔；条目首尾空白去掉，空条目丢掉。"""
+    return [entry for entry in (part.strip() for part in text.split(MEMORY_DELIMITER)) if entry]
+
+
+def _memory_text(entries: list[str]) -> str:
+    """条目拼回文件内容；计数、比较、写盘都用这一份，三处口径不会跑偏。"""
+    return MEMORY_DELIMITER.join(entries)
+
+
 def _default_soul() -> str:
     """安装时写进 `SOUL.md` 的那份默认人设。
 
@@ -52,6 +84,77 @@ def _default_soul() -> str:
     spec.loader.exec_module(module)
     return module.DEFAULT_SOUL_MD
 
+def _field_label(text: str, parent: QtWidgets.QWidget) -> QtWidgets.QLabel:
+    """页内小标题。颜色写在 `#field-label` 上，不吃系统主题的默认字色。"""
+    label = QtWidgets.QLabel(text, parent)
+    label.setObjectName("field-label")
+    return label
+
+
+def _fill_editor(editor: QtWidgets.QPlainTextEdit, text: str) -> None:
+    """把整篇写进编辑框，并把字色定成浅色。
+
+    `QPlainTextEdit` 的字色走文档格式/调色板，QSS 里的 `color` 不一定吃得住——浅色主题下就
+    变成黑字压在深色框上。`setPlainText` 又会把格式清掉，所以每次写内容都跟一遍整篇字色。
+    """
+    editor.setPlainText(text)
+    light = QtGui.QTextCharFormat()
+    light.setForeground(QtGui.QColor("#eef1f6"))
+    cursor = editor.textCursor()
+    cursor.select(QtGui.QTextCursor.SelectionType.Document)
+    cursor.mergeCharFormat(light)
+    cursor.clearSelection()
+    editor.setTextCursor(cursor)
+    editor.setCurrentCharFormat(light)  # 接着往下打字也是这个颜色
+
+
+# 编辑框自带的样式：不指望对话框那张大表一定解析成功，这几个值就是大表里同一套
+_EDITOR_QSS = """
+QPlainTextEdit {
+    background-color: rgba(255, 255, 255, 10);
+    border: 1px solid rgba(255, 255, 255, 30);
+    border-radius: 8px;
+    color: #eef1f6;
+    padding: 6px 10px;
+    font-size: 12px;
+    selection-background-color: rgba(255, 255, 255, 70);
+    selection-color: #10121a;
+}
+QPlainTextEdit:hover { border-color: rgba(255, 255, 255, 62); }
+QPlainTextEdit:focus { border-color: rgba(255, 255, 255, 130); background-color: rgba(255, 255, 255, 16); }
+"""
+
+
+def _make_editor(parent: QtWidgets.QWidget, text: str, min_height: int) -> QtWidgets.QPlainTextEdit:
+    """一块能编辑整篇文本的框：深色玻璃底 + 浅色字，写在它自己身上，换主题也不会变黑。"""
+    editor = QtWidgets.QPlainTextEdit(parent)
+    editor.setMinimumHeight(min_height)
+    editor.setStyleSheet(_EDITOR_QSS)
+    _fill_editor(editor, text)
+    return editor
+
+
+def _apply_dark_palette(widget: QtWidgets.QWidget) -> None:
+    """给整个设置窗定死深色底 + 浅色字。
+
+    QSS 覆盖不到的地方（最典型就是 `QPlainTextEdit` 里已经写进去的字——它的颜色走文档/调色板，
+    不是每条 `color` 都吃）会退回系统调色板：Windows 浅色主题下就是黑字压在深色框上，等于看不见。
+    这里把底色、正文、占位符、选中色都定死，哪个平台什么主题都不影响。
+    """
+    palette = widget.palette()
+    palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(18, 18, 22))
+    palette.setColor(QtGui.QPalette.ColorRole.Base, QtGui.QColor(30, 30, 36))
+    palette.setColor(QtGui.QPalette.ColorRole.Text, QtGui.QColor("#eef1f6"))
+    palette.setColor(QtGui.QPalette.ColorRole.WindowText, QtGui.QColor("#eef1f6"))
+    palette.setColor(QtGui.QPalette.ColorRole.ButtonText, QtGui.QColor("#eef1f6"))
+    palette.setColor(QtGui.QPalette.ColorRole.PlaceholderText, QtGui.QColor(255, 255, 255, 96))
+    palette.setColor(QtGui.QPalette.ColorRole.Highlight, QtGui.QColor(255, 255, 255, 70))
+    palette.setColor(QtGui.QPalette.ColorRole.HighlightedText, QtGui.QColor("#10121a"))
+    palette.setColor(QtGui.QPalette.ColorRole.ToolTipBase, QtGui.QColor(24, 24, 28))
+    palette.setColor(QtGui.QPalette.ColorRole.ToolTipText, QtGui.QColor("#eef1f6"))
+    widget.setPalette(palette)
+
+
 STYLE = """
 /* 全透明、无彩：只有不同程度的白和黑，不再出现任何蓝色 */
 QDialog { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; font-size: 12px; color: #eef1f6; }
@@ -64,6 +167,8 @@ QDialog { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; font
 #dialog-title { color: #ffffff; font-size: 14px; font-weight: 600; letter-spacing: 0.3px; }
 #dialog-sub { color: rgba(255, 255, 255, 100); font-size: 11px; }
 #dialog-hint { color: rgba(255, 255, 255, 100); font-size: 11px; }
+/* 页内小标题：不靠继承，直接给颜色——浅色主题下 QLabel 会退回系统黑字 */
+#field-label { color: rgba(255, 255, 255, 214); font-size: 11.5px; }
 #live { color: rgba(255, 255, 255, 158); font-size: 11.5px; }
 #block-name { color: rgba(255, 255, 255, 246); font-size: 12.5px; font-weight: 600; }
 #closebtn {
@@ -255,20 +360,25 @@ class _TokenChecker(QtCore.QObject):
     def start(self, provider: str, token: str) -> None:
         import threading
 
-        verify = _TOKEN_VERIFIERS.get(provider)
-        if verify is None:
-            self.done.emit(True, "已保存（这家没有在线校验，先只查了格式）", token)
-            return
+        # 调用方先用 `_avatar_provider_ready()` 挡过没有校验实现的厂商，这里不会有 KeyError
+        verify = _TOKEN_VERIFIERS[provider]
 
         def work() -> None:
             try:
-                self.done.emit(True, verify(token), token)
+                self._emit(True, verify(token), token)
             except RuntimeError as exc:
-                self.done.emit(False, str(exc), token)
+                self._emit(False, str(exc), token)
             except Exception as exc:  # noqa: BLE001 — 校验线程不能静默死掉
-                self.done.emit(False, f"校验没成功：{exc}", token)
+                self._emit(False, f"校验没成功：{exc}", token)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _emit(self, ok: bool, message: str, token: str) -> None:
+        """结果回主线程；窗已经关了对象就没了——那是正常收场，不该在后台线程里炸一次。"""
+        try:
+            self.done.emit(ok, message, token)
+        except RuntimeError:
+            return
 
 
 def _page_scroller(parent: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
@@ -406,9 +516,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     TAB_AVATAR = 2
     TAB_WORKSPACE = 3
     TAB_SOUL = 4
+    TAB_MEMORY = 5
     """填密钥 / 选模型。数据全部来自引擎的清单（`backends.catalog` 整理过的那份）。"""
 
-    saved = QtCore.Signal(dict)
+
 
     def __init__(
         self,
@@ -429,6 +540,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 少了这一行，点保存/取消会把整个 Noesia 一起带走。
         self.setAttribute(QtCore.Qt.WA_QuitOnClose, False)
         self.setStyleSheet(STYLE)
+        _apply_dark_palette(self)
         self.setMinimumWidth(400)
 
         # 顺序由调用方（catalog）决定：配好的 → 文档里写了怎么配的 → 其余。这里不再排一遍，
@@ -443,6 +555,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._save_waiting = False
         self._save_timer: QtCore.QTimer | None = None
         self._save_notes: list[str] = []
+        # 普通提醒（「这份记忆被清空了」这种）：走灰字，不冒充错误
+        self._save_notices: list[str] = []
 
         frame = QtWidgets.QFrame(self)
         frame.setObjectName("dialog-card")
@@ -500,7 +614,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         tabs.addTab(self._build_avatar_page(tabs), "语音互动")
         tabs.addTab(self._build_workspace_page(tabs), "工作目录")
         tabs.addTab(self._build_soul_page(tabs), "人设")
+        tabs.addTab(self._build_memory_page(tabs), "记忆")
         layout.addWidget(tabs)
+        # 六个页签比 400 宽：再窄最后一个（记忆）就被挤到滚动箭头后面，等于没有这一页
+        self.setMinimumWidth(max(400, tabs.tabBar().sizeHint().width() + 72))
 
         self._build_text_page(text_layout, frame)
 
@@ -528,7 +645,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             # 锁了就是点了毫无反应，用户看不出是按钮灰着（真踩过）。
             self._warn.setStyleSheet(self.FAIL_STYLE)
             self._warn.setText("还没从引擎拿到模型清单：这一页这次不存，其他几页照常保存。")
-        # 一次保存要跑五页：先记住打开设置那一刻的样子，只有真被改过的页才写盘、才可能拦住保存
+        # 一次保存要跑六页：先记住打开设置那一刻的样子，只有真被改过的页才写盘、才可能拦住保存
         self._initial = self._snapshot_pages()
 
     def _live_label(
@@ -646,7 +763,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             name.setObjectName("block-name")
             badge = QtWidgets.QLabel("", block)
             badge.setObjectName("dialog-hint")
-            env = None  # 变量名就是下面 Key 框的占位提示，标题栏里再挂一遍只会把这一块撑宽
+            # 变量名就是下面 Key 框的占位提示，标题栏里再挂一遍只会把这一块撑宽
             use = _SelectDot("", block)
             self._text_group.addButton(use)
             head.addWidget(name)
@@ -656,7 +773,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             box.addLayout(head)
 
             # 引擎给的全是「名字 + 变量名」：四十多家一次要齐要好几秒，所以清单点开下拉时才取
-            model = _slim(_LazyCombo(block, lambda combo, slug=slug: self._ensure_models(slug, combo)), 8)
+            model = _slim(_LazyCombo(block, lambda combo, slug=slug: self._ensure_models(slug)), 8)
             if row.get("models"):
                 for item in list(row.get("models") or []):
                     _add_short(model, _model_label(slug, item), item)
@@ -740,7 +857,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return str(block["row"].get("label") or block["row"].get("provider") or "")
 
         def sort_key(item):
-            slug, block = item
+            _, block = item
             name = label_of(block).lower()
             if mode == "az":
                 return (name,)
@@ -762,7 +879,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 用 isHidden 而不是 isVisible：窗口还没显示时 isVisible 一律是 False，会把「没找到」错亮出来
         self._text_empty.setVisible(bool(query) and all(b["block"].isHidden() for _s, b in ordered))
 
-    def _ensure_models(self, slug: str, combo: QtWidgets.QComboBox | None = None) -> None:
+    def _ensure_models(self, slug: str) -> None:
         """这一家的模型清单还没取：现在取一次，取回来填进它自己的下拉。"""
         block = self._text_blocks.get(slug)
         if not block:
@@ -871,6 +988,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         from app import doubao_voices, speech_prefs
 
         self._voice_picks: dict[str, dict] = {}
+        self._voice_dirty = False   # 用户动过某家的音色（哪怕是没在用的那家）：保存时不能当「没改」跳过
         self._voice_blocks: dict[str, dict] = {}
         self._voice_saved: dict = {}
         self._voice_group = QtWidgets.QButtonGroup(self)
@@ -942,7 +1060,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             name.setObjectName("block-name")
             badge = QtWidgets.QLabel("", block)
             badge.setObjectName("dialog-hint")
-            env = None  # 变量名就是 Key 框的占位提示，标题栏里不再挂一遍
+            # 变量名就是 Key 框的占位提示，标题栏里不再挂一遍
             use = _SelectDot("", block)
             self._voice_group.addButton(use)
             head.addWidget(name)
@@ -1127,6 +1245,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
     def _voice_pick_changed(self, provider: str) -> None:
         """用户自己挑了音色/档位：记在这家引擎名下，清单重填也不许换掉。"""
+        self._voice_dirty = True
         block = self._voice_block(provider)
         picks = self._voice_picks.setdefault(provider, {})
         if block.get("voice") is not None:
@@ -1433,6 +1552,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._avatar_pending_provider = ""
         self._avatar_key_drafts: dict[str, str] = {}
         self._saved_pages: set[str] = set()
+        self._pending_steps: list = []   # 等异步校验时，后面还没验过的保存步骤
         self._avatar_checker = _TokenChecker(self)
         self._avatar_checker.done.connect(self._on_avatar_checked)
         self._avatar_provider_box.currentIndexChanged.connect(self._on_avatar_provider_changed)
@@ -1517,10 +1637,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
 
-        layout.addWidget(QtWidgets.QLabel("人设（SOUL.md）", page))
-        self._soul_edit = QtWidgets.QPlainTextEdit(page)
-        self._soul_edit.setPlainText(_read_soul())
-        self._soul_edit.setMinimumHeight(280)
+        layout.addWidget(_field_label("人设（SOUL.md）", page))
+        self._soul_edit = _make_editor(page, _read_soul(), 280)
         self._soul_edit.textChanged.connect(self._on_soul_edited)
         layout.addWidget(self._soul_edit, 1)
 
@@ -1548,7 +1666,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         except Exception as exc:  # noqa: BLE001 - 读不到就说清楚，别静默什么都不做
             self._soul_hint.setText(f"读不到默认人设：{exc}")
             return
-        self._soul_edit.setPlainText(text)
+        _fill_editor(self._soul_edit, text)
         self._soul_hint.setText(
             f"已填回安装时的默认人设（{len(text)} 字）。点「保存并启用」写回文件，关掉窗口则什么都不改。"
         )
@@ -1648,6 +1766,166 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         """刚保存的工作目录（只有从「工作目录」页签保存过才有）。"""
         return getattr(self, "_saved_workspace", "")
 
+    def _build_memory_page(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
+        """她「记得什么」：`NOESIA_HOME/memories/` 下的 USER.md / MEMORY.md，加两个上限。
+
+        条目之间是单独一行 `§`——就是引擎写出来的样子。两个上限对应引擎配置 `memory` 段里的
+        `user_char_limit` / `memory_char_limit`，不在这儿另存一份。
+        """
+        from app.engine_config import memory_limits
+
+        page = QtWidgets.QWidget(parent)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(8)
+
+        memory_limit, user_limit = memory_limits(ROOT / SETTINGS.engine.core_path, _engine_home())
+        self._limits_at_open = (user_limit, memory_limit)
+        limits = QtWidgets.QHBoxLayout()
+        limits.setContentsMargins(0, 0, 0, 0)
+        limits.setSpacing(6)
+        limits.addWidget(_field_label("用户画像上限", page))
+        self._user_limit = QtWidgets.QLineEdit(page)
+        self._user_limit.setValidator(QtGui.QIntValidator(200, 20_000, page))
+        self._user_limit.setFixedWidth(64)
+        self._user_limit.setText(str(user_limit) if user_limit else "")
+        self._user_limit.textChanged.connect(self._on_memory_edited)
+        limits.addWidget(self._user_limit)
+        limits.addWidget(_field_label("字符", page))
+        limits.addSpacing(16)
+        limits.addWidget(_field_label("记忆上限", page))
+        self._note_limit = QtWidgets.QLineEdit(page)
+        self._note_limit.setValidator(QtGui.QIntValidator(200, 20_000, page))
+        self._note_limit.setFixedWidth(64)
+        self._note_limit.setText(str(memory_limit) if memory_limit else "")
+        self._note_limit.textChanged.connect(self._on_memory_edited)
+        limits.addWidget(self._note_limit)
+        limits.addWidget(_field_label("字符", page))
+        limits.addStretch(1)
+        layout.addLayout(limits)
+
+        layout.addWidget(_field_label("用户画像（USER.md）—— 她记住的「你是谁」", page))
+        self._user_edit = _make_editor(page, _read_memory_file("USER.md"), 92)
+        self._user_edit.textChanged.connect(self._on_memory_edited)
+        layout.addWidget(self._user_edit, 1)
+
+        layout.addWidget(_field_label("她的记录（MEMORY.md）—— 她自己的笔记、踩过的坑", page))
+        self._note_edit = _make_editor(page, _read_memory_file("MEMORY.md"), 92)
+        self._note_edit.textChanged.connect(self._on_memory_edited)
+        layout.addWidget(self._note_edit, 1)
+
+        self._memory_hint = QtWidgets.QLabel("", page)
+        self._memory_hint.setObjectName("dialog-hint")
+        self._memory_hint.setWordWrap(True)
+        layout.addWidget(self._memory_hint)
+        self._on_memory_edited()
+        return page
+
+    def _memory_limit_inputs(self) -> tuple[int, int] | None:
+        """(画像上限, 记忆上限)；填的不是 200–20000 的整数就返回 None。"""
+        values: list[int] = []
+        for box in (self._user_limit, self._note_limit):
+            raw = box.text().strip()
+            if not raw.isdigit() or not 200 <= int(raw) <= 20_000:
+                return None
+            values.append(int(raw))
+        return values[0], values[1]
+
+    def _memory_snapshot(self) -> tuple[str, str, str, str]:
+        """这一页的现值：两份记忆的规范化文本 + 两个上限框。没改动就不写盘。"""
+        return (
+            _memory_text(_memory_entries(self._user_edit.toPlainText())),
+            _memory_text(_memory_entries(self._note_edit.toPlainText())),
+            self._user_limit.text().strip(),
+            self._note_limit.text().strip(),
+        )
+
+    def _on_memory_edited(self) -> None:
+        """字数对着上限实时走：超了当场标红，别等点了保存才知道。"""
+        limits = self._memory_limit_inputs()
+        parts: list[str] = []
+        over = False
+        for label, editor, index in (("画像", self._user_edit, 0), ("记录", self._note_edit, 1)):
+            count = len(_memory_text(_memory_entries(editor.toPlainText())))
+            if limits is None:
+                parts.append(f"{label} {count:,} 字符")
+                continue
+            limit = limits[index]
+            over = over or count > limit
+            pct = int(count * 100 / limit) if limit else 0
+            parts.append(f"{label} {count:,}/{limit:,}（{pct}%）")
+        self._memory_hint.setStyleSheet(self.FAIL_STYLE if over else "")
+        tail = "。超出上限，保存会被拦下。" if over else "。条目之间单独一行 §；保存后新建会话才带进上下文。"
+        self._memory_hint.setText("；".join(parts) + tail)
+
+    def _save_memory_only(self) -> str:
+        """只改记忆：上限写进引擎配置，两份记忆文件整份写回，别的页一个字节都不动。"""
+        from app.engine_config import set_engine_config
+
+        if self._memory_snapshot() == self._initial["memory"]:
+            # 没动过（包括本来就没有文件的）：不写、也不拦着别的页保存
+            self._memory_changed = False
+            self._mark_saved("memory")
+            self._on_memory_edited()  # 顺手把上次的红字换回正常说明
+            return "ok"
+
+        limits = self._memory_limit_inputs()
+        if limits is None:
+            self._memory_hint.setStyleSheet(self.FAIL_STYLE)
+            self._memory_hint.setText("上限要填 200–20000 之间的整数（字符数）。")
+            return "fail"
+
+        user_limit, memory_limit = limits
+        plan = (
+            ("USER.md", self._user_edit.toPlainText(), user_limit, "用户画像"),
+            ("MEMORY.md", self._note_edit.toPlainText(), memory_limit, "记忆"),
+        )
+        prepared: list[tuple[str, str]] = []
+        for name, raw, limit, label in plan:
+            text = _memory_text(_memory_entries(raw))
+            if len(text) > limit:
+                self._memory_hint.setStyleSheet(self.FAIL_STYLE)
+                self._memory_hint.setText(
+                    f"{label}有 {len(text):,} 字符，超过上限 {limit:,}（多 {len(text) - limit:,}）。"
+                    "删掉一些条目，或者把上限调大。"
+                )
+                return "fail"
+            prepared.append((name, text))
+
+        try:
+            for name, text in prepared:
+                path = _memory_file(name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # 整份替换：先写临时文件再改名，引擎那边永远不会读到写了一半的记忆
+                temp = path.with_name(path.name + ".tmp")
+                temp.write_text(text, encoding="utf-8", newline="")
+                temp.replace(path)
+            if (user_limit, memory_limit) != self._limits_at_open:
+                set_engine_config(
+                    ROOT / SETTINGS.engine.core_path,
+                    _engine_home(),
+                    {"memory.memory_char_limit": memory_limit, "memory.user_char_limit": user_limit},
+                )
+        except Exception as exc:  # noqa: BLE001 - 写不进去就说清楚，别装作保存了
+            self._memory_hint.setStyleSheet(self.FAIL_STYLE)
+            self._memory_hint.setText(f"写不进去：{exc}")
+            return "fail"
+
+        # 只在「本来有、这次清空」时说一句；文件本来就不存在（第一个字都没写过）不算清空
+        for (name, text), old in zip(prepared, self._initial["memory"][:2]):
+            if old and not text:
+                self._save_notices.append(f"{name} 已经清空——她这方面现在一条都不记得了。")
+        self._memory_changed = True
+        self._limits_at_open = (user_limit, memory_limit)
+        self._mark_saved("memory")
+        self._initial["memory"] = self._memory_snapshot()
+        self._on_memory_edited()
+        return "ok"
+
+    def memory_changed(self) -> bool:
+        """刚才保存的记忆是真的改了，还是原样保存（`main.py` 据此用不同措辞）。"""
+        return bool(getattr(self, "_memory_changed", False))
+
     def saved_tab(self) -> int:
         """刚才是从哪个页签点保存的（`TAB_*` 那几个常量）。"""
         return getattr(self, "_saved_tab", 0)
@@ -1674,7 +1952,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         super().keyPressEvent(event)
 
     def _snapshot_pages(self) -> dict:
-        """打开设置那一刻五页各自的取值：用来判断这次到底改了哪几页。"""
+        """打开设置那一刻六页各自的取值：用来判断这次到底改了哪几页。"""
         return {
             "text": self.selection(),
             "voice": self.voice_selection(),
@@ -1684,18 +1962,23 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             ),
             "workspace": self._workspace_edit.text().strip(),
             "soul": self._soul_edit.toPlainText(),
+            "memory": self._memory_snapshot(),
         }
 
     def _mark_saved(self, page: str) -> None:
         """记下这一页这次真的落地了（`main.py` 按这个逐项收尾，不再猜是哪个页签）。"""
         self._saved_pages.add(page)
 
+    def save_notices(self) -> list[str]:
+        """跟 `save_notes` 一样只在关窗后说，但这些不是错误：普通一条灰字。"""
+        return list(getattr(self, "_save_notices", []) or [])
+
     def save_notes(self) -> list[str]:
         """只有关窗才会丢的信息（比如这一页压根没拿到模型清单）：窗口关掉之后要补说一句。"""
         return list(getattr(self, "_save_notes", []) or [])
 
     def saved_pages(self) -> set[str]:
-        """这次保存真正落地的页：`text` / `soul` / `workspace` / `avatar` / `voice`。"""
+        """这次保存真正落地的页：`text` / `soul` / `workspace` / `avatar` / `voice` / `memory`。"""
         return set(getattr(self, "_saved_pages", set()))
 
     def _save_text_page(self) -> str:
@@ -1749,37 +2032,50 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 return fail(bad)
         text_prefs.remember_many(data.get("models") or {})  # 每家上次选的模型各自记着
         self._text_saved = dict(data)  # 交出去的那份留底
-        self.saved.emit(data)
         self._mark_saved("text")
         return "ok"
 
     def _on_save(self) -> None:
-        """点一次保存就把五页一起存：哪一页没过校验就跳到那一页贴原因，窗口不关。"""
+        """点一次保存就把六页一起存：哪一页没过校验就跳到那一页贴原因，窗口不关。"""
         self._saved_tab = self._tabs.currentIndex()
         self._saved_pages = set()
+        self._text_saved = {}  # 新一轮保存：按界面现值重新取一遍（上次的留底只在同一次保存里复用）
+        self._pending_steps = []
         steps = (
             (self.TAB_TEXT, self._save_text_page),
             (self.TAB_SOUL, self._save_soul_only),
             (self.TAB_WORKSPACE, self._save_workspace_only),
             (self.TAB_AVATAR, self._save_avatar_only),
             (self.TAB_VOICE, self._save_voice_only),
+            (self.TAB_MEMORY, self._save_memory_only),
         )
-        pending = False
         self._warn.setStyleSheet("")
+        self._run_saves(list(steps))
+
+    def _run_saves(self, steps: list) -> None:
+        """按顺序存六页。哪一页在等异步结果（人形页校验 Token），就把剩下的记下来，回来接着走。"""
         try:
-            for tab, save in steps:
+            for index, (tab, save) in enumerate(steps):
                 outcome = save()
                 if outcome == "fail":
                     self._tabs.setCurrentIndex(tab)  # 停在不通过的那一页：原因已经贴在该页上
                     return
                 if outcome == "pending":
-                    pending = True
+                    # 后面几页还没验过：等校验回来直接关窗的话，语音页的错会被整页吞掉
+                    self._pending_steps = steps[index + 1:]
                     self._tabs.setCurrentIndex(tab)  # 别让人干等：切到正在等结果的那一页
+                    return
         except Exception as exc:  # noqa: BLE001 - 保存里崩了也必须说出来，不许没反应
             self._warn.setStyleSheet(self.FAIL_STYLE)
             self._warn.setText(f"保存出错了：{type(exc).__name__}: {exc}")
             return
-        if pending:  # 人形那页还在校验 Token：等校验回来再走 _close_or_save()
+        self._close_or_save()
+
+    def _resume_saves(self) -> None:
+        """异步校验回来了：把没走完的页接着存完，再决定关不关窗。"""
+        steps, self._pending_steps = self._pending_steps, []
+        if steps:
+            self._run_saves(steps)
             return
         self._close_or_save()
 
@@ -1851,13 +2147,17 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._avatar_hint.setStyleSheet("")
             self._avatar_hint.setText(message)
             return
+        # 校验通过了才写：以前先在保存时写 avatar.json，Token 是坏的也把厂商改掉了，
+        # 用户看到配置已经变了，以为生效了，其实一次都跑不起来。
         avatar_prefs.write_token(self._avatar_pending, self._avatar_pending_provider)
+        avatar_prefs.save(self._avatar_pending_provider, self._avatar_model_box.currentData())
+        self._mark_saved("avatar")
         self._avatar_key_drafts.pop(self._avatar_pending_provider, None)  # 已经进 .env，草稿不用留
         self._avatar_pending = ""
         self._avatar_key_edit.clear()
         self._avatar_hint.setStyleSheet("")
         self._avatar_hint.setText(message + " 已存进 data/NoesiaHome/.env。")
-        self._close_or_save()  # 校验过了就收尾；文本页那边要等引擎回执的，走的是同一条路
+        self._resume_saves()  # 校验过了就往下走：后面还没验的页先验完，再收尾
 
     def _on_avatar_key_typed(self) -> None:
         """凭证框一敲字就把提示换成对的：别再挂着「还没填凭证」，那会让人以为根本没填上。"""
@@ -1881,10 +2181,11 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         typed = self._avatar_key_edit.text().strip()
         if not typed and (str(provider), str(self._avatar_model_box.currentData() or "")) == self._initial["avatar"]:
             return "ok"  # 这页没动过：不写、也不拦着别的页保存
-        avatar_prefs.save(provider, self._avatar_model_box.currentData())  # 用哪家、哪个模型进 avatar.json；Key 只进 .env
-        self._mark_saved("avatar")
         if not typed:
-            return "ok"  # 只改了厂商，存完就算过
+            # 只改了厂商/模型：没有凭证要校验，直接落地
+            avatar_prefs.save(provider, self._avatar_model_box.currentData())  # 用哪家、哪个模型进 avatar.json
+            self._mark_saved("avatar")
+            return "ok"
         problem = avatar_prefs.token_issue(typed)
         if problem:
             self._avatar_hint.setStyleSheet(self.FAIL_STYLE)
@@ -1910,7 +2211,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         from app import speech_prefs
 
         keys = self.voice_keys()
-        if not keys and self.voice_selection() == self._initial["voice"]:
+        if not keys and not self._voice_dirty and self.voice_selection() == self._initial["voice"]:
             return "ok"  # 这页没动过：不写、也不拦着别的页保存
         # 先把每家的 Key 过一遍：哪一串明显不像 Key 就停在那一家，坏的绝不写盘
         for provider, typed in keys.items():
@@ -1962,6 +2263,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             used["configured"] = True
         for provider in self._voice_blocks:
             self._voice_refresh(provider)
+        self._voice_dirty = False
         self._mark_saved("voice")
         return "ok"
 

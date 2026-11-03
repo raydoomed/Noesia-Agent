@@ -31,7 +31,6 @@ class BootSplash(QtWidgets.QWidget):
         self._failed = False
         self._angle = 0
         self._started = time.monotonic()
-        self._last_emit = 0.0  # 给探针/日志用：最近一次「步骤变了」
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(33)  # 30fps 够用，别跟待机视频抢
         self._timer.timeout.connect(self._tick)
