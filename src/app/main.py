@@ -257,6 +257,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         # （开窗、重连）不能清——那时屏幕上已经有工具行了（见 on_session_ready）。
         self._new_session_pending = False
         self._models = None  # 引擎回来的模型清单（引擎连上后由 on_envelope 填）
+        self._models_refresh_token = 0  # 每次「刷新模型」+1：迟到的 30 秒兜底认这个号，过期就不吭声
         self._reasoning_current: str | None = None  # 引擎回读的推理强度，模型清单变了要重摆菜单
         self._reasoning_pending = False  # 恢复的会话还没回报档位：先不画（照桌面端 pending）
         self._reasoning_fresh = False  # 引擎已经报过这场的真档：之后 `config.get` 回的默认值不许再盖它
@@ -439,6 +440,33 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         # 「切换中…」由引擎回的 switching 状态驱动，这里不自己造进度
         say(f"[模型] 请求切换到 {option_id}")
         self.client.set_model(option_id)
+
+    def refresh_models(self) -> None:
+        """聊天窗菜单里的「刷新模型」：让引擎绕过目录缓存重问一遍上游。
+
+        上游上新/下架是绕着程序发生的，清单不能只靠开窗那一次。刷新途中那条菜单项写
+        「刷新中…」；清单一回来（`apply_models`）就自动收回，引擎没回音也别一直卡着。
+        """
+        if self.client is None:
+            say("[模型] 还没连上引擎，刷新不了")
+            if self.chat_panel is not None:
+                self.chat_panel.show_error("还没连上引擎，刷新不了模型清单")
+            return
+        if self.chat_panel is not None:
+            self.chat_panel.set_models_refreshing(True)
+        say("[模型] 请求刷新模型清单")
+        self._models_refresh_token += 1
+        token = self._models_refresh_token
+        self.client.request_models(refresh=True)
+        QtCore.QTimer.singleShot(30_000, lambda: self._models_refresh_timeout(token))
+
+    def _models_refresh_timeout(self, token: int) -> None:
+        """30 秒还没回音：把「刷新中…」收回，并说一句——不要把菜单钉在刷新状态。"""
+        if token != self._models_refresh_token:
+            return  # 这期间又点了一次，或者清单早就回来了（apply_models 会把号顶掉）
+        if self.chat_panel is not None:
+            self.chat_panel.set_models_refreshing(False)
+        say("[模型] 刷新没等到引擎回话（30 秒）")
 
     def request_new_session(self) -> None:
         """聊天窗里的「新会话」：让引擎重建 agent（重读 SOUL.md / 记忆），换个新会话。"""
@@ -893,6 +921,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._models = {"current": current, "items": rows, "switching": switching}
         chosen = next((item for item in rows if str(item.get("id")) == current), None)
         label = str((chosen or {}).get("label") or current)
+        self._models_refresh_token += 1  # 清单到手：那条 30 秒兜底别再喊
         if self.chat_panel is not None:
             self.chat_panel.set_models(rows, current, switching=switching)
             if chosen is not None and chosen.get("available"):
@@ -951,6 +980,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.set_media_roots(media_roots())
             self.chat_panel.submitted.connect(self._send_user_text)
             self.chat_panel.model_chosen.connect(self.choose_model)
+            self.chat_panel.models_refresh_requested.connect(self.refresh_models)
             self.chat_panel.new_session_requested.connect(self.request_new_session)
             self.chat_panel.model_settings_requested.connect(self.open_model_settings)
             self.chat_panel.approval_requested.connect(self.request_approval_mode)

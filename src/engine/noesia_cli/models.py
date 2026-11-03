@@ -41,7 +41,7 @@ from noesia_cli.models_catalog_static import (
     _BORROWED_MODEL_PROVIDERS,
     _COPILOT_MODEL_ALIASES,
     _LIVE_FIRST_PICKER_PROVIDERS,
-    _MODELS_DEV_PREFERRED,
+    _MODELS_DEV_MERGE_EXCLUDED,
     _OPENAI_FAST_MODE_PREFIXES,
     _OPENAI_ULTRAFAST_MODELS,
     _PROVIDER_ALIASES,
@@ -682,17 +682,24 @@ def curated_models_for_provider(
     """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
-        return fetch_openrouter_models(force_refresh=force_refresh)
+        # 它有自己的实时全量清单（``fetch_openrouter_models``，元素是 (id, 名称) 对，
+        # 不是纯 id），退役的照样要删——按 id 过一遍，再把活下来的行原样带回去
+        rows = fetch_openrouter_models(force_refresh=force_refresh)
+        kept = _drop_retired_models(normalized, [str(mid) for mid, _ in rows])
+        if len(kept) == len(rows):
+            return rows
+        alive = {mid.strip().lower() for mid in kept}
+        return [(mid, label) for mid, label in rows if str(mid).strip().lower() in alive]
 
     # Try live API first (Codex, Noesia, etc. all support /models)
-    live = provider_model_ids(normalized)
+    live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        # StepFun's Step Plan /models merge now lives in its provider fetcher
-        # (``_stepfun_catalog``) so every picker surface sees the same list.
-        return [(m, "") for m in live]
+        # 实时清单不全（MiniMax 的 /models 只回一条），补上目录和静态表里它没列的，
+        # 退役的照样删——每条 picker 通路都走这一个并集，别各拼各的。
+        return [(m, "") for m in _merge_live_with_catalog(normalized, live)]
 
     # Fallback to static catalog
-    models = _PROVIDER_MODELS.get(normalized, [])
+    models = _drop_retired_models(normalized, _PROVIDER_MODELS.get(normalized, []))
     return [(m, "") for m in models]
 
 
@@ -1095,6 +1102,9 @@ def _model_dedup_key(model_id: str) -> str:
 def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     """models.dev entries first (their order), then curated-only extras, case-insensitively deduped
     while preserving curated casing. Curated unchanged when models.dev is unreachable/empty."""
+    if provider in _MODELS_DEV_MERGE_EXCLUDED:
+        # 排除的那几家（openrouter 的精选子集）不吃 models.dev，写在这一处，谁调都一样
+        return list(curated)
     try:
         from agent.models_dev import list_agentic_models
         mdev = list_agentic_models(provider)
@@ -1103,6 +1113,59 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     if not mdev:
         return list(curated)
     return _merge_unique(_merge_unique([], mdev), curated)
+
+
+def _deprecated_model_ids(normalized: str) -> set[str]:
+    """models.dev 标成 ``deprecated`` 的 id（小写）：上游宣布退役的那批，菜单里不该再出现。"""
+    try:
+        from agent.models_dev import deprecated_model_ids
+
+        return {str(m).strip().lower() for m in deprecated_model_ids(normalized) if str(m).strip()}
+    except Exception:  # noqa: BLE001 - 目录拿不到就不删任何东西
+        return set()
+
+
+def _selected_model_id(normalized: str) -> str:
+    """配置里当前选中的模型（小写）；它不是这一家的就返回空串。"""
+    try:
+        model_cfg = _get_model_config_dict()
+        if normalize_provider(str(model_cfg.get("provider") or "")) != normalized:
+            return ""
+        return str(model_cfg.get("default") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _merge_live_with_catalog(normalized: str, live) -> list:
+    """实时清单当第一段，再补 models.dev 和静态表，最后删掉上游已下架的。
+
+    只信实时清单是不行的：MiniMax 的 ``/models`` 只回一条 ``MiniMax-M3``，可它的目录里还有
+    ``MiniMax-M3.1-Flash``——照实时清单走，新模型永远进不了菜单（StepFun 的 ``/models`` 连
+    Standard API 的模型都不列，同一个毛病）。所以取并集：实时在前（它的顺序最贴近账号），
+    目录和静态表补它漏掉的，退役的仍然按 models.dev 的标记删掉。
+    """
+    if normalized in _MODELS_DEV_MERGE_EXCLUDED:
+        # 这几家的实时清单就是全量（openrouter 自己那份精选），补静态表只会灌进来一堆旧 id
+        return _drop_retired_models(normalized, live)
+    rows = _merge_unique([], list(live))
+    rows = _merge_unique(rows, _merge_with_models_dev(normalized, list(_PROVIDER_MODELS.get(normalized, []))))
+    return _drop_retired_models(normalized, rows)
+
+
+def _drop_retired_models(normalized: str, models):
+    """删掉上游已下架的模型（models.dev 的 ``status: deprecated``）。
+
+    正在用的那个即使被标退役也留着——把它从菜单里删掉，用户再想切回来就找不到入口了。
+    """
+    retired = _deprecated_model_ids(normalized)
+    if not retired or not models:
+        return models
+    keep = _selected_model_id(normalized)
+    kept = [
+        m for m in models
+        if str(m).strip().lower() not in retired or str(m).strip().lower() == keep
+    ]
+    return kept if len(kept) != len(models) else models
 
 
 def _openai_discovery_base_url(provider: str) -> str:
@@ -1521,17 +1584,20 @@ def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
     # model, flux-*, ahead of its chat models).
     # A provider with a live fetcher that declined is serving a placeholder; one without any live
     # source is serving its authoritative catalog.
+    #
+    # 每家都合 models.dev，不再只给白名单里的 17 家：上游上新（MiniMax-M3.1-Flash 这种）当天就能
+    # 进菜单，上游退役（models.dev 标 status: deprecated）的当场消失。离线/拿不到目录时静态表
+    # 原样返回，而且绝不用「拿不到」当删除依据。
     curated_static = (CuratedFallbackModels if fetcher is not None else list)(_PROVIDER_MODELS.get(normalized, []))
-    if normalized not in _MODELS_DEV_PREFERRED:
-        return _chat_catalog_rows(_drop_delisted_opencode_models(normalized, curated_static))
     # models.dev keeps listing retired Zen ids too: filter after the merge, not before.
     merged = _drop_delisted_opencode_models(normalized, _merge_with_models_dev(normalized, curated_static))
+    merged = _drop_retired_models(normalized, merged)
     return _chat_catalog_rows(_xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged)
 
 
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
-    fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
+    fetch, then the static list (merged with models.dev for every provider)."""
     requested = str(provider or "").strip().lower()
     if requested == "ollama":
         return _ollama_local_catalog(force_refresh)
@@ -1552,13 +1618,14 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)
         if models is not None:
-            return _chat_catalog_rows(models)
+            # 实时清单既会留着一批上游已退役的 id，也会漏掉刚上新/在另一套 API 上的模型
+            return _chat_catalog_rows(_merge_live_with_catalog(normalized, models))
     try:
         models = _profile_live_catalog(normalized)
     except Exception:
         models = None
     if models is not None:
-        return _chat_catalog_rows(models)
+        return _chat_catalog_rows(_merge_live_with_catalog(normalized, models))
 
     return _static_catalog(normalized, fetcher)
 

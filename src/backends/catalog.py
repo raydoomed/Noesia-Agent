@@ -193,17 +193,20 @@ def _usable(provider: str, engine_flag: bool) -> bool:
     return any(str(os.environ.get(n) or from_file.get(n) or "").strip() for n in names)
 
 
-_MODEL_IDS_CACHE: dict[tuple[str, int], list[str]] = {}
+# 清单现在会自己变（引擎拿 models.dev 实时目录，上游上新/退役都跟着动），所以这份缓存必须过期：
+# 存成永久的话，程序开着就永远看不到新模型，改了也白改。五分钟够挡掉重复问四十多家的开销。
+_MODEL_IDS_CACHE_TTL = 300
+_MODEL_IDS_CACHE: dict[tuple[str, int], tuple[float, list[str]]] = {}
 
 
 def _model_ids(models, provider: str, limit: int) -> list[str]:
-    """带缓存的版本：引擎的静态模型表在进程内不会变，四十多家每家问一次要好几秒。"""
+    """带缓存的版本：四十多家每家问一次要好几秒，但过期就重新问，不能把旧清单钉死。"""
     key = (provider, limit)
     cached = _MODEL_IDS_CACHE.get(key)
-    if cached is not None:
-        return list(cached)
+    if cached is not None and time.monotonic() - cached[0] < _MODEL_IDS_CACHE_TTL:
+        return list(cached[1])
     ids = _read_model_ids(models, provider, limit)
-    _MODEL_IDS_CACHE[key] = list(ids)
+    _MODEL_IDS_CACHE[key] = (time.monotonic(), list(ids))
     return ids
 
 

@@ -339,22 +339,24 @@ def _(rid, params: dict) -> dict:
     skew = _model_skew_err(rid)
     if skew is not None:
         return skew
-    from noesia_cli.auth import PROVIDER_REGISTRY
+    from noesia_cli.auth import PROVIDER_REGISTRY, provider_key_env_vars
     from noesia_cli.config import is_managed
     slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
     if not slug or not api_key:
         return _err(rid, 4001, "slug and api_key are required")
     if is_managed():
         return _err(rid, 4006, "managed install — credentials are read-only")
-    if not (pconfig := PROVIDER_REGISTRY.get(slug)):
-        return _err(rid, 4002, f"unknown provider: {slug}")
-    if pconfig.auth_type != "api_key":
+    pconfig = PROVIDER_REGISTRY.get(slug)
+    if pconfig is not None and pconfig.auth_type != "api_key":
         return _err(rid, 4003, f"{pconfig.name} uses {pconfig.auth_type} auth — run `noesia model` to configure")
-    if not pconfig.api_key_env_vars:
-        return _err(rid, 4004, f"no env var defined for {pconfig.name}")
+    # 注册表故意不收的供应商（openrouter 按登录态/凭据池走的）照样吃 API Key：变量名问引擎
+    # 自己的供应商表，问不出来才算真的不认识这家。
+    key_env_vars = provider_key_env_vars(slug)
+    if not key_env_vars:
+        return _err(rid, 4002, f"unknown provider: {slug}")
     # Save the key to ~/.noesia/.env via the unified credential lifecycle so any stale config.yaml mirror of
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
-    env_var = pconfig.api_key_env_vars[0]
+    env_var = key_env_vars[0]
     from noesia_cli.config import load_env
     from noesia_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
     previous = load_env().get(env_var)
@@ -369,7 +371,8 @@ def _(rid, params: dict) -> dict:
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
     provider_data = next((p for p in payload["providers"] if p["slug"] == slug), None)
     if provider_data is None:  # key saved but provider didn't appear — still success
-        provider_data = {"slug": slug, "name": pconfig.name, "is_current": False, "models": [], "total_models": 0}
+        provider_data = {"slug": slug, "name": pconfig.name if pconfig is not None else slug,
+                         "is_current": False, "models": [], "total_models": 0}
     provider_data["authenticated"] = True  # synthetic fallback bypasses picker_hints
     return _ok(rid, {"provider": provider_data})
 
@@ -380,14 +383,15 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
     from noesia_cli import managed_scope
-    from noesia_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+    from noesia_cli.auth import PROVIDER_REGISTRY, clear_provider_auth, provider_key_env_vars
     from noesia_cli.config import env_write_refusal, load_env
     from noesia_cli.credential_lifecycle import remove_provider_env_credential
     if not (slug := (params.get("slug") or "").strip()):
         return _err(rid, 4001, "slug is required")
     pconfig = PROVIDER_REGISTRY.get(slug)
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
-    env_vars = (pconfig.api_key_env_vars if pconfig else None) or ()
+    # 注册表外的（openrouter）也要删干净：变量名问供应商表，不然「断开」只清登录态、Key 还在。
+    env_vars = provider_key_env_vars(slug)
     # Ask the .env lock about every var before removing any: a refusal part-way through left the earlier stores
     # stripped. A locked var that holds nothing is no refusal (a package-managed install keeps keys in auth.json).
     removable = []

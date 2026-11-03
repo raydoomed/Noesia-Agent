@@ -406,18 +406,20 @@ def _is_aws_sdk(pconfig) -> bool:
 def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True,
                          non_blocking: bool = False) -> list:
     """``cached_provider_model_ids`` (the SAME disk-cached list ``noesia model`` builds), falling
-    back to the curated list (merged with models.dev for preferred providers) when live is empty.
+    back to the curated list (merged with models.dev for every provider) when live is empty.
     ``non_blocking`` (GUI read path) reads the disk cache only — a provider that is slow or down
     contributes its curated list instead of stalling the whole picker (#114215)."""
-    from noesia_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids
+    from noesia_cli.models import (
+        _drop_retired_models, _merge_with_models_dev, cached_provider_model_ids)
     from noesia_cli.chat_catalog import without_generation_models
 
     model_ids = cached_provider_model_ids(slug, non_blocking=non_blocking)
     if not model_ids:
         model_ids = _first_curated(curated, fallback_keys or (slug,))
-        if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
+        if merge_models_dev:
             model_ids = _merge_with_models_dev(slug, model_ids)
-    return without_generation_models(model_ids)
+    # 两条路都要过滤：缓存里的实时清单同样会留着上游已经退役的 id。
+    return without_generation_models(_drop_retired_models(slug, model_ids))
 
 
 def _first_curated(curated: dict, keys) -> list:
@@ -1171,6 +1173,11 @@ def list_authenticated_providers(
             clear_provider_models_cache()
         except Exception:
             pass
+        try:
+            # 上游目录也要重取：菜单里「新上来的那些模型」就是从这里补的，光清 provider 缓存不算刷新
+            fetch_models_dev(force_refresh=True)
+        except Exception as exc:  # noqa: BLE001 - 目录取不到就用手上这份，不影响刷新本身
+            logger.debug("刷新 models.dev 目录失败：%s", exc)
 
     # YAML parses unquoted numeric names (`provider: 2070`) as int.
     # seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -1287,7 +1294,7 @@ def list_picker_providers(
     ``non_blocking_catalogs`` makes every catalog read cache-only: provider catalogs warm in the
     background, OpenRouter's stale disk copy is served as-is; the ``probe_*`` flags are forwarded."""
     from noesia_cli.model_switch import list_authenticated_providers
-    from noesia_cli.models import fetch_openrouter_models
+    from noesia_cli.models import _drop_retired_models, fetch_openrouter_models
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
         user_providers=user_providers, custom_providers=custom_providers, max_models=max_models,
@@ -1304,6 +1311,7 @@ def list_picker_providers(
                 live_ids = [mid for mid, _ in fetch_openrouter_models(cache_only=non_blocking_catalogs)]
             except Exception:
                 live_ids = list(p.get("models", []))
+            live_ids = _drop_retired_models("openrouter", live_ids)  # 上游退役的照样删
             p = dict(p)
             p["models"] = _cap_models(live_ids, max_models, "openrouter")
             p["total_models"] = len(live_ids)

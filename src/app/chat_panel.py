@@ -1233,6 +1233,7 @@ class ChatPanel(QtWidgets.QWidget):
 
     submitted = QtCore.Signal(str, str)  # (正文, 来源)：来源区分打字和语音，语音结果不算干净语料
     model_chosen = QtCore.Signal(str)  # 下拉框选了模型 → 交给窗口发 SET_MODEL
+    models_refresh_requested = QtCore.Signal()  # 菜单里的「刷新模型」→ 让窗口重问一次引擎
     # 「设置」：还没配模型（或下拉框里全是灰的）时的明确入口，不能让人对着一个空下拉框猜
     model_settings_requested = QtCore.Signal()
     # 「新会话」：人设（SOUL.md）是引擎在建 agent 时读进系统提示的，换了人设要新会话才生效
@@ -1340,6 +1341,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._model_button = combo
         self._model_menu = menu
         self._models: list[dict] = []
+        self._models_refreshing = False  # 刷新请求发出去了、清单还没回来
+        self._current_model_id = ""  # 菜单里勾着的那一个（刷新时重画要保留）
+        self._refresh_button: QtWidgets.QPushButton | None = None  # 菜单底部那颗「刷新模型」
 
         # 当前这条回答里是否已经落下正文（用来掐掉开头的空行）
         self._bubble_has_text = False
@@ -1572,9 +1576,13 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_button.setFixedSize(22, 22)
         self._voice_button.setCursor(QtCore.Qt.PointingHandCursor)
         self._voice_menu = QtWidgets.QMenu(self._voice_button)
+        # 三档互斥：QAction 不带互斥，点过静音又点纯语音就是两个勾
+        self._voice_group = QtGui.QActionGroup(self._voice_menu)
+        self._voice_group.setExclusive(True)
         for value, label in _VOICE_MODES:
             action = self._voice_menu.addAction(label)
             action.setCheckable(True)
+            action.setActionGroup(self._voice_group)
             action.setData(value)
             action.triggered.connect(lambda _checked=False, mode=value: self.set_voice_mode(mode))
         self._voice_button.setMenu(self._voice_menu)
@@ -1640,9 +1648,14 @@ class ChatPanel(QtWidgets.QWidget):
     # ---- 对外接口 ----
 
     def set_models(self, items: list[dict], current: str, *, switching: bool = False) -> None:
-        """填模型菜单：一级按供应商分组，二级是那家的模型；按钮上显示当前模型名。"""
+        """填模型菜单：一级按供应商分组，二级是那家的模型；按钮上显示当前模型名。
+
+        清单一到就说明刷新结束了，所以顺手把「刷新中…」收回去。
+        """
         self._models = list(items)
-        fill_menu(self._model_menu, self._models, current, self.model_chosen.emit)
+        self._current_model_id = current  # 刷新途中重画菜单要用它勾回当前这条
+        self._models_refreshing = False
+        self._repaint_model_menu()
         text = current_label(self._models, current, fallback="选模型")
         self._model_button.setText(("切换中…" if switching else text) + "  ▾")
         self._model_button.setEnabled(bool(self._models) and not switching)
@@ -1652,6 +1665,94 @@ class ChatPanel(QtWidgets.QWidget):
             self._model_button.setToolTip("这些供应商都还没配密钥：点「设置」填一个")
         else:
             self._model_button.setToolTip("点开按供应商分组选模型（右键头像 → 模型 也能选）")
+
+    def set_models_refreshing(self, refreshing: bool) -> None:
+        """「刷新模型」点下去到清单回来之间：那一条写「刷新中…」、变灰、点了不再发请求。
+
+        只改那一颗按钮：整张菜单清空重建会在弹出的菜单上闪一下（先空一帧再画回来），
+        而这里根本没必要动别的行。
+        """
+        self._models_refreshing = bool(refreshing)
+        button = self._refresh_button
+        if button is None:  # 菜单还没画过（没开过、清单也没到过），只能整张建一次
+            self._repaint_model_menu()
+            return
+        button.setText("刷新中…" if self._models_refreshing else "刷新模型")
+        # 不 setEnabled(False)：菜单里正亮着的那颗控件一禁用，QMenu 就把高亮甩回第一行
+        button.setProperty("busy", self._models_refreshing)
+        button.style().unpolish(button)
+        button.style().polish(button)
+
+    def _request_models_refresh(self) -> None:
+        """菜单里那颗「刷新模型」：刷新途中再点不动（不重复发请求）。"""
+        if self._models_refreshing:
+            return
+        self.models_refresh_requested.emit()
+
+    def _repaint_model_menu(self) -> None:
+        """重画模型菜单。菜单正开着就把重绘压到一次：清空到重建之间不许露出空白帧。
+
+        重建会把「看着/展开着的是哪一家」一起清掉，Qt 于是把高亮丢回第一行（用户看到的是
+        「刷新完自己跳到第一个」）。所以重建前记下当前那一家、哪一个子菜单是开着的，
+        重建后按供应商名（挂在 action 的 `data()` 上，不含会变的「N 个模型」）找回来重新
+        点亮、把子菜单原样展开。
+        """
+        menu = self._model_menu
+        was_open = menu.isVisible()
+        keep = ""
+        keep_open_sub = ""
+        keep_sub_item = ""
+        if was_open:
+            active = menu.activeAction()
+            if active is not None and not active.isSeparator():
+                keep = self._menu_row_key(active)
+            for action in menu.actions():
+                sub = action.menu()
+                if sub is not None and sub.isVisible():
+                    keep_open_sub = self._menu_row_key(action)
+                    inner = sub.activeAction()  # 鼠标停在这家子菜单的哪一个模型上
+                    if inner is not None and not inner.isSeparator():
+                        keep_sub_item = inner.text()
+                    break
+            menu.setUpdatesEnabled(False)
+        self._refresh_button = fill_menu(
+            menu,
+            self._models,
+            str(self._current_model_id),
+            self.model_chosen.emit,
+            on_refresh=self._request_models_refresh,
+            refreshing=self._models_refreshing,
+        )
+        if was_open:
+            menu.adjustSize()
+            menu.setUpdatesEnabled(True)
+            self._keep_menu_focus(menu, keep_open_sub or keep, keep_sub_item)
+            menu.update()
+
+    @staticmethod
+    def _menu_row_key(action) -> str:
+        """这一行是哪一家：优先用挂在 action 上的供应商名（标题里的数量会变），没有就用文字。"""
+        key = action.data()
+        return key if isinstance(key, str) and key else action.text()
+
+    def _keep_menu_focus(self, menu: QtWidgets.QMenu, wanted: str, wanted_item: str = "") -> None:
+        """重建后把高亮/展开还回原来那一家（子菜单里停在哪个模型也一起还回去）。"""
+        if not wanted:
+            return
+        for action in menu.actions():
+            if action.isSeparator() or self._menu_row_key(action) != wanted:
+                continue
+            menu.setActiveAction(action)
+            sub = action.menu()
+            if sub is not None:
+                # 子菜单自己不知道往哪弹：按这一行的右上角算，跟 Qt 平时弹出的位置一致
+                sub.popup(menu.mapToGlobal(menu.actionGeometry(action).topRight()))
+                if wanted_item:
+                    for row in sub.actions():
+                        if not row.isSeparator() and row.text() == wanted_item:
+                            sub.setActiveAction(row)
+                            break
+            return
 
     def models(self) -> list[dict]:
         """当前菜单里的模型项（含可用性与原因），给「设置」按钮判断用。"""
@@ -4669,12 +4770,12 @@ class ChatPanel(QtWidgets.QWidget):
         current_guid = current.guid if current else ""
 
         endpoints = recorder.devices()
+        group = QtGui.QActionGroup(menu)  # 下面「跟随系统默认」也要进这一组，所以先建好
+        group.setExclusive(True)
         if not endpoints:
             empty = menu.addAction("没找到能用的麦克风")
             empty.setEnabled(False)
         else:
-            group = QtGui.QActionGroup(menu)
-            group.setExclusive(True)
             for endpoint in endpoints:
                 label = endpoint.name + ("（蓝牙）" if endpoint.bluetooth else "")
                 action = menu.addAction(label)
@@ -4687,6 +4788,8 @@ class ChatPanel(QtWidgets.QWidget):
         menu.addSeparator()
         follow = menu.addAction("跟随系统默认")
         follow.setCheckable(True)
+        # 跟上面那些麦克风同一组：选了具体设备就不该同时勾着「跟随系统默认」
+        follow.setActionGroup(group)
         follow.setChecked(not recorder.chosen_guid())
         follow.triggered.connect(lambda _checked=False: self._choose_mic(""))
         menu.exec(self._mic_button.mapToGlobal(pos))

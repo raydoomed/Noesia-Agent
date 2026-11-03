@@ -1433,6 +1433,28 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "llama.cpp": "custom", "llama-cpp": "custom"}
 
 
+def provider_key_env_vars(slug: str) -> tuple[str, ...]:
+    """这家供应商的 Key 该写进哪个环境变量：注册表优先。
+
+    注册表**故意**不收的那几家（openrouter 按登录态/凭据池走的）照样吃 API Key，所以查不着时
+    回退到引擎自己的供应商表——它给的变量名就是运行时真正读的那个（``OPENROUTER_API_KEY``）。
+    """
+    cfg = PROVIDER_REGISTRY.get(slug)
+    if cfg is not None and cfg.api_key_env_vars:
+        return tuple(cfg.api_key_env_vars)
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(slug)
+        if profile is not None:
+            env_vars = tuple(str(v) for v in (getattr(profile, "env_vars", ()) or ()) if v)
+            if env_vars:
+                return env_vars
+    except Exception:  # noqa: BLE001 - 供应商表读不到就当没有，交给调用方报错
+        pass
+    return tuple(cfg.api_key_env_vars) if cfg is not None else ()
+
+
 def _plugin_aliases() -> dict[str, str]:
     """``_PROVIDER_ALIASES`` extended with aliases declared in plugins/model-providers/<name>/."""
     aliases = dict(_PROVIDER_ALIASES)

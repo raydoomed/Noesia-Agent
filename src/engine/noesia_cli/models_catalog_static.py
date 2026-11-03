@@ -589,15 +589,10 @@ _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
 _OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-sol"})
 
 
-# Providers where models.dev is authoritative: the curated list is an offline fallback plus custom
-# additions the registry lacks, merged fresh-first (curated-only names appended) for both the CLI
-# and the gateway /model picker. DELIBERATELY EXCLUDED: "openrouter" (curated list is a hand-picked
-# agentic subset of 400+ models — merging would dump everything), and providers with dedicated live-endpoint
-# branches (copilot, anthropic, ai-gateway, ollama-cloud, custom, stepfun, openai-codex).
-_MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
-    "opencode-go", "opencode-zen", "kilocode", "fireworks", "mistral", "togetherai", "cohere",
-    "perplexity", "groq", "nvidia", "huggingface", "zai", "gemini", "google", "xai", "xai-oauth",
-})
+# models.dev 的目录对每一家都生效（上游上新就出现、标 deprecated 就消失），只有 openrouter 例外：
+# 我们给它的清单是手工挑过的 agentic 子集，把 models.dev 那 400+ 全倒进菜单等于毁掉这份精选；
+# 而它本来就有自己的实时清单（``fetch_openrouter_models``），不需要靠 models.dev 更新。
+_MODELS_DEV_MERGE_EXCLUDED: frozenset[str] = frozenset({"openrouter"})
 
 
 # OpenRouter-style ids -> Copilot ids. Dash-notation Claude ids are accepted too: Noesia' default

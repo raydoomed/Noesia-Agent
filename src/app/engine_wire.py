@@ -1034,7 +1034,7 @@ class EngineWire(QtCore.QObject):
         self._call("config.set", {"key": "reasoning", "value": level,
                                   "session_id": self._session_id}, tag="config.set:reasoning")
 
-    def request_models(self) -> None:
+    def request_models(self, *, refresh: bool = False) -> None:
         """要一份模型清单（跟引擎的默认口径一致：只列已经配好密钥的那几家）。
 
         必须带 `session_id`：引擎的 `model.options` 用 `_model_picker_context(_session_agent(params))`
@@ -1042,7 +1042,10 @@ class EngineWire(QtCore.QObject):
         活着的 agent 换掉、不写磁盘。不带会话问，切完拉回来的 current 还是旧的那个，
         按钮和勾选就都不动——看着就是「切换没生效」。
         """
-        params = {"session_id": self._session_id} if self._session_id else {}
+        params: dict = {"session_id": self._session_id} if self._session_id else {}
+        if refresh:
+            # 引擎收到 refresh 就绕过目录缓存、把每家都重新问一遍（界面上的「刷新模型」走这里）
+            params["refresh"] = True
         self._call("model.options", params, tag="model.options")
 
     def greet(self) -> None:

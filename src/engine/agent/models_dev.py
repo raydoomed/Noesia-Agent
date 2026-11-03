@@ -110,9 +110,11 @@ class ModelCapabilities:
 PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
     "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
-    "kimi": "kimi-for-coding", "kimi-coding": "kimi-for-coding",
-    "moonshot": "kimi-for-coding", "stepfun": "stepfun",
-    "kimi-coding-cn": "kimi-for-coding", "minimax": "minimax",
+    # models.dev 把 Kimi 的编程套餐记成 kimi-code-plan-global / -cn；早先写的
+    # "kimi-for-coding" 在它的目录里不存在，等于这几家一辈子拿不到实时目录。
+    "kimi": "kimi-code-plan-global", "kimi-coding": "kimi-code-plan-global",
+    "moonshot": "moonshotai", "stepfun": "stepfun",
+    "kimi-coding-cn": "kimi-code-plan-cn", "minimax": "minimax",
     "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
     "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
@@ -128,6 +130,13 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "meta-ai": "meta", "meta": "meta", "groq": "groq", "mistral": "mistral",
     "togetherai": "togetherai", "perplexity": "perplexity", "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
+    # 这几家的 models.dev id 和我们的 slug 不同名，不补映射就等于没有自动目录。
+    "vertex": "google-vertex", "bedrock": "amazon-bedrock", "gmi": "gmicloud",
+    "arcee": "arcee", "lmstudio": "lmstudio", "nebius-token-factory": "nebius",
+    "alibaba-cn": "alibaba-cn", "alibaba-coding-plan": "alibaba-coding-plan",
+    "alibaba-coding-plan-cn": "alibaba-coding-plan-cn",
+    "alibaba-token-plan": "alibaba-token-plan", "alibaba-token-plan-cn": "alibaba-token-plan-cn",
+    "tencent-tokenhub": "tencent-tokenhub", "tencent-tokenplan": "tencent-token-plan",
 }
 # Reverse mapping: models.dev id → Noesia ids (built lazily; many-to-one).
 _MODELS_DEV_TO_PROVIDER: Optional[dict[str, list[str]]] = None
@@ -916,6 +925,24 @@ def list_agentic_models(provider: str, *, allow_network: bool = True) -> list[st
         mid for mid, entry in models.items()
         if isinstance(entry, dict) and not _should_hide_from_provider_catalog(provider, mid) and entry.get("tool_call", False) and not _NOISE_PATTERNS.search(mid)
     ] if models is not None else []
+
+
+def provider_model_entries(provider: str, *, allow_network: bool = True) -> dict[str, dict[str, Any]]:
+    """models.dev 里这家供应商的原始条目（id → 字段），拿不到就是 {}。
+
+    与 :func:`list_agentic_models` 的区别：那份只留 ``tool_call`` 的模型，这份不带任何过滤，
+    调用方要自己看 ``status``（``deprecated`` = 上游已下架）。
+    """
+    entries = _get_provider_models(provider, allow_network=allow_network) or {}
+    return {str(mid): dict(entry) for mid, entry in entries.items() if isinstance(entry, dict)}
+
+
+def deprecated_model_ids(provider: str, *, allow_network: bool = True) -> list[str]:
+    """models.dev 标了 ``status: deprecated`` 的模型 id —— 上游自己宣布退役的那批。"""
+    return [
+        mid for mid, entry in provider_model_entries(provider, allow_network=allow_network).items()
+        if str(entry.get("status") or "").strip().lower() == "deprecated"
+    ]
 
 
 def _parse_model_info(model_id: str, raw: dict[str, Any], provider_id: str) -> ModelInfo:
