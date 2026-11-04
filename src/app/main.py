@@ -256,6 +256,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         # 「新会话」按钮是用户主动要换的：这种回包一定要清屏。引擎自己回来的 `session.create`
         # （开窗、重连）不能清——那时屏幕上已经有工具行了（见 on_session_ready）。
         self._new_session_pending = False
+        self._new_session_sent = False  # 换会话的 create 已经发出去了没有（中断那一帧可能先到）
+        self._new_session_queued = 0  # 点「新会话」那一刻排着队的条数（清屏后要告诉他作废了几条）
+        self._new_session_timer = QtCore.QTimer(self)  # 等这一轮真停下来的兜底
+        self._new_session_timer.setSingleShot(True)
+        self._new_session_timer.timeout.connect(self._new_session_timeout)
+        self._rewind_pending: tuple[dict, str] | None = None  # 截断重发：等第一段新文字回来才改窗口
         self._models = None  # 引擎回来的模型清单（引擎连上后由 on_envelope 填）
         self._models_refresh_token = 0  # 每次「刷新模型」+1：迟到的 30 秒兜底认这个号，过期就不吭声
         self._reasoning_current: str | None = None  # 引擎回读的推理强度，模型清单变了要重摆菜单
@@ -469,7 +475,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         say("[模型] 刷新没等到引擎回话（30 秒）")
 
     def request_new_session(self) -> None:
-        """聊天窗里的「新会话」：让引擎重建 agent（重读 SOUL.md / 记忆），换个新会话。"""
+        """聊天窗里的「新会话」：让引擎重建 agent（重读 SOUL.md / 记忆），换个新会话。
+
+        顺序不能换：先把排队的条数记下来 → 真在跑就掐断这一轮并等它真的停下 →
+        再建新会话 → 回包后一次清屏（清屏顺带清空队列）。反过来做会留下一轮
+        「看不见、停不了、还在计费」的影子轮次，排队的那几句也会无声消失。
+        """
         if self.client is None:
             say("[会话] 还没连上引擎，换不了新会话")
             if self.chat_panel is not None:
@@ -478,11 +489,49 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         # 换会话等于这件事结束了：正在念的话要掐掉，按钮也别卡在「停止」
         self._stop_voice()
         self._stop_process_watch()  # 旧会话的后台进程不再问（新会话连上时会重新开始）
-        if self.chat_panel is not None:
-            self.chat_panel.set_busy(False)
+        panel = self.chat_panel
+        self._new_session_queued = panel.queued_count() if panel is not None else 0
         say("[会话] 请求开新会话")
         self._new_session_pending = True
-        self.client.create_session("")
+        self._new_session_sent = False
+        if panel is not None and panel.is_busy():
+            # 这一轮还在跑：先掐断（和「停止」同一条路），等 turn.done 那一帧再建会话
+            panel.set_activity("正在结束这一轮…")
+            self.client.interrupt()
+            self._new_session_timer.start(3000)  # 引擎不理这一下也别把「新会话」卡死
+            return
+        self._send_new_session()
+
+    def _new_session_timeout(self) -> None:
+        """掐断这一轮 3 秒还没等到 `turn.done`：宁可不开，也别留一条停不了的影子轮次。
+
+        不建会话是故意的——引擎那边这一轮还在跑，这会儿建新会话，那一轮就成了
+        「看不见、停不了、还在计费」的东西，比「再点一次」糟得多。
+        """
+        panel = self.chat_panel
+        self._new_session_pending = False
+        self._new_session_queued = 0
+        if panel is not None:
+            panel.set_activity("")
+            panel.show_notice("session", "这一轮还没停下来，再点一次「新会话」", level="warn")
+        say("[会话] 中断没等到 turn.done，这次换会话作废")
+
+    def _send_new_session(self) -> None:
+        """真正去建新会话（这一轮已经停了，或者压根没在跑）。"""
+        if self._new_session_sent:
+            return
+        self._new_session_sent = True
+        self._new_session_timer.stop()
+        panel = self.chat_panel
+        if panel is not None:
+            panel.set_activity("")
+            panel.set_busy(False)
+            # 换会话了：还没落地的那次截断重发跟着作废，别让它落到新会话上
+            self._rewind_pending = None
+            panel.clear_status_notice("resubmit")
+            panel.cancel_rewind()
+        if self.client is not None:
+            self.client.create_session("")
 
     def open_model_settings(self) -> None:
         """「设置」：打开真正的设置窗口（填密钥 + 选模型），不是把下拉框弹一下。
@@ -982,6 +1031,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.model_chosen.connect(self.choose_model)
             self.chat_panel.models_refresh_requested.connect(self.refresh_models)
             self.chat_panel.new_session_requested.connect(self.request_new_session)
+            self.chat_panel.resubmit_requested.connect(self._resubmit_turn)
             self.chat_panel.model_settings_requested.connect(self.open_model_settings)
             self.chat_panel.approval_requested.connect(self.request_approval_mode)
             self.chat_panel.stop_requested.connect(self.stop_turn)
@@ -1392,6 +1442,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if text:
             self._reply_text += text
         panel = self.chat_panel
+        if self._rewind_pending is not None and panel is not None:
+            # 第一段新文字回来了 = 引擎真的接了这次截断重发：窗口现在才跟着回到那一刻。
+            # 提前截断的话，请求被拒时屏幕上就少了那几条、引擎里却还在。
+            self._apply_pending_rewind(panel)
         if panel is not None and text:
             panel.clear_status_notice("turn")  # 新一轮真的开始吐字了：上一轮的报错提示可以撤
             panel.append_chunk(text)
@@ -1432,6 +1486,15 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         panel = self.chat_panel
         if panel is None:
             return
+        if self._new_session_pending:
+            # 「新会话」等的就是这一帧：先建会话，后面那句「放开闸」不能走——
+            # 排队的那几句属于旧会话，放出去就又塞进正在被换掉的那一场里了
+            if not self._new_session_sent:
+                self._send_new_session()
+            return
+        if self._rewind_pending is not None:
+            # 这一轮一个字都没吐（只跑了工具）：窗口也照样回到那一刻，不然留的是旧回答
+            self._apply_pending_rewind(panel)
         # 顺序要紧：先把这一轮收掉，再放开闸。反过来会把它刚排上队、
         # 正要发出去的那一条的「在跑」状态又抹回去（按钮显示成「发送」，引擎其实在跑）。
         panel.set_busy(False)
@@ -1446,6 +1509,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         panel = self.chat_panel
         if panel is None:
             return
+        self._apply_pending_rewind(panel)  # 新一轮先出的是工具行：窗口先回到那一刻，工具行才落在对的地方
         kind = str(event.get("kind") or "")
         if self._turn_stopped and kind in {"tool.generating", "tool.progress"}:
             # 这一轮已经被叫停：引擎可能还飘回来几条进度，别再挂到输入框上方
@@ -1608,15 +1672,32 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self.chat_panel is not None:
             self.chat_panel.show_error(message)
             self.chat_panel.set_busy(False)  # 这一轮已经废了，别让按钮停在「停止」
+        if self._rewind_pending is not None:
+            # 这次截断重发被拒了：窗口一个字都不动（屏幕和引擎里仍然是同一段历史）
+            self._rewind_pending = None
+            if self.chat_panel is not None:
+                self.chat_panel.clear_status_notice("resubmit")
+                self.chat_panel.cancel_rewind()
         say(f"[引擎][错误] {message}")
+
+    def _apply_pending_rewind(self, panel) -> None:
+        """引擎真接下这次截断重发（开始吐东西了）：窗口这才跟着回到那一刻。"""
+        if self._rewind_pending is None:
+            return
+        msg, body = self._rewind_pending
+        self._rewind_pending = None
+        panel.clear_status_notice("resubmit")
+        panel.apply_rewind(msg, body)
 
     def on_reasoning_delta(self, text: str) -> None:
         if self.chat_panel is not None and text:
+            self._apply_pending_rewind(self.chat_panel)  # 先吐的是思考：窗口也先回到那一刻
             self.chat_panel.show_reasoning(text)
 
     def on_reasoning_block(self, text: str) -> None:
         """不流式的供应商一次给全的思考（引擎 `reasoning.available`）。"""
         if self.chat_panel is not None and text:
+            self._apply_pending_rewind(self.chat_panel)
             self.chat_panel.show_reasoning_block(text)
 
     def on_provider_wait(self, text: str) -> None:
@@ -1641,6 +1722,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         panel = self.chat_panel
         requested = self._new_session_pending
         self._new_session_pending = False
+        queued, self._new_session_queued = self._new_session_queued, 0
         # 用户点了「新会话」：这一屏就该清掉（不看屏幕里有没有东西）。
         # 引擎自己回来的 `session.create`（开窗、重连）只在屏幕还空着时清——那时工具行
         # 已经画在窗口里了，清一次等于把刚显示的东西抹掉。
@@ -1648,11 +1730,47 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             result, requested=requested, has_transcript=panel.has_transcript()
         ):
             panel.clear_conversation("新会话就绪" if requested else "重连后仍为空")
+            if requested:
+                # 清屏会把状态条一起清掉，所以这两条只能在这之后发，不然只是闪一下
+                if queued:
+                    panel.show_notice(
+                        "session-queue", f"上一场排队中的 {queued} 条没发出去", level="warn"
+                    )
+                else:
+                    panel.show_notice("session", "已开新会话", ttl_ms=2500)
 
     def on_history(self, rows: list) -> None:
         if self.chat_panel is not None and rows:
             self.chat_panel.set_history(rows)
             say(f"[历史] 铺回 {len(rows)} 条")
+
+    def on_user_row_stamped(self, row_id: int) -> None:
+        """引擎回报这次提交落在历史的第几行：记在那条消息上，重新生成/编辑重发靠它定位。"""
+        if self.chat_panel is not None:
+            self.chat_panel.stamp_user_row(int(row_id))
+
+    def _resubmit_turn(self, msg, text: str, regenerate: bool, confirm_empty: bool = False,
+                       confirm_deep: bool = False) -> None:
+        """重新生成 / 编辑重发：让引擎从这条用户消息起截断重来。
+
+        窗口先不动手，等第一段新文字回来才收（见 `_apply_pending_rewind`）——请求被拒时
+        屏幕上不能先少掉那几条、引擎里却还在。
+        """
+        panel = self.chat_panel
+        if panel is None or self.client is None or not isinstance(msg, dict):
+            return
+        row_id = msg.get("row_id")
+        if not isinstance(row_id, int):
+            panel.cancel_rewind()
+            panel.show_notice("resubmit", "这条消息没有历史行号，重发不了", level="warn")
+            return
+        if panel.is_busy():
+            panel.cancel_rewind()
+            panel.show_notice("resubmit", "这一轮还在跑，等它结束再重发", level="warn")
+            return
+        panel.show_notice("resubmit", "正在重新生成…" if regenerate else "正在重发…")
+        self._rewind_pending = (msg, text)
+        self.client.submit_rewind(text, row_id, confirm_empty, confirm_deep)
 
     def on_models(self, items: list, current: str) -> None:
         self.apply_models(items, current)
@@ -2382,6 +2500,7 @@ def main() -> int:
     wire.most_recent.connect(_after_recent)
     wire.session_ready.connect(window.on_session_ready)
     wire.history.connect(window.on_history)
+    wire.user_row_stamped.connect(window.on_user_row_stamped)
     wire.delta.connect(window.on_delta)
     wire.reasoning_delta.connect(window.on_reasoning_delta)
     wire.reasoning_done.connect(lambda _t: window.chat_panel and window.chat_panel.flush_reasoning())

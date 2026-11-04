@@ -15,6 +15,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
+from typing import Callable
 from urllib.parse import unquote, urlparse
 
 from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
@@ -86,6 +87,17 @@ class _Input(QtWidgets.QPlainTextEdit):
 
 class _CodeMark(QtGui.QTextBlockUserData):
     """「这一块是代码块」——复制按钮靠它命中，不再靠底色猜（底色的 HTML 行为不稳）。"""
+
+
+class _MsgMark(QtGui.QTextBlockUserData):
+    """「这一块是一条消息的开头」——悬停时靠它从光标所在块往上找回整条消息。
+
+    存的是消息字典本身（不是副本）：流式回答还在往里加字，复制拿到的就是最后的样子。
+    """
+
+    def __init__(self, msg: dict) -> None:
+        super().__init__()
+        self.msg = msg
 
 
 class _JumpPill(QtWidgets.QWidget):
@@ -1254,6 +1266,9 @@ class ChatPanel(QtWidgets.QWidget):
     clarify_answered = QtCore.Signal(str, str, str)  # (request_id, qid, 答案)：她要的那个选择
     clarify_skipped = QtCore.Signal(str)  # reply_id：这次提问整个跳过
     process_kill_requested = QtCore.Signal(str)  # 后台进程那一行点了「停止」
+    # 重新生成 / 编辑重发：把要重来的那条和正文交给窗口，由它去引擎把这段历史截掉再发
+    # (消息, 正文, 是否只是重新生成, 是否整场清空, 后面还有别的问答要一起删)
+    resubmit_requested = QtCore.Signal(object, str, bool, bool, bool)
 
     def __init__(
         self,
@@ -1426,6 +1441,16 @@ class ChatPanel(QtWidgets.QWidget):
         self._hover_copy: HoverActionButton | None = None
         self._hover_expand: HoverActionButton | None = None
         self._hover_download: HoverActionButton | None = None
+        # 消息级悬停条：复制整段 / 引用 / 编辑重发 / 重新生成（按角色与位置决定露哪几个）
+        self._msgs: list[dict] = []  # 这个窗口里的消息，按出现顺序（截断/清屏时跟着动）
+        self._stream_msg: dict | None = None  # 正在流式写的那条回答
+        self._msg_buttons: list[HoverActionButton] = []
+        self._pending_edit: dict | None = None  # 点了「编辑重发」：下一个发送按重发走
+        self._rewind_waiting = False  # 截断重发已经交给引擎，等它真接下来（这期间不许再发）
+        self._rewind_confirm: dict | None = None  # 会删掉后面几轮的那一下：先问一次，再点才算数
+        self._rewind_confirm_timer = QtCore.QTimer(self)
+        self._rewind_confirm_timer.setSingleShot(True)
+        self._rewind_confirm_timer.timeout.connect(self._drop_rewind_confirm)
         self._jump: _JumpPill | None = None  # 没看完时底下那颗「滚动到底部」
         # 跟不跟随新内容：状态位，不是「此刻位置」（流式一快，位置永远追不上最大值，
         # 按位置判就会一直判成「翻着看」，然后彻底不再跟）。用户往上翻才熄，回到底才亮。
@@ -1769,6 +1794,13 @@ class ChatPanel(QtWidgets.QWidget):
         logger.info("[界面] 清空窗口（%s）", reason or "未说明")
         self.view.clear()
         self._streaming = False
+        self._msgs = []  # 窗口里的消息清单跟着清：悬停条不该再指向已经不存在的段落
+        self._stream_msg = None
+        self._pending_edit = None
+        self._rewind_waiting = False
+        self._rewind_confirm = None
+        self._rewind_confirm_timer.stop()
+        self._hide_msg_actions()
         self._assistant_pending = ""
         self._reasoning_pending = ""
         self._md_block = []
@@ -1840,7 +1872,8 @@ class ChatPanel(QtWidgets.QWidget):
                     self.append_notice_lines(delegate_view.completion_lines(text))
                     continue
                 if str(item.get("role") or "") == "user":
-                    self.append_user(text)
+                    row_id = item.get("row_id")
+                    self.append_user(text, row_id=row_id if isinstance(row_id, int) else None)
                 else:
                     self.append_chunk(text)
                     self.end_assistant()
@@ -1854,13 +1887,15 @@ class ChatPanel(QtWidgets.QWidget):
         for line in lines or ():
             self._insert_html(f"<span style='color:#8f9bb0;'>{html.escape(str(line))}</span>")
 
-    def append_user(self, message: str, attachments=()) -> None:
+    def append_user(self, message: str, attachments=(), row_id: int | None = None) -> None:
         self._last_error_key = ""  # 新的一轮：同样的错误再出现就该再说一次
         message, refs = split_attachment_refs(message)  # 历史里的 @image:/@file:/[screenshot] 标记不能当正文显示
         items = [*refs, *attachments]
+        start = self.view.document().characterCount() - 1  # 插入前的文末位置：这条消息从这儿开始
         self._insert_html(
             f"<span style='color:#9ad0ff;'><b>你</b></span><br>{html.escape(message)}"
         )
+        self._begin_message("user", start, message, row_id)
         for item in items:
             self._append_user_attachment(item)
         if not self._restoring:
@@ -1888,7 +1923,9 @@ class ChatPanel(QtWidgets.QWidget):
     def begin_assistant(self) -> None:
         self._end_reasoning_group()  # 思考在前、回答在后：先把那段思考收成「思考了 3s」
         self._flush_md()
+        start = self.view.document().characterCount() - 1
         self._insert_html("<span style='color:#ffd7e6;'><b>Noesia</b></span><br>")
+        self._begin_message("assistant", start, "", None)
         self._streaming = True
         self._bubble_has_text = False
         # 注意：这里**不能**放开 `_interrupted`。按停之后引擎还飘在半路的 token 会先到，
@@ -1902,6 +1939,8 @@ class ChatPanel(QtWidgets.QWidget):
             self.begin_assistant()
             self._bubble_has_text = False
         self._assistant_pending += chunk
+        if self._stream_msg is not None:
+            self._stream_msg["text"] += chunk  # 整段复制拿的是原文，不是窗口里折起来的样子
         self._pump_assistant(final=False)
 
     def end_assistant(self) -> None:
@@ -1911,6 +1950,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._drop_trailing_blank_line()  # 末尾的 `<br/>` 空行不留在下一段前面
         self._assistant_pending = ""
         self._streaming = False  # 段落由下一次 _insert_html 的 insertBlock 分隔
+        self._stream_msg = None
 
     def set_media_roots(self, roots) -> None:
         """相对路径（模型常写 `MEDIA:data/workspace/x.png`）从哪些目录开始找。"""
@@ -3914,11 +3954,19 @@ class ChatPanel(QtWidgets.QWidget):
         框里空着、又在跑：停止。
         """
         typing = bool(self.input.toPlainText().strip() or self._attachments)
-        if not self._busy:
-            return "发送"
-        return "排队" if typing else "停止"
+        if self._busy:
+            if self._rewind_waiting:
+                return "停止"  # 这次重发正在跑：正文已经交给引擎，这个键就是停止，别再排一条一样的
+            return "排队" if typing else "停止"
+        if self._rewind_waiting:
+            return "重发中"  # 请求发出去了还没落地：这会儿按下去也不会再发一次（见 _emit）
+        return "重发" if self._pending_edit is not None else "发送"
 
     def _sync_send_button(self) -> None:
+        if self._pending_edit is not None and not self.input.toPlainText().strip():
+            # 框被清空了：这次「编辑重发」作废——不能让下一条新消息悄悄变成截断重发
+            self._pending_edit = None
+            self.clear_status_notice("edit")
         if not hasattr(self, "_send_button"):
             return  # 按钮还没建（__init__ 里文本框先连接）：等 set_busy 时再来一次
         label = self._send_label()
@@ -4268,10 +4316,17 @@ class ChatPanel(QtWidgets.QWidget):
         message = self.input.toPlainText().strip()
         attachments = list(self._attachments)
         if self._busy:
-            if message or attachments:
+            if self._rewind_waiting:
+                self._stop_turn()  # 这次重发正在跑：这个键是停止（正文已经在引擎那边了，不重复发）
+            elif message or attachments:
                 self._enqueue(message, attachments)  # 这一轮跑完再发：正文里先不出现
             else:
                 self._stop_turn()  # 框里空着：这会儿这个键就是「停止」
+            return
+        if self._rewind_waiting:
+            return  # 上一次截断重发还没落地：这会儿再发会把同一段贴两遍
+        if self._pending_edit is not None:
+            self._resubmit(message, attachments)
             return
         if not message and not attachments:  # 只粘了图/只选了文件也能发（跟桌面一样）
             return
@@ -4283,6 +4338,21 @@ class ChatPanel(QtWidgets.QWidget):
             # 到这一刻才交给引擎：没点发送的附件既不会落盘、也不会被模型看见
             self.attachment_picked.emit(attachments)
         self.submitted.emit(message, "typed")
+
+    def _resubmit(self, message: str, attachments) -> None:
+        """「编辑重发」那一下的发送：不做普通提交，交给窗口去引擎把这一段截掉重来。"""
+        if not message:
+            return  # 框里清空了：当没按过（`_sync_send_button` 已经把这次编辑撤掉）
+        if self._busy:
+            self.show_notice("edit", "这一轮还在跑，等它结束再重发")
+            return
+        if attachments:
+            self.show_notice("edit", "编辑重发只改文字：先撤掉附件")
+            return
+        if not self._ask_rewind(self._pending_edit, message, False):
+            return  # 先要一次确认：编辑态和正文都留着，再按一次「重发」才算数
+        self._pending_edit = None
+        self.clear_status_notice("edit")
 
     # ---- 语音输入 ----
 
@@ -4955,10 +5025,13 @@ class ChatPanel(QtWidgets.QWidget):
         两个按钮各管各的：复制点完换 ✓，放大只开窗。以前共用一个小部件，结果放大也换成 ✓、
         再也看不到复制——那是错的。
         """
+        if self._over_hover_button():
+            return  # 鼠标压在悬停条上：别在它下面把按钮收掉（那一下连提示都弹不出来）
         block = self._block_at(pos)
         if block is None or not block.isValid():
             self._hide_hover()
             return
+        self._hide_msg_actions()
 
         fence = self._code_fence_at(block)
         if fence is not None:
@@ -4990,7 +5063,23 @@ class ChatPanel(QtWidgets.QWidget):
             self._show_hover_download(*hit)
             return
 
+        msg = self._message_at(block)
+        if msg is not None:
+            self._hide_copy()
+            self._hide_expand()
+            self._hide_download()
+            self._show_msg_actions(msg, block)
+            return
+
         self._hide_hover()
+
+    def _over_hover_button(self) -> bool:
+        """鼠标此刻是不是压在某颗悬停按钮上（压在按钮上时正文会收到 Leave，那不是「离开」）。"""
+        pos = self.view.viewport().mapFromGlobal(QtGui.QCursor.pos())
+        for button in (self._hover_copy, self._hover_expand, self._hover_download, *self._msg_buttons):
+            if button is not None and button.isVisible() and button.geometry().contains(pos):
+                return True
+        return False
 
     def _block_at(self, pos: QtCore.QPoint) -> QtGui.QTextBlock | None:
         if not self.view.rect().contains(pos):
@@ -5096,6 +5185,244 @@ class ChatPanel(QtWidgets.QWidget):
         )
         self._place_hover(self._hover_expand, first, last, offset_x=-(HoverActionButton.BUTTON_PX + 2))
 
+    # ---- 消息级动作：复制整段 / 引用 / 编辑重发 / 重新生成 ----
+
+    def _begin_message(self, role: str, start: int, text: str, row_id) -> None:
+        """给刚插进来的那条消息的开头块打标记，并记进清单。
+
+        `start` 是插入**前**的文末字符位：插入时若新开了一段，这条消息就从下一段开始
+        （`next().position() == start + 1` 正好说明段界开在这里）。
+        """
+        document = self.view.document()
+        block = document.findBlock(start)
+        following = block.next()
+        if following.isValid() and following.position() == start + 1:
+            block = following
+        msg = {"role": role, "text": text, "row_id": row_id}
+        msg["mark"] = _MsgMark(msg)
+        block.setUserData(msg["mark"])
+        self._msgs.append(msg)
+        if role == "assistant":
+            self._stream_msg = msg
+
+    def _message_at(self, block) -> dict | None:
+        """从光标所在块往上找：这条消息是从哪一段开始的（代码块/工具段先命中它们自己）。"""
+        probe = block
+        while probe.isValid():
+            mark = probe.userData()
+            if isinstance(mark, _MsgMark):
+                return mark.msg
+            probe = probe.previous()
+        return None
+
+    def _msg_head_block(self, msg: dict, near=None):
+        """这条消息开头那一块（从鼠标所在块往上找；找不到再从头扫一遍）。"""
+        mark = msg.get("mark")
+        if mark is None:
+            return None
+        probe = near if near is not None and near.isValid() else self.view.document().begin()
+        while probe.isValid():
+            if probe.userData() is mark:
+                return probe
+            probe = probe.previous()
+        return None if near is None else self._msg_head_block(msg, None)
+
+    def _ensure_msg_buttons(self) -> None:
+        if self._msg_buttons:
+            return
+        for icon, tip in (
+            ("copy", "复制整段"),
+            ("quote", "引用这条消息"),
+            ("edit", "编辑重发"),
+            ("regenerate", "重新生成"),
+        ):
+            self._msg_buttons.append(
+                HoverActionButton(self.view.viewport(), icon, tip, lambda: None)
+            )
+
+    def _msg_action_specs(self, msg: dict) -> list[tuple[str, str, Callable[[dict], None]]]:
+        """这条消息该露哪几个动作：没有正文什么都不露；用户消息要有行号才能编辑重发。"""
+        if not str(msg.get("text") or "").strip():
+            return []
+        specs: list[tuple[str, str, Callable[[dict], None]]] = [
+            ("copy", "复制整段", self._copy_message),
+            ("quote", "引用这条消息", self._quote_message),
+        ]
+        if msg.get("role") == "user":
+            if msg.get("row_id") is not None:
+                specs.append(("edit", "编辑重发", self._start_edit))
+        elif self._can_regenerate(msg):
+            specs.append(("regenerate", "重新生成", self._request_regenerate))
+        return specs
+
+    def _show_msg_actions(self, msg: dict, block) -> None:
+        specs = self._msg_action_specs(msg)
+        if not specs:
+            self._hide_msg_actions()
+            return
+        self._ensure_msg_buttons()
+        # 条子挂在消息开头那一行（不是鼠标所在行）：长回答里移动鼠标时不会一格一格地跳
+        head = self._msg_head_block(msg, block) or block
+        step = HoverActionButton.BUTTON_PX + 4
+        for index, button in enumerate(self._msg_buttons):
+            if index >= len(specs):
+                button.hide()
+                continue
+            icon, tip, slot = specs[index]
+            button.retarget(icon, tip, lambda m=msg, s=slot: s(m))
+            self._place_hover(button, head, head, offset_x=-index * step)
+
+    def _hide_msg_actions(self) -> None:
+        for button in self._msg_buttons:
+            button.hide()
+
+    def _copy_message(self, msg: dict) -> None:
+        QtWidgets.QApplication.clipboard().setText(str(msg.get("text") or ""))
+
+    def _quote_message(self, msg: dict) -> None:
+        """引用：把这一条的前 200 字当引文塞进输入框，光标留在引文下面。"""
+        text = " ".join(str(msg.get("text") or "").split())
+        if len(text) > 200:
+            text = text[:200] + "…"
+        who = "你" if msg.get("role") == "user" else "Noesia"
+        prefix = "\n" if self.input.toPlainText().strip() else ""
+        self.input.insertPlainText(f"{prefix}> {who}：{text}\n")
+        self.input.setFocus()
+
+    def _start_edit(self, msg: dict) -> None:
+        """编辑重发：正文放回输入框，下一个发送走「截断这条之后重来」。"""
+        self._pending_edit = msg
+        self.input.setPlainText(str(msg.get("text") or ""))
+        self._sync_send_button()  # 放完正文再同步：按钮这时才该显示「重发」
+        self.show_notice("edit", "改完按发送：从这条消息起重新开始")
+        self.input.setFocus()
+
+    def _can_regenerate(self, msg: dict) -> bool:
+        """只有最后一条回答能重新生成：截断点由它前面那条用户消息定。"""
+        if not self._msgs or self._msgs[-1] is not msg:
+            return False
+        before = self._previous_user(msg)
+        return bool(before and before.get("row_id") is not None)
+
+    def _previous_user(self, msg: dict) -> dict | None:
+        found = None
+        for item in self._msgs:
+            if item is msg:
+                break
+            if item.get("role") == "user":
+                found = item
+        return found
+
+    def _rewind_later_users(self, msg: dict) -> int:
+        """这条用户消息后面还有几条用户消息（= 重发时会被一起删掉的问答轮数）。"""
+        count = 0
+        seen = False
+        for item in self._msgs:
+            if item is msg:
+                seen = True
+                continue
+            if seen and item.get("role") == "user":
+                count += 1
+        return count
+
+    def _rewind_empties(self, msg: dict) -> bool:
+        """从这条截断会不会把整场对话都清掉（它就是第一句用户消息）。"""
+        return self._previous_user(msg) is None
+
+    def _ask_rewind(self, msg: dict | None, text: str, regenerate: bool) -> bool:
+        """交给窗口前先在本地把代价说清楚；发出去返回 True，先要一次确认返回 False。
+
+        引擎那两道闸（整场清空 / 后面还有问答）都是「删了不好恢复」的事，
+        按窗口里实际有几步来判断，而不是等引擎报错——报错时人已经点过一遍了。
+        """
+        if msg is None:
+            return False
+        later = self._rewind_later_users(msg)
+        if later and self._rewind_confirm is not msg:
+            self._rewind_confirm = msg
+            self._rewind_confirm_timer.start(8000)  # 8 秒内再点一次才算数
+            what = "重新生成" if regenerate else "重发"
+            self.show_notice(
+                "edit",
+                f"这条后面还有 {later} 轮问答，{what}会把它们一起删掉；再点一次「{what}」确认",
+                level="warn",
+            )
+            return False
+        self._rewind_confirm = None
+        self._rewind_confirm_timer.stop()
+        self._rewind_waiting = True
+        self._sync_send_button()
+        self.resubmit_requested.emit(msg, text, regenerate, self._rewind_empties(msg), later > 0)
+        return True
+
+    def _request_regenerate(self, msg: dict) -> None:
+        user_msg = self._previous_user(msg)
+        if user_msg is None:
+            return
+        self._ask_rewind(user_msg, str(user_msg.get("text") or ""), True)
+
+    def apply_rewind(self, msg: dict, text: str) -> None:
+        """引擎已经按这条消息截断过历史了：窗口回到那一刻，再把正文重新贴一遍。"""
+        self._rewind_waiting = False
+        self._truncate_from(msg)
+        self.append_user(text)
+        if self.input.toPlainText().strip() == text.strip():
+            # 这段正文已经进了对话，输入框别再留一份（不然看着像没发出去）
+            self.input.clear()
+        self._sync_send_button()  # 等待态结束：按钮从「重发中」恢复
+
+    def cancel_rewind(self) -> None:
+        """这次截断重发没成立（被拒 / 换了会话）：正文留在框里，发送键恢复原样。"""
+        self._rewind_waiting = False
+        self._sync_send_button()
+
+    def _drop_rewind_confirm(self) -> None:
+        """确认窗口过期：再点「重发/重新生成」要重新问一次。"""
+        self._rewind_confirm = None
+        self.clear_status_notice("edit")
+
+    def _truncate_from(self, msg: dict) -> None:
+        """把这个窗口从某条消息起的内容抹掉（引擎侧已经截断，界面跟上）。"""
+        mark = msg.get("mark")
+        document = self.view.document()
+        target = None
+        probe = document.begin()
+        while probe.isValid():
+            if probe.userData() is mark:
+                target = probe
+                break
+            probe = probe.next()
+        if target is None:
+            return
+        cursor = QtGui.QTextCursor(document)
+        cursor.setPosition(target.position())
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
+        for index, item in enumerate(self._msgs):
+            if item is msg:
+                self._msgs = self._msgs[:index]
+                break
+        self._stream_msg = None
+        self._streaming = False
+        self._assistant_pending = ""
+        self._md_block = []
+        self._md_fence = False
+        self._reason_fold = None
+        self._hide_msg_actions()
+
+    def stamp_user_row(self, row_id: int) -> None:
+        """引擎回了这次提交的用户消息行号：重新生成/编辑重发靠它定位截断点。"""
+        for msg in reversed(self._msgs):
+            if msg.get("role") == "user" and msg.get("row_id") is None:
+                msg["row_id"] = int(row_id)
+                return
+
+    def is_busy(self) -> bool:
+        return bool(self._busy)
+
+    def queued_count(self) -> int:
+        return len(self._queued)
+
     def _place_hover(self, button: HoverActionButton, first, last, offset_x: int = 0) -> None:
         rect = self._block_rect(first, last)
         if rect.height() <= 0:
@@ -5117,6 +5444,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._hide_copy()
         self._hide_expand()
         self._hide_download()
+        self._hide_msg_actions()
 
     def _copy_to_clipboard(self, text: str) -> None:
         QtWidgets.QApplication.clipboard().setText(text)
@@ -5159,6 +5487,8 @@ class ChatPanel(QtWidgets.QWidget):
                         # 松手这会儿还在处理事件，延到下一拍再开窗
                         QtCore.QTimer.singleShot(0, lambda k=hit[0]: self._open_photo(k))
             elif kind in (QtCore.QEvent.Type.Leave, QtCore.QEvent.Type.Wheel):
+                if kind is QtCore.QEvent.Type.Leave and self._over_hover_button():
+                    return super().eventFilter(obj, event)  # 压在悬停按钮上：不算离开正文
                 self._hide_hover()
                 self.view.viewport().unsetCursor()
             elif kind is QtCore.QEvent.Type.Resize:

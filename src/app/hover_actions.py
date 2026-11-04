@@ -111,8 +111,26 @@ class HoverActionButton(QtWidgets.QToolButton):
         y = max(0, rect.top() + 2)
         self.move(x, y)
 
+    def enterEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+        self._show_tip()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+        QtWidgets.QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def _show_tip(self) -> None:
+        """自己把提示弹出来：Qt 自带的悬停提示在无边框置顶窗里不弹（实测没有）。
+
+        按钮只有 20px、只画图标，没有这行字就只剩猜。
+        """
+        QtWidgets.QToolTip.showText(
+            self.mapToGlobal(QtCore.QPoint(-48, self.height() + 2)), self.toolTip(), self
+        )
+
     def _clicked(self) -> None:
         self._slot()
+        QtWidgets.QToolTip.hideText()  # 点下去就把提示收掉：动作已经发生了
         if not self._flash:
             return
         icon = icon_pixmap("check", self.DONE_COLOR, self.ICON_PX)

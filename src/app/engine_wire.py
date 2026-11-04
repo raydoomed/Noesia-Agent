@@ -619,6 +619,7 @@ class EngineWire(QtCore.QObject):
     ready = QtCore.Signal(dict)            # 参数：gateway.ready 的 payload（含 skin）
     session_ready = QtCore.Signal(dict)    # 参数：session.create / session.resume 的 result
     history = QtCore.Signal(list)          # 参数：resume 带回来的历史消息（role/text）
+    user_row_stamped = QtCore.Signal(int)  # 这次提交落在历史里的行号（重新生成/编辑重发拿它当截断点）
     most_recent = QtCore.Signal(dict)      # 参数：session.most_recent 的 result
     config_value = QtCore.Signal(str, str)  # 参数：(键, 值)：审批档、思考档这类开关的当前值
     reasoning_reported = QtCore.Signal(str, str)  # (档位, 这条路实际会发的那档)：后者与前者不同时要显示「→」
@@ -887,7 +888,33 @@ class EngineWire(QtCore.QObject):
         params: dict = {"session_id": self._session_id, "text": text}
         if queued:
             params["queued"] = True
-        self._call("prompt.submit", params)
+        self._call("prompt.submit", params, tag="prompt.submit")
+
+    def submit_rewind(self, text: str, row_id: int, confirm_empty: bool = False,
+                      confirm_deep: bool = False) -> None:
+        """截断后重发：引擎把这条用户消息（含它）之后的历史全删掉，正文当成新一轮再发。
+
+        截断点只认行号：持久会话上「只给第几条」的截断会被引擎直接拒（4004），
+        行号来自 `prompt.submit` 回包的 `user_row_id`，或 resume 历史行里的 `row_id`。
+
+        引擎另有两道闸，得客户端明确点头才放行（我们按窗口里实际有几步来判断）：
+        `confirm_empty_truncate` = 这一截会把整场对话清空（截的是第一句）；
+        `confirm_deep_truncate` = 这条后面还有别的问答，会被一起删掉。
+        """
+        if not self._session_id or self._attaching:
+            self.error.emit("会话还没准备好，等这条回复出来再重发")
+            return
+        params = {
+            "session_id": self._session_id,
+            "text": text,
+            "truncate_before_row_id": int(row_id),
+            "confirm_truncate": True,  # 引擎要求客户端显式确认截断，否则整条请求被拒
+        }
+        if confirm_empty:
+            params["confirm_empty_truncate"] = True
+        if confirm_deep:
+            params["confirm_deep_truncate"] = True
+        self._call("prompt.submit", params, tag="prompt.submit")
 
     # 一句话 + 附件：附件的回包决定这句话怎么发，所以整轮当成一件事做完再发
     IMAGE_ONLY_CAPTION = "What do you see in this image?"  # 只发图不打字时的兜底话（引擎/桌面同一句）
@@ -951,7 +978,7 @@ class EngineWire(QtCore.QObject):
             self._pending_text = f"{self._pending_text}\n\n{text}" if self._pending_text else text
             self._ensure_session()
             return
-        self._call("prompt.submit", {"session_id": self._session_id, "text": text})
+        self._call("prompt.submit", {"session_id": self._session_id, "text": text}, tag="prompt.submit")
         self._flush_after_attach()  # 后面还攒着别的轮次/别的句子：这一轮发完接着走
 
     def interrupt(self) -> None:
@@ -1161,7 +1188,7 @@ class EngineWire(QtCore.QObject):
             return
         if self._pending_text:
             text, self._pending_text = self._pending_text, ""
-            self._call("prompt.submit", {"session_id": self._session_id, "text": text})
+            self._call("prompt.submit", {"session_id": self._session_id, "text": text}, tag="prompt.submit")
 
     @staticmethod
     def _is_session_gone(code, message) -> bool:
@@ -1433,6 +1460,10 @@ class EngineWire(QtCore.QObject):
                 path = self._voice_jobs.pop(int(job), "") if job.isdigit() else ""
                 self.voice_failed.emit(path, str(message))
                 return
+            if tag == "prompt.submit" and code == 4009:
+                # 引擎说这一轮还在跑：截断重发必须等它真停下（引擎绝不在跑着的时候截断）
+                self.error.emit("这一轮还没停下，等它真结束再重发")
+                return
             if tag.startswith("model.save_key") or tag == "config.set:model":
                 # 设置窗口正等这一条：失败原因原样交给那个窗口，别改成「没配供应商」的泛提示，
                 # 也别往聊天区再喷一条无关的英文
@@ -1456,6 +1487,12 @@ class EngineWire(QtCore.QObject):
             self.error.emit(f"{message}")
             return
         result = frame.get("result") or {}
+        if tag == "prompt.submit":
+            # 这次提交落在历史里的行号：重新生成/编辑重发要用它当截断点
+            row_id = result.get("user_row_id")
+            if isinstance(row_id, int):
+                self.user_row_stamped.emit(row_id)
+            return
         if tag == "voice.transcribe.ready":
             self.voice_model.emit(result if isinstance(result, dict) else {})
             return
@@ -1486,6 +1523,8 @@ class EngineWire(QtCore.QObject):
                         "text": str(row.get("text", "")),
                         # 机器回灌的行（子代理完成之类）也带着种类，界面据此画灰说明行而不是你的气泡
                         "display_kind": str(row.get("display_kind") or ""),
+                        # 历史行号：重新生成/编辑重发要用它告诉引擎「从哪条截断」
+                        "row_id": row.get("row_id"),
                     }
                     for row in (result.get("messages") or [])
                     if isinstance(row, dict) and str(row.get("display_kind") or "") != "hidden"

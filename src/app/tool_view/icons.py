@@ -85,6 +85,14 @@ UI_PATHS: dict[str, str] = {
         '<line x1="12" x2="12" y1="15" y2="3" />'
     ),
     "arrow-down": '<line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" />',
+    # 消息悬停条上的两个动作：引用（text-quote）与重新生成（refresh-cw）
+    "quote": (
+        '<path d="M17 6H3" /><path d="M21 12H8" /><path d="M21 18H8" /><path d="M3 12v6" />'
+    ),
+    "regenerate": (
+        '<polyline points="23 4 23 10 17 10" />'
+        '<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />'
+    ),
 }
 
 
