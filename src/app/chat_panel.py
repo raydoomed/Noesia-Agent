@@ -1445,6 +1445,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._msgs: list[dict] = []  # 这个窗口里的消息，按出现顺序（截断/清屏时跟着动）
         self._stream_msg: dict | None = None  # 正在流式写的那条回答
         self._msg_buttons: list[HoverActionButton] = []
+        self._msg_band: QtCore.QRect | None = None  # 悬停条所在那一带（鼠标在里面就别收）
+        self._msg_shown: dict | None = None  # 悬停条现在属于哪条消息（窗口一缩放就得重新摆）
+        self._edge_cursor_shape = None  # 现在贴在面板上的边缘光标对应哪条边（None = 没设过）
         self._pending_edit: dict | None = None  # 点了「编辑重发」：下一个发送按重发走
         self._rewind_waiting = False  # 截断重发已经交给引擎，等它真接下来（这期间不许再发）
         self._rewind_confirm: dict | None = None  # 会删掉后面几轮的那一下：先问一次，再点才算数
@@ -1462,6 +1465,7 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.viewport().setMouseTracking(True)
         self.view.viewport().installEventFilter(self)
         self.view.verticalScrollBar().valueChanged.connect(self._on_scrolled)
+        self.view.document().contentsChanged.connect(self._replace_msg_actions)  # 流式还在长，条得跟着尾巴走
 
         # 输入框正上方那一叠状态（桌面端 composer 的 status-stack）：引擎的提示、还在跑的后台
         # 进程、正在生成的工具调用。没有内容时整块藏着，不占高度。
@@ -4954,6 +4958,7 @@ class ChatPanel(QtWidgets.QWidget):
         if hasattr(self, "_model_menu"):
             self._sync_popup_width()
         self._place_jump()  # 窗口一变，贴底的胶囊跟着重新贴底
+        self._replace_msg_actions()  # 正文重排后，悬停条也得跟着落回它那一行
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
         # 隐藏时的 resize 不会立刻派发，显示出来时再对一次宽度
@@ -4965,6 +4970,25 @@ class ChatPanel(QtWidgets.QWidget):
     def _hit_edges(self, local: QtCore.QPoint):
         return edges_at(local, self.size(), margin=RESIZE_MARGIN)
 
+    def _sync_edge_cursor(self, local: QtCore.QPoint) -> None:
+        """只在贴边那圈给缩放光标，一离开就还回去。
+
+        光标是父级继承的：`setCursor` 设在面板上会传给里面所有控件，鼠标从图/输入框
+        那边进来时面板收不到 move，双箭头就一路顶着——所以每个能收到 move 的地方都要
+        对一次位置。
+        """
+        inside = QtCore.QRect(QtCore.QPoint(0, 0), self.size()).contains(local)
+        edge = self._hit_edges(local) if inside else None
+        if edge:
+            if self._edge_cursor_shape != edge:
+                self.setCursor(cursor_for(edge))
+                self._edge_cursor_shape = edge
+        elif self._edge_cursor_shape is not None or self.testAttribute(
+            QtCore.Qt.WidgetAttribute.WA_SetCursor
+        ):
+            self.unsetCursor()
+            self._edge_cursor_shape = None
+
     def _begin_resize(self, local: QtCore.QPoint, global_pos: QtCore.QPoint) -> bool:
         edge = self._hit_edges(local)
         if not edge:
@@ -4974,6 +4998,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._resize_start_global = global_pos
         self._drag_offset = None
         self.setCursor(cursor_for(edge))
+        self._edge_cursor_shape = edge
         return True
 
     def _handle_input_drag(self, event) -> bool:
@@ -5027,6 +5052,8 @@ class ChatPanel(QtWidgets.QWidget):
         """
         if self._over_hover_button():
             return  # 鼠标压在悬停条上：别在它下面把按钮收掉（那一下连提示都弹不出来）
+        if self._in_msg_band(pos):
+            return  # 走到这条消息末尾下方那一格（按钮就停在那儿）：保持不动，一收就永远点不到
         block = self._block_at(pos)
         if block is None or not block.isValid():
             self._hide_hover()
@@ -5072,6 +5099,10 @@ class ChatPanel(QtWidgets.QWidget):
             return
 
         self._hide_hover()
+
+    def _in_msg_band(self, pos: QtCore.QPoint) -> bool:
+        """鼠标是否还在这条消息末尾那一带（最后一行 + 下面留给按钮的那一格）。"""
+        return self._msg_band is not None and self._msg_band.contains(pos)
 
     def _over_hover_button(self) -> bool:
         """鼠标此刻是不是压在某颗悬停按钮上（压在按钮上时正文会收到 Leave，那不是「离开」）。"""
@@ -5201,6 +5232,11 @@ class ChatPanel(QtWidgets.QWidget):
         msg = {"role": role, "text": text, "row_id": row_id}
         msg["mark"] = _MsgMark(msg)
         block.setUserData(msg["mark"])
+        # 只有回答那条的按钮挂在末尾下方，需要在它后面留出一格；用户那条是并排的，一格都不用留
+        if self._msgs and self._msgs[-1]["role"] == "assistant":
+            head_format = block.blockFormat()
+            head_format.setTopMargin(HoverActionButton.BUTTON_PX + 10)
+            QtGui.QTextCursor(block).setBlockFormat(head_format)
         self._msgs.append(msg)
         if role == "assistant":
             self._stream_msg = msg
@@ -5216,16 +5252,47 @@ class ChatPanel(QtWidgets.QWidget):
         return None
 
     def _msg_head_block(self, msg: dict, near=None):
-        """这条消息开头那一块（从鼠标所在块往上找；找不到再从头扫一遍）。"""
+        """这条消息开头那一块（从鼠标所在块往上找；找不到再从头往后扫一遍）。"""
         mark = msg.get("mark")
         if mark is None:
             return None
-        probe = near if near is not None and near.isValid() else self.view.document().begin()
+        if near is None or not near.isValid():
+            probe = self.view.document().begin()
+            while probe.isValid():
+                if probe.userData() is mark:
+                    return probe
+                probe = probe.next()
+            return None
+        probe = near
         while probe.isValid():
             if probe.userData() is mark:
                 return probe
             probe = probe.previous()
-        return None if near is None else self._msg_head_block(msg, None)
+        return self._msg_head_block(msg, None)
+
+    def _msg_tail_block(self, msg: dict):
+        """这条消息的最后一段：下一条消息开头的前一段；最后一条就取文末那一段。"""
+        document = self.view.document()
+        following = None
+        seen = False
+        for item in self._msgs:
+            if item is msg:
+                seen = True
+                continue
+            if seen:
+                following = item
+                break
+        if following is None:
+            return self._skip_blank_back(document.lastBlock())
+        head = self._msg_head_block(following, None)
+        return self._skip_blank_back(head.previous()) if head is not None else None
+
+    @staticmethod
+    def _skip_blank_back(block):
+        """消息末尾常留一个空段用来间隔：往回收掉，落在这条消息真正有字的最后一行。"""
+        while block.isValid() and block.previous().isValid() and not block.text().strip():
+            block = block.previous()
+        return block
 
     def _ensure_msg_buttons(self) -> None:
         if self._msg_buttons:
@@ -5261,8 +5328,25 @@ class ChatPanel(QtWidgets.QWidget):
             self._hide_msg_actions()
             return
         self._ensure_msg_buttons()
-        # 条子挂在消息开头那一行（不是鼠标所在行）：长回答里移动鼠标时不会一格一格地跳
+        self._msg_shown = msg
+        # 条子挂在消息**最后一行下面**、右对齐：贴在开头那一行会压在这条回复的字上，
+        # 长回答的第一行一直顶到右边，按钮和字挤在一起（他点出来过）。
         head = self._msg_head_block(msg, block) or block
+        tail = self._msg_tail_block(msg) or head
+        tail_rect = self._block_rect(tail, tail)
+        view_height = self.view.viewport().height()
+        # 尾巴那一行整行都在屏幕里才有资格挂按钮；否则按钮会被挤到窗口边上，孤零零漂着
+        tail_visible = (
+            tail_rect.height() > 0
+            and tail_rect.bottom() >= 0
+            and tail_rect.bottom() + 6 + HoverActionButton.BUTTON_PX <= view_height
+        )
+        anchor = tail if tail_visible else block
+        anchor_rect = tail_rect if anchor is tail else self._block_rect(anchor, anchor)
+        # 用户那条：按钮跟它自己的话并排（右边空着），不另起一行；回答另起一行，别压字
+        inline = anchor is not tail or msg.get("role") == "user"
+        band_height = anchor_rect.height() + (0 if inline else HoverActionButton.BUTTON_PX + 10)
+        self._msg_band = QtCore.QRect(0, anchor_rect.top(), self.view.viewport().width(), band_height)
         step = HoverActionButton.BUTTON_PX + 4
         for index, button in enumerate(self._msg_buttons):
             if index >= len(specs):
@@ -5270,11 +5354,25 @@ class ChatPanel(QtWidgets.QWidget):
                 continue
             icon, tip, slot = specs[index]
             button.retarget(icon, tip, lambda m=msg, s=slot: s(m))
-            self._place_hover(button, head, head, offset_x=-index * step)
+            self._place_hover(button, anchor, anchor, offset_x=-index * step,
+                              below=not inline, bottom_align=inline)
 
     def _hide_msg_actions(self) -> None:
+        self._msg_band = None
+        self._msg_shown = None
         for button in self._msg_buttons:
             button.hide()
+
+    def _replace_msg_actions(self) -> None:
+        """窗口缩放/正文重新排版后，悬停条得按新的行位置重摆——不然按钮留在老地方压着别的字。"""
+        msg = self._msg_shown
+        if msg is None or not self._msg_buttons:
+            return
+        head = self._msg_head_block(msg, None)
+        if head is None:
+            self._hide_msg_actions()
+            return
+        self._show_msg_actions(msg, head)
 
     def _copy_message(self, msg: dict) -> None:
         QtWidgets.QApplication.clipboard().setText(str(msg.get("text") or ""))
@@ -5423,12 +5521,13 @@ class ChatPanel(QtWidgets.QWidget):
     def queued_count(self) -> int:
         return len(self._queued)
 
-    def _place_hover(self, button: HoverActionButton, first, last, offset_x: int = 0) -> None:
+    def _place_hover(self, button: HoverActionButton, first, last, offset_x: int = 0,
+                     below: bool = False, bottom_align: bool = False) -> None:
         rect = self._block_rect(first, last)
         if rect.height() <= 0:
             button.hide()
             return
-        button.place_at(rect, offset_x=offset_x)
+        button.place_at(rect, offset_x=offset_x, below=below, bottom_align=bottom_align)
         button.show()
         button.raise_()
 
@@ -5470,6 +5569,7 @@ class ChatPanel(QtWidgets.QWidget):
             kind = event.type()
             if kind is QtCore.QEvent.Type.MouseMove:
                 point = event.position().toPoint()
+                self._sync_edge_cursor(self.view.viewport().mapTo(self, point))
                 self._hover_at(point)
                 self._point_at_photo(point)
             elif kind is QtCore.QEvent.Type.MouseButtonPress:
@@ -5493,9 +5593,12 @@ class ChatPanel(QtWidgets.QWidget):
                 self.view.viewport().unsetCursor()
             elif kind is QtCore.QEvent.Type.Resize:
                 self._place_jump()  # 正文区尺寸变了（输入框长高、窗口拉宽），胶囊重新贴底
+                self._replace_msg_actions()  # 行重新折过了，悬停条跟着重摆
             return super().eventFilter(obj, event)
         if obj is getattr(self, "input", None):
             kind = event.type()
+            if kind is QtCore.QEvent.Type.MouseMove:
+                self._sync_edge_cursor(self.input.mapTo(self, event.position().toPoint()))
             if kind is QtCore.QEvent.Type.FocusIn:
                 self._mark_input_focus(True)
             elif kind is QtCore.QEvent.Type.FocusOut:
@@ -5556,7 +5659,7 @@ class ChatPanel(QtWidgets.QWidget):
             elif kind is QtCore.QEvent.Type.MouseMove and not (
                 event.buttons() & QtCore.Qt.LeftButton
             ):
-                self.setCursor(cursor_for(self._hit_edges(event.position().toPoint())))
+                self._sync_edge_cursor(event.position().toPoint())
         return super().eventFilter(obj, event)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
@@ -5591,7 +5694,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._snapped = False  # 自己动手拖过，就不再算「吸在她下面」
             self.move(pos - self._drag_offset)
             return
-        self.setCursor(cursor_for(self._hit_edges(event.position().toPoint())))
+        self._sync_edge_cursor(event.position().toPoint())
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
@@ -5602,6 +5705,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._resize_start_global = None
         self._drag_offset = None
         self.unsetCursor()
+        self._edge_cursor_shape = None
         if dragged and not resized:
             self._snap_under_anchor()  # 松手这一下才吸：拖的时候它得跟着手走
         if resized or dragged:

@@ -53,8 +53,10 @@ class HoverActionButton(QtWidgets.QToolButton):
 
     BUTTON_PX = 20
     ICON_PX = 12
-    IDLE_COLOR = "#8f9bb0"
+    IDLE_COLOR = "#e8edf5"
     DONE_COLOR = "#98c379"
+    # 按钮底下垫一层半透明深色：窗口背景是人物视频/壁纸，亮的地方纯白图标会整片糊掉
+    PLATE = "rgba(14, 16, 22, 0.55)"
 
     def __init__(
         self,
@@ -81,8 +83,8 @@ class HoverActionButton(QtWidgets.QToolButton):
         self.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setStyleSheet(
-            "QToolButton { border: none; border-radius: 6px; background: transparent; padding: 0; }"
-            "QToolButton:hover { background: rgba(255, 255, 255, 0.10); }"
+            f"QToolButton {{ border: none; border-radius: 6px; background: {self.PLATE}; padding: 0; }}"
+            "QToolButton:hover { background: rgba(255, 255, 255, 0.28); }"
         )
         self.retarget(icon_name, tooltip, slot, done_tooltip)
         self.clicked.connect(self._clicked)
@@ -101,14 +103,24 @@ class HoverActionButton(QtWidgets.QToolButton):
         self._reset.stop()
         self._back_to_idle()
 
-    def place_at(self, rect: QtCore.QRect, offset_x: int = 0) -> None:
-        """贴在这块内容的右上角；`offset_x` 往左让位。"""
+    def place_at(self, rect: QtCore.QRect, offset_x: int = 0, below: bool = False,
+                 bottom_align: bool = False) -> None:
+        """贴在这块内容的右上角；`offset_x` 往左让位。
+
+        `below` 挂到这一块下沿外（另起一行，给回答用）；`bottom_align` 贴着这一块最后
+        一行并排（给用户那条用：它自己的话右边就是空的）。
+        """
         parent = self.parentWidget()
         if parent is None:
             return
         right = rect.right() - self.BUTTON_PX - 6 + offset_x
         x = max(0, min(right, parent.width() - self.BUTTON_PX))
-        y = max(0, rect.top() + 2)
+        if below:
+            y = min(rect.bottom() + 6, parent.height() - self.BUTTON_PX - 4)
+        elif bottom_align:
+            y = max(rect.top(), rect.bottom() - self.BUTTON_PX - 2)
+        else:
+            y = max(0, rect.top() + 2)
         self.move(x, y)
 
     def enterEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
