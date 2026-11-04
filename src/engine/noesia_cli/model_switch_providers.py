@@ -403,18 +403,35 @@ def _is_aws_sdk(pconfig) -> bool:
     return bool(pconfig) and getattr(pconfig, "auth_type", "") == "aws_sdk"
 
 
+def _provider_has_live_catalog(slug: str) -> bool:
+    """这家有没有能问的 live 目录源。有的话，静态表就只是"提示/白名单"，不能当清单用。"""
+    try:
+        from noesia_cli.models import _PROVIDER_CATALOG_FETCHERS
+        if slug in _PROVIDER_CATALOG_FETCHERS:
+            return True
+        from noesia_cli.auth import PROVIDER_REGISTRY
+        cfg = PROVIDER_REGISTRY.get(slug)
+        return bool(cfg) and getattr(cfg, "auth_type", "api_key") in {"api_key", "aws_sdk"}
+    except Exception as exc:  # health: allow BLE001 -- 查不到就按"没有 live 源"处理，宁可给静态表也不空着
+        logger.debug("live catalog probe failed for %s: %s", slug, exc)
+        return False
+
+
 def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True,
                          non_blocking: bool = False) -> list:
-    """``cached_provider_model_ids`` (the SAME disk-cached list ``noesia model`` builds), falling
-    back to the curated list (merged with models.dev for every provider) when live is empty.
-    ``non_blocking`` (GUI read path) reads the disk cache only — a provider that is slow or down
-    contributes its curated list instead of stalling the whole picker (#114215)."""
+    """``cached_provider_model_ids``（``noesia model`` 用的同一份磁盘清单）优先。
+
+    ``non_blocking``（界面读路径）只读磁盘缓存，不等探测。**缓存里没有时看这家有没有 live 源**：
+    有就空着（下一轮 SWR 暖完自然会出来），绝不拿 `_PROVIDER_MODELS` 那份随包硬编码的静态表
+    顶上——那份既不校验在售、也不校验支不支持工具调用，端出来就是"失败反而多出一截模型"、
+    用户看着数字自己乱跳。只有压根没有 live 源的 provider，静态表才是它唯一可知的目录。
+    """
     from noesia_cli.models import (
         _drop_retired_models, _merge_with_models_dev, cached_provider_model_ids)
     from noesia_cli.chat_catalog import without_generation_models
 
     model_ids = cached_provider_model_ids(slug, non_blocking=non_blocking)
-    if not model_ids:
+    if not model_ids and not _provider_has_live_catalog(slug):
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev:
             model_ids = _merge_with_models_dev(slug, model_ids)
@@ -434,13 +451,17 @@ def _first_curated(curated: dict, keys) -> list:
 
 def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str,
                              non_blocking: bool = False) -> list:
-    """Bedrock: live discovery reflects the active region (eu.*, ap.*) rather than the static
-    us.* list; any failure falls back to the curated list."""
+    """Bedrock：live discovery 反映当前 region（eu.*、ap.*），不是静态的 us.* 表。
+
+    探测失败时只有在**没有 live 源**的情况下才用静态表；Bedrock 有 discovery，
+    所以拿不到就空着（同上，别拿随包硬编码的名单冒充"当前区域可用的模型"）。
+    """
     try:
         return _live_or_curated_ids(slug, curated, *fallback_keys, merge_models_dev=False,
-                                    non_blocking=non_blocking) or []
-    except Exception:
-        return _first_curated(curated, fallback_keys or (slug,)) or []
+                                    non_blocking=non_blocking)
+    except Exception as exc:  # health: allow BLE001 -- discovery 失败不该让整张菜单挂掉
+        logger.debug("aws catalog discovery failed for %s: %s", slug, exc)
+        return _first_curated(curated, fallback_keys or (slug,)) if not _provider_has_live_catalog(slug) else []
 
 
 def _cap_models(model_ids: list, max_models: int | None, slug: str = "") -> list:
@@ -937,9 +958,9 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     for grp in ep_groups.values():
         ep_name, display_name, api_url = grp["slug"], grp["name"], grp["api_url"]
         models_list = list(grp["models"])
-        # Official OpenAI rows often have base_url but no models: dict — avoid a misleading zero count.
-        if not models_list and base_url_host_matches(str(api_url).strip().lower(), "api.openai.com"):
-            models_list = list(b.curated.get("openai") or [])
+        # 官方 OpenAI 行常常只有 base_url、没有 models：以前这里拿 curated["openai"]（随包白名单）
+        # 顶上，发现失败时就会端出一批没校验的名字、计数还比成功时多。现在留给下面的 live 发现，
+        # 发现不到就空着（行还在，只是 0 个模型），不再拿硬编码冒充当前可用。
 
         ep_url_norm = _norm_url(api_url)
         ep_aliases = {str(alias).lower() for alias in grp["aliases"]}
@@ -1101,9 +1122,11 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     """Curated model lists keyed by noesia provider id, plus the dynamic ones (noesia manifest,
     Ollama Cloud, LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud
     ids and warms them in the background rather than waiting on an 8s probe (#114215)."""
-    from noesia_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from noesia_cli.models import _PROVIDER_MODELS
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
-    curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
+    # openrouter 这份随包名单（OPENROUTER_MODELS，73 条）以前在这里覆盖 curated["openrouter"]，
+    # 于是缓存行一冷、菜单就端出这 73 条未校验的模型（用户看到 58↔72 来回跳）。它有 live 源，
+    # 现在只由 cached_provider_model_ids 提供，curated 不再参与。
     # Plugin profiles without a static row: their fallback_models are the curated floor, so the
     # non-blocking GUI read (cold catalog cache) lists them instead of an empty provider row.
     from providers import list_providers

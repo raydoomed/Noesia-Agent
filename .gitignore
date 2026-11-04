@@ -79,3 +79,6 @@ Thumbs.db
 # 开发笔记，不入库
 docs/
 CHANGELOG.md
+
+# 给 agent 的工作区约定：本机用，不进仓库
+AGENTS.md

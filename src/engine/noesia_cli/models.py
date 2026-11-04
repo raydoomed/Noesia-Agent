@@ -487,14 +487,15 @@ def fetch_ai_gateway_models(
     fallback = list(VERCEL_AI_GATEWAY_MODELS)
     live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
     if live is None:
-        return list(_ai_gateway_catalog_cache or fallback)
+        # 拉不到（401/403/超时）：只给上次真的拿到的清单，不端仓库内的推荐表冒充"当前可用"。
+        return list(_ai_gateway_catalog_cache or [])
     _, live_by_id = live
 
     curated = [
         (pid, "free" if _ai_gateway_model_is_free(live_by_id[pid].get("pricing")) else "")
         for pid, _ in fallback if pid in live_by_id]
     if not curated:
-        return list(_ai_gateway_catalog_cache or fallback)
+        return list(_ai_gateway_catalog_cache or [])
 
     # A free Moonshot model in the live catalog is auto-promoted to #1 as "recommended".
     free_moonshot = next(
@@ -1253,7 +1254,9 @@ def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
             return live
     except Exception:
         pass
-    return CuratedFallbackModels(_PROVIDER_MODELS.get("copilot", []))
+    # 这次没问出东西：返回 None（"这家没取到"），不要把随包白名单当 live 清单端出去——
+    # 那 56 条 vs 白名单是对不上的，菜单会自己跳数字；上层会退回上次真正拿到的磁盘清单。
+    return None
 
 
 def _api_key_credentials(normalized: str) -> tuple[str, str]:
@@ -1295,7 +1298,7 @@ def _stepfun_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
     return _merge_unique(live, curated, key=_model_dedup_key) if curated else live
 
 
-def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
+def _anthropic_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     model_cfg = _get_model_config_dict()
     cfg_base_url = cfg_api_key = ""
     if normalize_provider(str(model_cfg.get("provider", "") or "")) == "anthropic":
@@ -1304,9 +1307,9 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     live = _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None)
     curated = list(_PROVIDER_MODELS.get("anthropic", []))
     if not live:
-        # A placeholder for the outage, not this account/proxy's catalog: the disk cache must
-        # never pin it over a same-credentials live row (#107391).
-        return CuratedFallbackModels(curated)
+        # 这次没探到：None（"没取到"），上层退回上次真正拿到的磁盘清单。
+        # 以前这里返回白名单（CuratedFallbackModels 占位），失败时菜单反而多出十几条没校验的旧模型。
+        return None
     # The live /v1/models dump lags newly-routed curated aliases (reachable before enumerated):
     # curated first, then live-only extras, so a fresh curated model never disappears.
     return live if cfg_base_url else _merge_unique(curated, live)
@@ -1454,7 +1457,8 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
             live = None
         # Same merge as setup (`_model_flow_plugin_provider`) so /model, the Desktop picker and
         # `noesia model` offer one list: live ids plus any pinned id the probe omitted.
-        return merge_profile_catalog(normalized, profile, list(live) if live else None)
+        return merge_profile_catalog(normalized, profile, list(live) if live else None,
+                                     allow_curated=False)
     if not (profile.auth_type == "api_key" and profile.base_url):
         return list(profile.fallback_models) or None
     api_key, base_url = _api_key_credentials(normalized)
@@ -1470,14 +1474,23 @@ def probe_profile_catalog(normalized: str, profile, api_key: Optional[str], base
             live = profile.fetch_models(api_key=api_key, base_url=base_url)
         except Exception:
             live = None
-    return merge_profile_catalog(normalized, profile, live)
+    return merge_profile_catalog(normalized, profile, live, allow_curated=False)
 
 
-def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]]) -> Optional[list[str]]:
+def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]], *,
+                          allow_curated: bool = True) -> Optional[list[str]]:
     """Combine a profile's live catalog with its curated list the way the ``/model`` picker does, so
     first-time setup (``model_setup_flows._api_key_provider_model_list``) offers the same rows the
-    picker will later show. Empty live → ``fallback_models`` (None when the profile has none)."""
+    picker will later show.
+
+    ``allow_curated=False``（选模型/列清单这条路）：live 一个都没拿到就返回 None，即"这家这次没
+    取到"，不要拿 ``fallback_models`` 那份随包硬编码的名单顶上——那份没校验在售、也没校验能不能
+    用，端出来会让"失败"比"成功"多出一截模型。首次配置（setup）仍允许，因为那时候用户刚填完
+    key、需要一个能点下去的起点。
+    """
     if not live:
+        if not allow_curated:
+            return None
         rows = CuratedFallbackModels(profile.fallback_models) if profile.fallback_models else None
     else:
         curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
@@ -1607,6 +1620,25 @@ def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
     return _chat_catalog_rows(_xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged)
 
 
+def _profile_has_live_source(normalized: str) -> bool:
+    """这家有没有"能问"的目录源：profile 自带 ``fetch_models``（api_key+base_url 或 subprocess）。
+
+    有就说明静态表只是随包的推荐/白名单，不是"当前可用的模型"——取不到时必须空着，让上层用
+    上次真正拿到的那份，而不是把没校验的名单端给用户。
+    """
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(normalized)
+    except Exception:
+        return False
+    if not profile:
+        return False
+    auth_type = getattr(profile, "auth_type", "")
+    if auth_type == "external_process":
+        return True
+    return auth_type == "api_key" and bool(getattr(profile, "base_url", ""))
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
     fetch, then the static list (merged with models.dev for every provider)."""
@@ -1625,7 +1657,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         relayed = _relay_model_catalog(normalized, relay)
         if relayed:
             return _chat_catalog_rows(relayed)
-        return _static_catalog(normalized, _PROVIDER_CATALOG_FETCHERS.get(normalized))
+        # 配了中转就是有 live 源（问的就是中转自己）：这次没答上来就空着，让上层用这家上次
+        # 真正从中转拿到的磁盘清单，而不是端出仓库里那份跟中转无关的静态表。
+        return []
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)
@@ -1639,6 +1673,9 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if models is not None:
         return _chat_catalog_rows(_merge_live_with_catalog(normalized, models))
 
+    if _profile_has_live_source(normalized):
+        # 这家能问（provider profile 自带 fetch_models），只是这次没问出东西：同上，不端静态表。
+        return []
     return _static_catalog(normalized, fetcher)
 
 
@@ -1882,7 +1919,8 @@ def cached_provider_model_ids(
 
     ``non_blocking`` marks the GUI read path (``model.options``): it NEVER waits on a provider probe.
     A same-credentials row of any age is served as-is and a daemon thread warms the next open; a
-    cold/mismatched row returns ``[]`` so the caller keeps its curated list. One degraded provider
+    cold/mismatched row returns ``[]`` and a daemon thread warms it for the next open (调用方
+    不再拿随包白名单顶上——那批没校验在售、也没校验能不能用)。One degraded provider
     (hanging or timing-out ``/v1/models``) therefore delays nothing but itself (#114215)."""
     normalized = _normalized_cache_slug(provider)
     if not normalized:
