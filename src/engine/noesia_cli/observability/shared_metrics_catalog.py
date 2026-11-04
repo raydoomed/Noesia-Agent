@@ -299,12 +299,11 @@ def model_metric_name(raw: object, provider: str, *, max_length: int) -> str:
 
 @functools.cache
 def public_model_ids() -> frozenset[str]:
-    """Model ids Noesia ships in its static catalogs plus every id in the local models.dev cache
-    (never a network call), with and without a ``vendor/`` prefix."""
+    """Model ids in the local models.dev cache (never a network call), with and without a
+    ``vendor/`` prefix. 随包静态名单已经删了，这里只剩 models.dev 那份缓存。"""
     from agent.models_dev import fetch_models_dev
-    from noesia_cli.models_catalog_static import _PROVIDER_MODELS
 
-    ids = {model for models in _PROVIDER_MODELS.values() for model in models}
+    ids: set[str] = set()
     for entry in fetch_models_dev(allow_network=False).values():
         if isinstance(entry, dict) and isinstance(entry.get("models"), dict):
             ids.update(entry["models"])

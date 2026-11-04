@@ -13,26 +13,7 @@ from noesia_cli.route_identity import normalize_route_base_url
 logger = logging.getLogger(__name__)
 
 
-# Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
-# OAuth backend actually accepts: the public API's "-pro" variants and the retired
-# gpt-5.3-codex / gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini return HTTP 400 there
-# ("not supported when using Codex with a ChatGPT account"), so listing them leaked dead picker
-# choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
-# up automatically.
-DEFAULT_CODEX_MODELS: list[str] = [
-    "gpt-6-sol",
-    "gpt-6-luna",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "gpt-5.4-mini",
-    "gpt-5.4",
-    # Research preview exposed ONLY via the Codex OAuth backend for ChatGPT Pro subscribers —
-    # not in the public API, so it stays out of the "openai" catalog in noesia_cli/models.py.
-    # The backend reports ``supported_in_api: false`` for it; that flag describes API
-    # availability, not Codex availability, so fetch/cache paths must not filter on it.
-    "gpt-5.3-codex-spark"]
+# 没有随包兜底名单了：Codex 那边有什么模型，只能由 OAuth 后端/本地缓存说了算。
 
 # gpt-5.3-codex-spark is in research preview and is exposed *only* via the Codex CLI / OAuth backend
 # (chatgpt.com/backend-api/codex/models) for ChatGPT Pro subscribers. It is NOT available in the public
@@ -212,21 +193,17 @@ def _read_cache_models(codex_home: Path) -> list[str]:
 
 
 def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[str] = None) -> list[str]:
-    """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults.
+    """Available Codex model IDs: live API (if token) > config.toml default > local cache.
 
     Pass the ``base_url`` resolved together with ``access_token`` (runtime/pool route) so live
-    discovery asks the credential's own host. Without a live answer the result is
-    ``CuratedFallbackModels``: a cache placeholder that never replaces a verified catalog, since
-    account-gated rows such as Astra are absent from the offline hints."""
+    discovery asks the credential's own host. 没有 live、也没有本地缓存就返回空清单——
+    随包写死一份「Codex 大概有哪些模型」的表已经删了。
+    """
     codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
     if access_token:
         api_models = _fetch_models_from_api(access_token, base_url=base_url)
         if api_models:
             return _finalize_codex_models(api_models)
-    # Late: models_catalog_static builds its codex table from this module at import time.
-    from noesia_cli.models_catalog_static import CuratedFallbackModels
-
     default_model = _read_default_model(codex_home)
-    return CuratedFallbackModels(_finalize_codex_models(_drop_undiscovered_astra(_dedupe([
-        *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS]))))
+    return _finalize_codex_models(_drop_undiscovered_astra(_dedupe([
+        *([default_model] if default_model else []), *_read_cache_models(codex_home)])))

@@ -1727,7 +1727,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._repaint_model_menu()
         text = current_label(self._models, current, fallback="选模型")
         self._model_button.setText(("切换中…" if switching else text) + "  ▾")
-        self._model_button.setEnabled(bool(self._models) and not switching)
+        # 清单空但引擎说了在跑哪个模型时也要能点：菜单里至少还有「刷新模型」
+        self._model_button.setEnabled(bool(self._models or current) and not switching)
         if not self._models:
             self._model_button.setToolTip("模型清单还没到；点「设置」可以先配一家")
         elif not any(group["available"] for group in group_models(self._models) if group["provider"]):

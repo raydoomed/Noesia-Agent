@@ -246,11 +246,6 @@ def _models_dev_merged(provider_id: str, curated) -> list:
     return list(merged.values())
 
 
-def _show_curated(model_list) -> None:
-    if model_list:
-        print(f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.')
-
-
 def _prune_replaced_custom_model_config_credentials(base_url: str, *, provider_name: str = "") -> None:
     """Drop stale ``model_config`` ("the credential under ``model.api_key``") entries from inactive
     custom pools: after an explicit custom-endpoint switch an old pool still carrying that source

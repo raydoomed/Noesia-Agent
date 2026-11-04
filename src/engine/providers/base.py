@@ -388,8 +388,8 @@ class ProviderProfile:
         and forwards self.default_headers. Override to customise auth, path,
         response shape, or to return None for providers with no REST catalog.
 
-        Callers must always fall back to the static _PROVIDER_MODELS list
-        when this returns None.
+        None means this provider has no readable catalog; callers treat that
+        as "nothing to offer" — there is no bundled list to fall back to.
         """
         if not self.supports_model_listing:
             return None

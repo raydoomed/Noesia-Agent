@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 from paths import repo_root
@@ -26,11 +27,17 @@ def _engine_selection(cfg, root: Path) -> tuple[str, str]:
     真源是 `engine.home/config.yaml`，所以先把 `NOESIA_HOME` 钉到项目内的引擎家目录，
     再问引擎（`agent.agent_factory.current_selection`）。引擎不可用就返回空串，不拦启动。
     """
-    from backends.catalog import current_option
+    from backends.catalog import engine_core, pin_engine_home
 
     try:
-        option = current_option(cfg, root=root)
-        return option.model, option.backend
+        pin_engine_home(cfg, root)
+        core = str(engine_core(cfg, root))
+        if core not in sys.path:
+            sys.path.insert(0, core)
+        from agent.agent_factory import current_selection  # noqa: PLC0415 - 依赖引擎路径
+
+        model, provider = current_selection()
+        return str(model or ""), str(provider or "")
     except Exception:  # noqa: BLE001 - 自检/启动提示不该因为引擎还没装就崩
         return "", ""
 

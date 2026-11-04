@@ -20,7 +20,6 @@ from pathlib import Path
 
 from paths import project_root
 
-from . import model_cache
 from .status_stack import CONFIRM_TTL_MS
 
 logger = logging.getLogger(__name__)
@@ -84,36 +83,32 @@ def _flag(value, *, default: bool = True) -> bool:
 
 
 
-def build_model_choices(items: list[dict]) -> list[dict]:
-    """「设置模型」对话框的数据：引擎支持的**每一家**（不只是现在能用的那几家）。
+def build_model_choices(rows: list[dict]) -> list[dict]:
+    """「设置模型」对话框的数据：引擎 `model.options` 的全量供应商行（含没配 Key 的家）。
 
-    前端已经在手上的那份清单（回来时带 `backend`/`model`）用来补充/校正模型列表；供应商本身
-    以引擎的供应商表为准——`minimax`、`xiaomi`、`stepfun` 这些还没配密钥的也必须出现在这里。
+    `rows` 是引擎回的 `providers`（`explicit_only=False` + `include_unconfigured=True`）：
+    已配的家带模型清单，没配的家是骨架行（`authenticated=false`、`key_env` 说明该填哪个变量）。
+    这里只做形状转换，不补默认值、不猜清单——能不能用、有哪些模型全是引擎说的。
     """
-    choices = catalog.provider_choices()
-    by_provider = {row["provider"]: row for row in choices}
-
-    for item in items or []:
-        provider = str(item.get("backend") or "")
-        model = str(item.get("model") or "")
-        if not provider or not model:
+    choices: list[dict] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
             continue
-        row = by_provider.get(provider)
-        if row is None:
-            row = {
-                "provider": provider,
-                "label": _provider_label(item, provider, model),
-                "env_vars": list(catalog.provider_env_vars(provider)),
-                "configured": catalog.provider_configured(provider),
-                "models": [],
+        slug = str(row.get("slug") or "").strip()
+        if not slug:
+            continue
+        key_env = str(row.get("key_env") or "").strip()
+        choices.append(
+            {
+                "provider": slug,
+                "label": str(row.get("name") or slug),
+                "env_vars": [key_env] if key_env else [],
+                "configured": row.get("authenticated") is not False,
+                "models": [m for m in (row.get("models") or []) if isinstance(m, str) and m],
+                "auth_type": str(row.get("auth_type") or ""),
+                "warning": str(row.get("warning") or ""),
             }
-            by_provider[provider] = row
-            choices.append(row)
-        if model not in row["models"]:
-            row["models"] = [model, *row["models"]]
-
-    # 顺序由 catalog 决定（配好的 → 文档里写明怎么配的 → 其余），这里不再排一遍：
-    # 二次排序会把文档里那几家打散成字母序，用户第一眼看到的就是 `actual` 这种一家模型都没有的。
+        )
     return choices
 
 
@@ -263,12 +258,13 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._new_session_timer.timeout.connect(self._new_session_timeout)
         self._rewind_pending: tuple[dict, str] | None = None  # 截断重发：等第一段新文字回来才改窗口
         self._models = None  # 引擎回来的模型清单（引擎连上后由 on_envelope 填）
+        self._provider_rows: list[dict] = []  # 设置页用的供应商全表（引擎 model.options 的原始行）
+        self._model_dialog = None  # 正开着的设置窗口（清单中途更新时原地换内容）
         self._models_refresh_token = 0  # 每次「刷新模型」+1：迟到的 30 秒兜底认这个号，过期就不吭声
         self._reasoning_current: str | None = None  # 引擎回读的推理强度，模型清单变了要重摆菜单
         self._reasoning_pending = False  # 恢复的会话还没回报档位：先不画（照桌面端 pending）
         self._reasoning_fresh = False  # 引擎已经报过这场的真档：之后 `config.get` 回的默认值不许再盖它
         self._reasoning_wire = ""  # 这条路实际会发的那档（引擎报的，跟选的那档不同时显示「→」）
-        self._cache_root = project_root()  # 模型清单快照写在哪（main() 里换成配置根）
         self._boot_done = False  # 启动加载做完没有（做完才让窗口露面）
         self.boot_splash = None  # 启动动画（BootSplash，没有 Qt 时是 None）
         self._history_asked = False  # 这一段对话问过没有（连上/开窗都会补问一次）
@@ -539,13 +535,19 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         不管清单有没有可用项都打开——清单没加载完、一家都没配都能填。两个坑都在这几行里：
         窗口要用模态（`exec`），否则主界面那个无边框置顶窗会把它压在后面，用户看到的是
         「点了没反应」；位置要钉在屏幕中央，不能跟父窗口走（聊天窗贴着头像，可能一半在屏幕外）。
-        `exec` 关掉之后才发 IPC——嵌套事件循环里 asyncio 是停的，在里面发消息等于丢包。
+        清单在 exec 之前就发出去：窗口开着的时候 Qt 的事件循环照常在跑，回包能落进这个模态窗口
+        （`apply_provider_rows` → `dialog.update_rows`）；等到关窗再发就晚了——用户看到的是一张空表。
         """
         panel = self.chat_panel
         if panel is None:
             return
         from app.model_dialog import ModelDialog
 
+        if self.client is not None:
+            # 设置页要的是「线上现在有什么」：直接带 refresh 问一次（作废引擎那份 1 小时的缓存、逐家重探）。
+            # 不带 refresh 时引擎只读磁盘缓存，缓存空着或过期就回一列空行——看起来就是「还要点一下刷新」。
+            # 聊天菜单那条才走缓存（求快），设置页每次打开就重取（求新）。
+            self.client.request_provider_rows(refresh=True)
         try:
             rows = self.model_choices()
         except Exception as exc:  # noqa: BLE001 - 按钮点了没反应是最糟的反馈，宁可当场说出来
@@ -556,9 +558,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         dialog = ModelDialog(
             rows,
             parent=None,
-            current=str(self._models.get("current") or ""),
+            current=str((self._models or {}).get("current") or ""),
             engine_save=self.save_model_key,
+            on_key_save=self.save_provider_key,
         )
+        self._model_dialog = dialog
         screen = QtGui.QGuiApplication.screenAt(QtGui.QCursor.pos()) or QtGui.QGuiApplication.primaryScreen()
         if screen is not None:
             geometry = dialog.frameGeometry()
@@ -574,6 +578,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             for notice in dialog.save_notices():
                 if self.chat_panel is not None:
                     self.chat_panel.show_info(notice)
+            if "text" in pages:
+                # 刚把某个模型真正启用了：引导如果之前因为「没有模型」没开场，这一刻才该开场
+                self._greet_if_needed(force=True)
             if "avatar" in pages:
                 # 刚填/改了 Token 或模型：之前"用不了"的结论作废，下一句就去重试
                 self._avatar_block_until = 0.0
@@ -605,6 +612,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                             "workdir", f"工作目录已改为 {target}，新建会话生效。", ttl_ms=CONFIRM_TTL_MS
                         )
             self._sync_voice_button()
+        self._model_dialog = None
 
     def _end_avatar_session(self) -> None:
         """闲置挂断：会话不再计费。引擎留着（预加载过就不必再载 dll）。"""
@@ -857,9 +865,40 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self.chat_panel.refresh_voice_state()
 
     def model_choices(self) -> list[dict]:
-        """把清单按供应商整理成对话框要的形状：变量名、配没配、有哪些模型。"""
-        items = self.chat_panel.models() if self.chat_panel is not None else []
-        return build_model_choices(items)
+        """设置窗口要的形状：引擎的供应商全表 → 每家一张卡（变量名、配没配、有哪些模型）。"""
+        return build_model_choices(self._provider_rows)
+
+    def refresh_provider_rows(self) -> None:
+        """设置页的「刷新模型」：作废引擎缓存、逐家重问线上清单。回包走 `apply_provider_rows`。"""
+        if self.client is not None:
+            self.client.request_provider_rows(refresh=True)
+
+    def apply_provider_rows(self, rows: list, current: str = "") -> None:
+        """引擎回的供应商全表：存下来给设置页用；设置窗口正开着就原地换内容。
+
+        设置页开的那一刻就开始取清单，回包常常比人手快——不在原窗口换，用户得关掉重开才看得到。
+        """
+        self._provider_rows = [dict(row) for row in (rows or []) if isinstance(row, dict)]
+        dialog = self._model_dialog
+        if dialog is not None and hasattr(dialog, "update_rows"):
+            try:
+                dialog.update_rows(build_model_choices(self._provider_rows), current=current)
+            except Exception as exc:  # noqa: BLE001 - 设置页有个旧清单照样能用，别让回包把窗口搞崩
+                logger.exception("[模型] 设置页原地更新失败：%s", exc)
+
+    def save_provider_key(self, slug: str, api_key: str, done=None) -> None:
+        """密钥设置里这一家按了「确定」：只写这一家的 Key，引擎落盘后自己把清单重取一遍送回来。
+
+        不走 `save_model_key`：那条是「保存并启用」整页提交的链路，一次只能有一份在飞；
+        这里一家一份，`done(ok, lines)` 在引擎回执到达时（`on_save_result`）才被调。
+        """
+        if self.client is None:
+            raise RuntimeError("还没连上引擎")
+        if done is not None:
+            if not hasattr(self, "_key_wait"):
+                self._key_wait = {}
+            self._key_wait[str(slug)] = done
+        self.client.save_key(slug, api_key)
 
     def save_model_key(self, selection: dict, done=None) -> None:
         """对话框点了「保存并启用」：交给引擎逐家写 `.env`，再切「启用」那家的模型（立即生效）。
@@ -921,12 +960,20 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     def on_save_result(self, tag: str, payload: dict) -> None:
         """引擎回执：设置窗口点了「保存并启用」之后在等这两条（写 Key / 切模型）。"""
         ctx = getattr(self, "_save_ctx", None)
+        data = dict(payload or {})
+        ok = bool(data.get("ok"))
+        if tag.startswith("model.save_key"):
+            # 密钥设置里那家的「确定」在等这一条：挨家一份，跟整页保存无关
+            slug = tag.split(":", 1)[1] if ":" in tag else str(data.get("slug") or "")
+            waiting = getattr(self, "_key_wait", None)
+            callback = waiting.pop(slug, None) if isinstance(waiting, dict) else None
+            if callback is not None:
+                lines = [] if ok else [f"{slug}：没存成——{data.get('message') or '引擎没说原因'}"]
+                callback(ok, lines)
         if not ctx:
             return
         if time.monotonic() - float(ctx.get("stamp") or 0.0) > 9.0:
             return  # 已经报过超时的旧回执，不能算到下一次保存头上
-        data = dict(payload or {})
-        ok = bool(data.get("ok"))
         if tag.startswith("model.save_key"):
             slug = tag.split(":", 1)[1] if ":" in tag else str(data.get("slug") or "")
             ctx["waiting"] = max(0, int(ctx["waiting"]) - 1)
@@ -973,17 +1020,15 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._models_refresh_token += 1  # 清单到手：那条 30 秒兜底别再喊
         if self.chat_panel is not None:
             self.chat_panel.set_models(rows, current, switching=switching)
-            if chosen is not None and chosen.get("available"):
-                # 模型真的能用了：「还没有配置模型」那条提示该撤了（只撤这一条，别把别的提示一起冲掉）
+            if current and (chosen is None or chosen.get("available")):
+                # 引擎报了一个正在跑的模型，就是「配好了」的证据：「还没有可用的模型」该撤了。
+                # 不要求它必须出现在这份清单里——清单可能是刚作废、还在后台重探的那一版。
                 self.chat_panel.clear_status_notice("setup")
         if self._tray is not None:
             self._tray.setToolTip(f"Noesia Agent · {label}")
         if not switching:
             # 档位是按「当前模型 + 路由」算出来的，换完模型必须重问一次，否则菜单是旧的
             self.request_reasoning()
-        root = getattr(self, "_cache_root", None)
-        if root is not None:
-            model_cache.save(root, {"current": current, "items": rows, "switching": switching})
         finish = getattr(self, "finish_boot", None)
         if callable(finish):
             finish()  # 清单到手就算开完机：窗口该露脸了，不再等下一件事
@@ -1062,7 +1107,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     list(self._models.get("items") or []), str(self._models.get("current") or "")
                 )
         self._flush_pending_reviews()  # 窗还没开时收到的回顾总结，这会儿补上
-        self.paint_cached_models()  # 引擎还没起来时先按上次的清单画，别让按钮空着
         self.request_history()  # 面板有了就要一次（没连上会等连上后重试）
         self.chat_panel.show_near(self.frameGeometry())
         self._greet_if_needed()
@@ -1251,23 +1295,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 say("[启动] 已就绪，人物窗口出现")
 
         splash.finish(reveal)
-
-    def paint_cached_models(self) -> bool:
-        """先按上次的快照把按钮和菜单画出来。
-
-        引擎是独立进程，冷启动要四五秒，`models` 回包会迟到；等的这几秒按钮上什么都没有，
-        看着就像「模型加载慢」。快照只是显示用，引擎的清单一到立刻覆盖。
-        """
-        if self.chat_panel is None:
-            return False
-        data = model_cache.load(self._cache_root)
-        if not data:
-            return False
-        items = [item for item in data.get("items") or [] if isinstance(item, dict)]
-        if not items:
-            return False
-        self.chat_panel.set_models(items, str(data.get("current") or ""))
-        return True
 
     def request_history(self) -> None:
         """把上一段对话要回来铺进聊天窗——用户什么都不用输入。
@@ -2373,17 +2400,6 @@ def _install_crash_logging() -> None:
     QtCore.qInstallMessageHandler(_qt_message)
 
 
-def _provider_label(item: dict, provider: str, model: str) -> str:
-    """供应商显示名。
-
-    引擎给的 label 通常是「显示名 · 模型名」，只去掉末尾那一个 ` · <model>`：
-    原来用 `split(" · ")[0]`，供应商名自己带「 · 」就会被切坏。
-    """
-    raw = str(item.get("label") or provider)
-    suffix = f" · {model}"
-    return raw[: -len(suffix)] if raw.endswith(suffix) else raw
-
-
 def main() -> int:
     # 最先做：把随包的 bash/git/ffmpeg 挂进本进程 PATH。之后这个进程自己起的 ffmpeg
     # （语音解 mp3）、以及拉起的引擎子进程都继承这份 PATH —— 用户机器装没装都一样。
@@ -2419,7 +2435,6 @@ def main() -> int:
     splash.set_step("正在准备界面…")
     splash.show()
     window = FloatingAvatar(front, cfg.ui.floating, idle_path if idle_path.is_file() else None)
-    window._cache_root = resolver.root  # 模型快照跟着配置根走，不写死仓库路径
     window.boot_splash = splash
     has_tray = window.setup_tray()
     window.instance_server = start_instance_server(window)  # 挂在窗口上，防被回收
@@ -2480,12 +2495,14 @@ def main() -> int:
             # 「正在重连（第 N 次）」是当前状态，连上了就该消失——不能再留一行在聊天记录里
             window.chat_panel.clear_status_notice("link")
         window._history_asked = False  # 重连后要重新问一次最近会话，才能 resume 回来
-        window.boot_step("正在读取模型清单…")
+        # 启动时不要完整清单（设置窗口那两页点开时才去要全表）：但胶囊得知道「现在跑的是哪个」，
+        # 所以只问一份缓存里的「用户自己配过的家」（不联网、不逐家探测）。
         wire.request_models()
         window.request_history()  # 走同一个入口：问过就别再问第二次
         wire.config_get("approval_mode")
         wire.config_get("reasoning")
         wire.request_display()  # display 段：思考段/工具行画不画，照引擎的配置
+        window.finish_boot()  # 引擎就绪就算开完机，不再等一份清单
 
     def _after_recent(result: dict) -> None:
         sid = str(result.get("session_id") or "")
@@ -2532,6 +2549,7 @@ def main() -> int:
     wire.setup_beat.connect(window.on_setup_beat)
     wire.key_saved.connect(lambda _slug: window._greet_if_needed(force=True))
     wire.models.connect(window.on_models)
+    wire.provider_rows.connect(window.apply_provider_rows)
     wire.save_result.connect(window.on_save_result)
     wire.config_value.connect(window.on_config_value)
     wire.reasoning_pending.connect(window.on_reasoning_pending)

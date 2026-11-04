@@ -49,7 +49,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     without an AWS account who received a Bedrock API Key from their AWS admin."""
     from noesia_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
     from noesia_cli.config import save_env_value
-    from noesia_cli.models import _PROVIDER_MODELS
+    from noesia_cli.models import fetch_api_models
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
     # Check env var and credential pool (keys added via `noesia auth`)
@@ -72,9 +72,12 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print("  ✓ API key saved.")
     print()
 
-    # Static list — mantle doesn't need boto3 for discovery
-    model_list = _PROVIDER_MODELS.get("bedrock", [])
-    print(f"  Showing {len(model_list)} curated models")
+    # 只问线上要：mantle 是 OpenAI 兼容的 /models，没有随包名单
+    model_list = fetch_api_models(existing_key, mantle_base_url)
+    if model_list:
+        print(f"  Found {len(model_list)} model(s) from Bedrock mantle")
+    else:
+        print("  Could not list models — type the model ID.")
     selected = _pick_model_or_prompt(
         model_list, "  Model ID: ", current_model=current_model, confirm_provider="custom",
         confirm_base_url=mantle_base_url, confirm_api_key=existing_key)
@@ -148,7 +151,6 @@ def _bedrock_text_model_ids(live_models: list, region: str) -> list[str]:
 def _model_flow_bedrock(config, current_model=""):
     """AWS Bedrock (native Converse API via boto3): verify credentials, pick region, discover models.
     Auth is the AWS SDK default credential chain, so no API key prompt is needed."""
-    from noesia_cli.models import _PROVIDER_MODELS
 
     # 1. Check for AWS credentials
     try:
@@ -183,19 +185,15 @@ def _model_flow_bedrock(config, current_model=""):
         _model_flow_bedrock_api_key(config, region, current_model)
         return
 
-    # 3. Model discovery — try live API first, fall back to static list
+    # 3. Model discovery — live only（没有随包 Bedrock 名单了）
     print(f"  Discovering models in {region}...")
     live_models = discover_bedrock_models(region)
-    if live_models:
-        model_list = _bedrock_text_model_ids(live_models, region)
+    model_list = _bedrock_text_model_ids(live_models, region) if live_models else []
+    if model_list:
         print(f"  Found {len(model_list)} text model(s) (filtered from {len(live_models)} total)")
     else:
-        model_list = _PROVIDER_MODELS.get("bedrock", [])
-        if not model_list:
-            print("  No models found. Check IAM permissions for bedrock:ListFoundationModels.")
-            _note_setup_failure("no_models")
-            return
-        print(f"  Using {len(model_list)} curated models (live discovery unavailable)")
+        print("  No models found — type the model ID below (check IAM permissions for")
+        _say("  bedrock:ListFoundationModels if the list should have come back).", "")
 
     # 4. Model selection
     runtime_url = f"https://bedrock-runtime.{region}.amazonaws.com"

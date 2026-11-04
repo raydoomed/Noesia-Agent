@@ -393,7 +393,8 @@ def _validate_custom(req: _Request) -> dict[str, Any]:
     return _verdict(accepted, True, False, message)
 
 
-def _static_catalog(normalized: str) -> list[str]:
+def _live_catalog(normalized: str) -> list[str]:
+    """这家线上现在的模型清单（问引擎自己的探测/缓存，没有随包名单可退）。"""
     from noesia_cli import models as _m
 
     try:
@@ -431,7 +432,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
 
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)
-    catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
+    catalog = list(_m.provider_catalog_ids(normalized))
     if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
         return None
     if _m._model_in_provider_catalog(requested.lower(), _m._provider_keys(normalized)):
@@ -439,7 +440,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
     if _family_head(requested) in {_family_head(m) for m in catalog}:
         return None
     strict = normalized in _STATIC_FAMILY_PREFIXES
-    if not strict and next(_m._static_catalog_matches(requested, normalized), None) is None:
+    if not strict and next(_m._live_catalog_matches(requested, normalized), None) is None:
         return None
     suggestions = get_close_matches(requested, catalog, n=limit, cutoff=0.4) or catalog[:limit]
     label = _m._PROVIDER_LABELS.get(normalized, normalized)
@@ -450,10 +451,10 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
     }
 
 
-def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
+def _validate_live_catalog(req: _Request) -> Optional[dict[str, Any]]:
     """openai-codex / xai-oauth: no /v1/models probing — validate against the curated catalog.
     Returns None (fall through) when the catalog is empty."""
-    catalog = _static_catalog(req.normalized)
+    catalog = _live_catalog(req.normalized)
     if req.normalized == "openai-codex":
         from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
 
@@ -499,7 +500,7 @@ def _validate_static_catalog(req: _Request) -> Optional[dict[str, Any]]:
 def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
     """MiniMax has no /models endpoint — static catalog, case-insensitive (ids like MiniMax-M2.7).
     Returns None when the catalog is empty."""
-    catalog = _static_catalog(req.normalized)
+    catalog = _live_catalog(req.normalized)
     if not catalog:
         return None
     match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
@@ -596,7 +597,7 @@ def _profile_catalog(normalized: str, base_url: Optional[str] = None) -> tuple[l
     own_endpoint = bool(profile.models_url) and profile.models_url.rstrip("/") != generic
     if not own_endpoint and type(profile).fetch_models is ProviderProfile.fetch_models:
         return [], False
-    catalog = _static_catalog(normalized)
+    catalog = _live_catalog(normalized)
     return catalog, own_endpoint and bool(catalog)
 
 
@@ -685,7 +686,7 @@ def _validate_external_process(req: _Request) -> Optional[dict[str, Any]]:
         return None
     if req.lookup.lower() in {k.lower() for k in profile.model_aliases}:
         return _accept()
-    catalog = _static_catalog(req.normalized) or list(profile.fallback_models)
+    catalog = _live_catalog(req.normalized) or list(profile.fallback_models)
     match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
     if match.exact:
         return _accept()
@@ -701,7 +702,7 @@ def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
     from noesia_cli import models as _m
 
     label = _m._PROVIDER_LABELS.get(req.normalized, req.normalized)
-    catalog = _static_catalog(req.normalized)
+    catalog = _live_catalog(req.normalized)
     if not catalog:
         return _soft_accept(f"Note: could not reach the {label} API to validate `{req.requested}`. "
                             "If the service isn't down, this model may not be valid.")
@@ -742,7 +743,7 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (_for("lmstudio"), _validate_lmstudio),
     (lambda req: True, _validate_ollama_native),
     (_is_custom, _validate_custom),
-    (_for("openai-codex", "xai-oauth"), _validate_static_catalog),
+    (_for("openai-codex", "xai-oauth"), _validate_live_catalog),
     (_for("minimax", "minimax-cn"), _validate_minimax),
     (_for("llamacpp", "llama.cpp", "llama-cpp"), _validate_managed_local),
     (_for("anthropic"), _validate_anthropic),

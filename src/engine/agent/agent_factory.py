@@ -132,11 +132,12 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    # No env seed / config preference: the cost-safe silent default (cache-only read), never an unpicked flagship.
+    # 没有 env / config 指定就问目录里标了默认的那个（只读缓存）；目录也没说就空着。
+    # 不再随包写死一个模型名：那会让「用户还没选模型」悄悄变成「悄悄用了某个模型」。
     with contextlib.suppress(Exception):
         from noesia_cli.models import get_preferred_silent_default_model
         return get_preferred_silent_default_model()
-    return "z-ai/glm-5.2"
+    return ""
 
 
 def _resolve_session_platform() -> str:

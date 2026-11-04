@@ -673,6 +673,13 @@ def _provider_auth_hint(slug: str) -> tuple[str, str]:
     cfg = PROVIDER_REGISTRY.get(slug)
     auth_type = cfg.auth_type if cfg else "api_key"
     key_env = cfg.api_key_env_vars[0] if (cfg and cfg.api_key_env_vars) else ""
+    if not key_env:
+        # 插件供应商（openrouter 这类）不在 PROVIDER_REGISTRY 里：变量名由插件自己声明。
+        # 不回退的话设置页这一家没有变量名，Key 框是灰的——用户看着「能选却填不了」。
+        from noesia_cli.auth import provider_key_env_vars
+
+        envs = [str(v) for v in (provider_key_env_vars(slug) or ()) if v]
+        key_env = envs[0] if envs else ""
     return auth_type, key_env
 
 

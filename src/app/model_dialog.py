@@ -18,7 +18,6 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from app.engine_config import workspace_from_config
 from app.env_keys import env_file
-from backends import catalog
 from settings import ROOT, SETTINGS, ConfigError
 
 
@@ -506,18 +505,20 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     FAIL_STYLE = "color: #ff6b6b; font-size: 11px;"
     # 「现在真在跑的」那几行按档上色，一眼能分出是哪一段；缺配提醒黄字，真报错红字
     # 文本模型（必选、主档）→ 绿；语音引擎 → 紫；语音互动 → 橙；缺配 → 黄；出错 → 红
-    LIVE_TEXT_STYLE = "color: #4ade80; font-size: 11.5px;"
+    OK_COLOR = "#4ade80"  # 「成立了」的绿：已配置徽标、正在跑的那行都用它
+    LIVE_TEXT_STYLE = f"color: {OK_COLOR}; font-size: 11.5px;"
     LIVE_VOICE_STYLE = "color: #c084fc; font-size: 11.5px;"
     LIVE_INTERACT_STYLE = "color: #fb923c; font-size: 11.5px;"
     NOTE_STYLE = "color: #ffd166; font-size: 11.5px;"
 
-    TAB_TEXT = 0
-    TAB_VOICE = 1
-    TAB_AVATAR = 2
-    TAB_WORKSPACE = 3
-    TAB_SOUL = 4
-    TAB_MEMORY = 5
-    """填密钥 / 选模型。数据全部来自引擎的清单（`backends.catalog` 整理过的那份）。"""
+    TAB_KEYS = 0
+    TAB_MODELS = 1
+    TAB_VOICE = 2
+    TAB_AVATAR = 3
+    TAB_WORKSPACE = 4
+    TAB_SOUL = 5
+    TAB_MEMORY = 6
+    """密钥设置（填 Key）/ 模型设置（选模型）。数据全部来自引擎的清单，界面自己不留名单。"""
 
 
 
@@ -527,6 +528,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         parent: QtWidgets.QWidget | None = None,
         current: str = "",
         engine_save=None,
+        on_key_save=None,
     ) -> None:
         # 无边框 + 半透明：跟聊天窗一样是一块悬在桌面上的玻璃，标题栏自己画
         super().__init__(
@@ -552,6 +554,9 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 真正写 .env / 切模型的那一头（main.save_model_key）：点了保存要等它回执才关窗。
         # 没有它（测试、别的调用方）就还是老样子，校验过即关。
         self._engine_save = engine_save
+        # 「密钥设置」里那一排「确定」：把这一家的 Key 交给引擎落盘（main.save_provider_key）。
+        # 存完引擎会重取清单，模型设置那一页就会出现这家——填 Key 和拿到模型是同一个动作。
+        self._on_key_save = on_key_save
         self._save_waiting = False
         self._save_timer: QtCore.QTimer | None = None
         self._save_notes: list[str] = []
@@ -593,38 +598,46 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         titlebar.installEventFilter(self)  # 按住标题栏可以拖窗口
         layout.addWidget(titlebar)
 
-        hint = QtWidgets.QLabel("每家都能填 Key、选模型；圈了「启用」的那家才真的生效。", frame)
+        hint = QtWidgets.QLabel(
+            "先在「密钥设置」里填 Key 并点确定；存好的家才会出现在「模型设置」里。", frame
+        )
         hint.setObjectName("dialog-sub")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        # 两个页签：文本模型（原来那套：供应商 + 密钥 + 模型）、语音模型（音色 + 档位 + 开关）
+        # 页签：密钥设置（填 Key，一家一个「确定」）、模型设置（只列存过 Key 的家，选一个启用）
         self._tabs = tabs = QtWidgets.QTabWidget(frame)
         tabs.setObjectName("dialog-tabs")
         tabs.setDocumentMode(True)
         tabs.tabBar().setExpanding(False)
         tabs.tabBar().setDrawBase(False)
         tabs.setUsesScrollButtons(True)  # 窄窗口真放不下时还能翻到最后一个页签
-        text_page = QtWidgets.QWidget(tabs)
-        text_layout = QtWidgets.QVBoxLayout(text_page)
-        text_layout.setContentsMargins(0, 8, 0, 0)
-        text_layout.setSpacing(8)
-        tabs.addTab(text_page, "文本模型")
+        keys_page = QtWidgets.QWidget(tabs)
+        keys_layout = QtWidgets.QVBoxLayout(keys_page)
+        keys_layout.setContentsMargins(0, 8, 0, 0)
+        keys_layout.setSpacing(8)
+        models_page = QtWidgets.QWidget(tabs)
+        models_layout = QtWidgets.QVBoxLayout(models_page)
+        models_layout.setContentsMargins(0, 8, 0, 0)
+        models_layout.setSpacing(8)
+        tabs.addTab(keys_page, "密钥设置")
+        tabs.addTab(models_page, "模型设置")
         tabs.addTab(self._build_voice_page(tabs), "语音模型")
         tabs.addTab(self._build_avatar_page(tabs), "语音互动")
         tabs.addTab(self._build_workspace_page(tabs), "工作目录")
         tabs.addTab(self._build_soul_page(tabs), "人设")
         tabs.addTab(self._build_memory_page(tabs), "记忆")
         layout.addWidget(tabs)
-        # 六个页签比 400 宽：再窄最后一个（记忆）就被挤到滚动箭头后面，等于没有这一页
+        # 七个页签比 400 宽：再窄最后一个（记忆）就被挤到滚动箭头后面，等于没有这一页
         self.setMinimumWidth(max(400, tabs.tabBar().sizeHint().width() + 72))
 
-        self._build_text_page(text_layout, frame)
+        self._build_keys_page(keys_layout, keys_page)
+        self._build_models_page(models_layout, models_page)
 
         self._warn = QtWidgets.QLabel("", frame)
         self._warn.setObjectName("dialog-warn")
         self._warn.setWordWrap(True)
-        text_layout.addWidget(self._warn)
+        models_layout.addWidget(self._warn)
 
         buttons = QtWidgets.QHBoxLayout()
         buttons.addStretch(1)
@@ -632,6 +645,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         cancel.setObjectName("secondary")
         cancel.clicked.connect(self.reject)
         save = QtWidgets.QPushButton("保存并启用", frame)
+        save.setToolTip("把「模型设置」里圈中的那一家换成现在用的（密钥各页各存，不在这里）")
         save.clicked.connect(self._on_save)
         buttons.addWidget(cancel)
         buttons.addWidget(save)
@@ -640,11 +654,6 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         layout.addLayout(buttons)
 
         self._save_button = save
-        if not self._choices:
-            # 拿不到模型清单只影响「文本模型」这一页，别把按钮锁死：
-            # 锁了就是点了毫无反应，用户看不出是按钮灰着（真踩过）。
-            self._warn.setStyleSheet(self.FAIL_STYLE)
-            self._warn.setText("还没从引擎拿到模型清单：这一页这次不存，其他几页照常保存。")
         # 一次保存要跑六页：先记住打开设置那一刻的样子，只有真被改过的页才写盘、才可能拦住保存
         self._initial = self._snapshot_pages()
 
@@ -684,44 +693,144 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         )
         return f"引擎现在在跑：{label} · {model}"
 
-    def _build_text_page(self, layout: QtWidgets.QVBoxLayout, frame: QtWidgets.QWidget) -> None:
-        """文本模型页：每一家一块，Key 框和模型下拉同时摆在页面上。
+    # ---------------- 密钥设置 ----------------
 
-        不再「切一家填一家」：想配几家就一次填完，保存时挨个读框——没有草稿表，
-        也就没有「哪一环漏了 Key 就丢」的机会。右侧单选决定哪一家真的生效。
+    def _build_keys_page(self, layout: QtWidgets.QVBoxLayout, page: QtWidgets.QWidget) -> None:
+        """密钥设置：一家一块，只有 Key 输入 + 「确定」。
+
+        存下来的 Key 才会让这家出现在「模型设置」里；所以这一页不参与底部的「保存并启用」，
+        每家的「确定」只负责把这一串交给引擎落盘（引擎随即重取清单）。
         """
-        from app import text_prefs
+        self._key_blocks: dict[str, dict] = {}
 
+        hint = QtWidgets.QLabel(
+            "填好 Key 点这一家的「确定」；存好的供应商会出现在「模型设置」里。", page
+        )
+        hint.setObjectName("dialog-hint")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        tools = QtWidgets.QHBoxLayout()
+        tools.setContentsMargins(0, 0, 4, 0)
+        tools.setSpacing(6)
+        self._key_search = QtWidgets.QLineEdit(page)
+        self._key_search.setObjectName("search")
+        self._key_search.setPlaceholderText("搜供应商…")
+        self._key_search.setClearButtonEnabled(True)
+        self._key_search.setFixedHeight(28)
+        self._key_sort = _NarrowCombo(page)
+        self._key_sort.setObjectName("sort")
+        for label, key in (("已配置优先", "smart"), ("名称 A–Z", "az")):
+            self._key_sort.addItem(label, key)
+        self._key_sort.setFixedHeight(28)
+        tools.addWidget(self._key_search, 1)
+        tools.addWidget(self._key_sort)
+        layout.addLayout(tools)
+        self._key_search.textChanged.connect(self._keys_apply_view)
+        self._key_sort.currentIndexChanged.connect(self._keys_apply_view)
+
+        scroller = _page_scroller(page)
+        self._keys_scroller = scroller
+        inner = scroller.widget()
+        rows = QtWidgets.QVBoxLayout(inner)
+        rows.setContentsMargins(0, 2, 4, 2)
+        rows.setSpacing(8)
+        layout.addWidget(scroller, 1)
+
+        for row in self._ordered_rows():
+            self._add_key_block(rows, row)
+
+        self._keys_empty = QtWidgets.QLabel("没有匹配的供应商：换个词试试。", inner)
+        self._keys_empty.setObjectName("dialog-hint")
+        self._keys_empty.setVisible(False)
+        rows.addWidget(self._keys_empty)
+        rows.addStretch(1)
+        self._keys_apply_view()
+
+    def _ordered_rows(self) -> list[dict]:
+        """已配置的排前面，其余按名字：一屏里先看到跟自己有关的。"""
+        return sorted(
+            self._choices,
+            key=lambda item: (
+                0 if item.get("configured") else 1,
+                str(item.get("label") or item.get("provider") or "").lower(),
+            ),
+        )
+
+    def _add_key_block(self, rows: QtWidgets.QVBoxLayout, row: dict) -> None:
+        slug = str(row["provider"])
+        names = list(row.get("env_vars") or [])
+        block = QtWidgets.QFrame(rows.parentWidget())
+        block.setObjectName("text-block")
+        box = QtWidgets.QVBoxLayout(block)
+        box.setContentsMargins(12, 10, 12, 10)
+        box.setSpacing(7)
+
+        head = QtWidgets.QHBoxLayout()
+        name = QtWidgets.QLabel(str(row.get("label") or slug).split("（")[0], block)
+        name.setObjectName("block-name")
+        badge = QtWidgets.QLabel("", block)
+        badge.setObjectName("dialog-hint")
+        head.addWidget(name)
+        head.addWidget(badge)
+        head.addStretch(1)
+        box.addLayout(head)
+
+        key_row = QtWidgets.QHBoxLayout()
+        key_row.setSpacing(6)
+        key = QtWidgets.QLineEdit(block)
+        key.setEchoMode(QtWidgets.QLineEdit.Password)
+        key.setPlaceholderText(
+            f"粘贴 {names[0]} 的值" if names else "这家用引擎的登录态，不需要密钥"
+        )
+        key.setEnabled(bool(names))
+        key.setFixedHeight(28)
+        confirm = QtWidgets.QPushButton("确定", block)
+        confirm.setObjectName("secondary")
+        confirm.setFixedHeight(28)
+        confirm.setEnabled(bool(names))
+        confirm.setToolTip("把这串 Key 存进 .env（存好就会出现「模型设置」里）")
+        key_row.addWidget(key, 1)
+        key_row.addWidget(confirm)
+        box.addLayout(key_row)
+
+        note = QtWidgets.QLabel("", block)
+        note.setObjectName("dialog-hint")
+        note.setWordWrap(True)
+        box.addWidget(note)
+
+        rows.addWidget(block)
+        self._key_blocks[slug] = {
+            "row": row,
+            "block": block,
+            "name": name,
+            "badge": badge,
+            "note": note,
+            "key": key,
+            "button": confirm,
+            "configured": bool(row.get("configured")),
+            "saving": False,
+            "error": "",
+        }
+        confirm.clicked.connect(lambda _checked=False, s=slug: self._on_key_confirm(s))
+        key.returnPressed.connect(lambda s=slug: self._on_key_confirm(s))
+        self._key_refresh(slug)
+
+    # ---------------- 模型设置 ----------------
+
+    def _build_models_page(self, layout: QtWidgets.QVBoxLayout, page: QtWidgets.QWidget) -> None:
+        """模型设置：只列「密钥设置」里存过 Key 的家，圈一家、选个模型、按底部保存。"""
         self._text_blocks: dict[str, dict] = {}
         self._text_saved: dict = {}
+        self._text_dirty = False  # 用户在这一页真的动过手（圈过、选过模型）：清单后到不算动
         self._text_use = ""
         self._text_group = QtWidgets.QButtonGroup(self)
         self._text_group.setExclusive(True)
 
-        layout.addWidget(self._live_label(frame, self._live_text_line(), self.LIVE_TEXT_STYLE))
+        self._live_text = self._live_label(page, self._live_text_line(), self.LIVE_TEXT_STYLE)
+        layout.addWidget(self._live_text)
 
-        # 四十多家平铺最难找：上面给一个搜索框 + 排序，找谁直接打名字
-        tools = QtWidgets.QHBoxLayout()
-        tools.setContentsMargins(0, 0, 4, 0)
-        tools.setSpacing(6)
-        self._text_search = QtWidgets.QLineEdit(frame)
-        self._text_search.setObjectName("search")
-        self._text_search.setPlaceholderText("搜供应商或模型名…")
-        self._text_search.setClearButtonEnabled(True)
-        self._text_search.setFixedHeight(28)
-        self._text_sort = _NarrowCombo(frame)
-        self._text_sort.setObjectName("sort")
-        for label, key in (("已配置优先", "smart"), ("名称 A–Z", "az")):
-            self._text_sort.addItem(label, key)
-        self._text_sort.setFixedHeight(28)
-        self._text_sort.setToolTip("配过的排前面，还是按名字排")
-        tools.addWidget(self._text_search, 1)
-        tools.addWidget(self._text_sort)
-        layout.addLayout(tools)
-        self._text_search.textChanged.connect(self._text_apply_view)
-        self._text_sort.currentIndexChanged.connect(self._text_apply_view)
-
-        scroller = _page_scroller(frame)
+        scroller = _page_scroller(page)
         self._text_scroller = scroller
         inner = scroller.widget()
         rows = QtWidgets.QVBoxLayout(inner)
@@ -729,178 +838,323 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         rows.setSpacing(8)
         layout.addWidget(scroller, 1)
 
-        current_provider, current_model = "", ""
-        option = str(self._current_option or "")
-        if ":" in option:
-            current_provider, current_model = option.split(":", 1)
-        elif option:
-            current_model = option
+        self._models_empty = QtWidgets.QLabel(
+            "还没有可选的模型：先在「密钥设置」里填好 Key 并点确定。", inner
+        )
+        self._models_empty.setObjectName("dialog-hint")
+        self._models_empty.setWordWrap(True)
+        rows.addWidget(self._models_empty)
+        rows.addStretch(1)
+
+        self._rebuild_models()
+
+    def _rebuild_models(self) -> None:
+        """按现在这份清单重铺「模型设置」：只有配好的家建卡，没配的一家都不列。"""
+        picked = {
+            slug: str(block["model"].currentData() or "")
+            for slug, block in self._text_blocks.items()
+        }
+        layout = self._text_scroller.widget().layout()
+        for slug in list(self._text_blocks):
+            block = self._text_blocks.pop(slug)
+            block["block"].setParent(None)
+            block["block"].deleteLater()
+
+        current_provider, current_model = self._current_parts()
         if not current_provider and current_model:
-            # 引擎只给了模型名、没带「哪家:」前缀：按各家清单反查，别因为格式就这样一个都不圈
             for row in self._choices:
                 if current_model in list(row.get("models") or []):
                     current_provider = str(row.get("provider") or "")
                     break
 
-        # 排一下：配过的、能选模型的排前面，既没配又没清单的沉到底——一屏里先看到跟自己有关的
-        ordered = sorted(
-            self._choices,
-            key=lambda item: (0 if item.get("configured") else 1, 0 if item.get("models") else 1),
-        )
-        for row in ordered:
-            slug = str(row["provider"])
-            names = list(row.get("env_vars") or [])  # 只用来写 Key 框的占位提示，不进标题栏
-            block = QtWidgets.QFrame(inner)
-            block.setObjectName("text-block")
-            box = QtWidgets.QVBoxLayout(block)
-            box.setContentsMargins(12, 10, 12, 10)
-            box.setSpacing(7)
+        anchor = layout.count() - 2 if layout.count() >= 2 else 0  # 空态那行和弹簧留最后
+        for row in self._ordered_rows():
+            if not row.get("configured"):
+                continue
+            self._add_model_block(layout, row, current_provider, current_model, anchor)
+            anchor += 1
 
-            head = QtWidgets.QHBoxLayout()
-            # 标题只留名字：括号里的计价说明、变量名都另有出处（变量名就是 Key 框的占位提示），
-            # 全塞进标题栏会把每块的最小宽度顶到 500 以上，窄窗口就横着溢出了
-            name = QtWidgets.QLabel(str(row.get("label") or slug).split("（")[0], block)
-            name.setObjectName("block-name")
-            badge = QtWidgets.QLabel("", block)
-            badge.setObjectName("dialog-hint")
-            # 变量名就是下面 Key 框的占位提示，标题栏里再挂一遍只会把这一块撑宽
-            use = _SelectDot("", block)
-            self._text_group.addButton(use)
-            head.addWidget(name)
-            head.addWidget(use)  # 紧跟着名字：别让它在最右边跟名字隔半个屏幕
-            head.addWidget(badge)
-            head.addStretch(1)
-            box.addLayout(head)
-
-            # 引擎给的全是「名字 + 变量名」：四十多家一次要齐要好几秒，所以清单点开下拉时才取
-            model = _slim(_LazyCombo(block, lambda combo, slug=slug: self._ensure_models(slug)), 8)
-            if row.get("models"):
-                for item in list(row.get("models") or []):
-                    _add_short(model, _model_label(slug, item), item)
-            else:
-                _add_short(model, "点开取模型清单", "")
-                model.setToolTip("点开这个下拉就向引擎要这一家的模型清单")
-            _fit_popup(model)
-            wanted = current_model if slug == current_provider else text_prefs.remembered(slug)
-            index = model.findData(wanted) if wanted else -1
-            if index >= 0:
-                model.setCurrentIndex(index)
-            box.addWidget(model)
-
-            key = QtWidgets.QLineEdit(block)
-            key.setEchoMode(QtWidgets.QLineEdit.Password)
-            key.setPlaceholderText(
-                f"粘贴 {names[0]} 的值（已经配过就留空）" if names else "这家不需要密钥（或由引擎的登录态管理）"
-            )
-            key.setEnabled(bool(names))
-            key.setFixedHeight(28)
-            box.addWidget(key)
-
-            note = QtWidgets.QLabel("", block)
-            note.setObjectName("dialog-hint")
-            note.setWordWrap(True)
-            box.addWidget(note)
-
-            rows.addWidget(block)
-            self._text_blocks[slug] = {
-                "row": row,
-                "block": block,
-                "badge": badge,
-                "note": note,
-                "use": use,
-                "model": model,
-                "key": key,
-                "configured": bool(row.get("configured")),
-                "preferred": wanted,
-                "loading": False,
-                "error": "",
-            }
-            key.textChanged.connect(lambda _text, slug=slug: self._text_refresh(slug))
-            model.currentIndexChanged.connect(lambda _index, slug=slug: self._text_refresh(slug))
-            use.toggled.connect(lambda on, slug=slug: self._text_use_changed(slug, on))
-
-        if current_provider in self._text_blocks:
-            self._text_use = current_provider
+        if self._text_dirty and self._text_use in self._text_blocks:
+            pass  # 用户自己圈的那家：清单后到也不许改他的选择
         else:
-            # 引擎还没在用任何一家（一个 Key 都没配过）：一个都不圈。
-            # 以前这里回落到「第一家」或者「第一家配置过的」，结果一打开就把 copilot 圈成「在用」，
-            # 他没配过 Key，点保存又因为「这页没动过」直接放行——既没圈对也提醒。
-            self._text_use = ""
-            self._text_group.setExclusive(False)
-            for block in self._text_blocks.values():
-                block["use"].setChecked(False)  # 互斥组里要先把排他关掉才摘得掉
-            self._text_group.setExclusive(True)
+            self._text_use = current_provider if current_provider in self._text_blocks else ""
+        for slug, block in self._text_blocks.items():
+            wanted = picked.get(slug) or block.get("preferred") or ""
+            index = block["model"].findData(wanted) if wanted else -1
+            if index >= 0:
+                block["model"].setCurrentIndex(index)
+        if self._text_use:
+            dot = self._text_blocks[self._text_use]["use"]
+            dot.blockSignals(True)
+            dot.setChecked(True)
+            dot.blockSignals(False)
         for slug in self._text_blocks:
-            self._text_refresh(slug)
+            self._model_refresh(slug)
+        self._models_empty.setVisible(not self._text_blocks)
+        if hasattr(self, "_live_text") and self._live_text is not None:
+            self._live_text.setText(self._live_text_line())
 
-        self._text_empty = QtWidgets.QLabel(
-            "没有匹配的供应商：换个词试试（也可以搜模型名，比如 gpt）。", inner
-        )
-        self._text_empty.setObjectName("dialog-hint")
-        self._text_empty.setVisible(False)
-        rows.addWidget(self._text_empty)
-        rows.addStretch(1)  # 内容不够一屏时余量给这条弹簧，块保持自己的高度，不被拉长
-        self._text_apply_view()
+    def _current_parts(self) -> tuple[str, str]:
+        option = str(self._current_option or "")
+        if ":" in option:
+            provider, model = option.split(":", 1)
+            return provider, model
+        return "", option
 
-    def _text_apply_view(self) -> None:
-        """按搜索框和排序把这一页重排一遍：找供应商不用一条条往下滚。
+    def _add_model_block(
+        self,
+        rows: QtWidgets.QVBoxLayout,
+        row: dict,
+        current_provider: str,
+        current_model: str,
+        position: int = -1,
+    ) -> None:
+        """画一家（模型设置里的一张卡）：启用圈 + 模型下拉。"""
+        from app import text_prefs
 
-        搜索词同时匹配供应商名和它下面的模型名（搜「gpt」能把有 gpt 的家都捞出来），
-        隐藏的块只是不显示，填过的 Key/选好的模型都还在。
-        """
-        if not self._text_blocks:
+        slug = str(row["provider"])
+        block = QtWidgets.QFrame(rows.parentWidget())
+        block.setObjectName("text-block")
+        box = QtWidgets.QVBoxLayout(block)
+        box.setContentsMargins(12, 10, 12, 10)
+        box.setSpacing(7)
+
+        head = QtWidgets.QHBoxLayout()
+        name = QtWidgets.QLabel(str(row.get("label") or slug).split("（")[0], block)
+        name.setObjectName("block-name")
+        badge = QtWidgets.QLabel("", block)
+        badge.setObjectName("dialog-hint")
+        use = _SelectDot("", block)
+        self._text_group.addButton(use)
+        head.addWidget(name)
+        head.addWidget(use)
+        head.addWidget(badge)
+        head.addStretch(1)
+        box.addLayout(head)
+
+        model = _slim(_LazyCombo(block, lambda combo, slug=slug: self._ensure_models(slug)), 8)
+        if row.get("models"):
+            for item in list(row.get("models") or []):
+                _add_short(model, _model_label(slug, item), item)
+        else:
+            _add_short(model, "引擎没取到模型", "")
+            model.setToolTip("引擎这次没返回这家的模型清单：换个时间再打开设置")
+        _fit_popup(model)
+        wanted = current_model if slug == current_provider else text_prefs.remembered(slug)
+        index = model.findData(wanted) if wanted else -1
+        if index >= 0:
+            model.setCurrentIndex(index)
+        box.addWidget(model)
+
+        note = QtWidgets.QLabel("", block)
+        note.setObjectName("dialog-hint")
+        note.setWordWrap(True)
+        box.addWidget(note)
+
+        if position >= 0:
+            rows.insertWidget(position, block)
+        else:
+            rows.addWidget(block)
+        self._text_blocks[slug] = {
+            "row": row,
+            "block": block,
+            "name": name,
+            "badge": badge,
+            "note": note,
+            "use": use,
+            "model": model,
+            "configured": bool(row.get("configured")),
+            "preferred": wanted,
+            "error": "",
+        }
+        model.currentIndexChanged.connect(lambda _index, slug=slug: self._model_refresh(slug))
+        use.toggled.connect(lambda on, slug=slug: self._text_use_changed(slug, on))
+        # 选模型就是启用这一家：在下拉里点一个模型等于圈上它。
+        # 不然用户「选好了模型」再点「保存并启用」，保存仍是空操作——界面上什么都没发生。
+        model.activated.connect(lambda _index, slug=slug: self._enable_block(slug))
+
+    def _set_badge(self, badge: QtWidgets.QLabel, text: str, ok: bool = False) -> None:
+        """徽标文字 + 颜色：状态成立了就绿，其余维持原本的淡色。"""
+        badge.setText(text)
+        badge.setStyleSheet(f"color: {self.OK_COLOR};" if ok else "")
+
+    def _keys_apply_view(self) -> None:
+        """密钥设置按搜索词筛一遍（只影响显示，框里填的东西不动）。"""
+        if not self._key_blocks:
             return
-        query = self._text_search.text().strip().lower()
-        mode = str(self._text_sort.currentData() or "smart")
-
-        def label_of(block: dict) -> str:
-            return str(block["row"].get("label") or block["row"].get("provider") or "")
+        query = self._key_search.text().strip().lower()
+        mode = str(self._key_sort.currentData() or "smart")
 
         def sort_key(item):
             _, block = item
-            name = label_of(block).lower()
+            name = str(block["row"].get("label") or block["row"].get("provider") or "").lower()
             if mode == "az":
                 return (name,)
-            return (0 if block["configured"] else 1, 0 if block["row"].get("models") else 1, name)
+            return (0 if block["configured"] else 1, name)
 
-        ordered = sorted(self._text_blocks.items(), key=sort_key)
+        ordered = sorted(self._key_blocks.items(), key=sort_key)
         for slug, block in ordered:
             hit = True
             if query:
-                parts = [slug.lower(), label_of(block).lower()]
-                parts += [str(model).lower() for model in (block["row"].get("models") or [])]
-                hit = query in " ".join(parts)
+                hit = query in slug.lower() or query in str(
+                    block["row"].get("label") or ""
+                ).lower()
             block["block"].setVisible(hit)
-        lay = self._text_scroller.widget().layout()
-        for _slug, block in ordered:  # 先全摘下来，再按新顺序放回去
-            lay.removeWidget(block["block"])
+        layout = self._keys_scroller.widget().layout()
+        for _slug, block in ordered:
+            layout.removeWidget(block["block"])
         for position, (_slug, block) in enumerate(ordered):
-            lay.insertWidget(position, block["block"])
-        # 用 isHidden 而不是 isVisible：窗口还没显示时 isVisible 一律是 False，会把「没找到」错亮出来
-        self._text_empty.setVisible(bool(query) and all(b["block"].isHidden() for _s, b in ordered))
+            layout.insertWidget(position, block["block"])
+        self._keys_empty.setVisible(bool(query) and all(b["block"].isHidden() for _s, b in ordered))
+
+    def _on_key_confirm(self, slug: str) -> None:
+        """这一家的「确定」：把框里的 Key 交给引擎落盘（它随即重取模型清单）。"""
+        block = self._key_blocks.get(slug)
+        if not block or block.get("saving"):
+            return
+        text = block["key"].text().strip()
+        note = block["note"]
+        note.setStyleSheet("")
+        if not text:
+            note.setStyleSheet(self.FAIL_STYLE)
+            note.setText("先把这个供应商的 Key 粘进框里")
+            return
+        bad = ""
+        if not text.isascii():
+            bad = "这把 Key 里有中文或全角字符——多半是复制时带进来的。"
+        elif any(ch.isspace() for ch in text):
+            bad = "Key 中间夹了空格或换行：它应该是一串连续字符。"
+        elif len(text) < 8:
+            bad = f"这把 Key 只有 {len(text)} 位，短得不像一把 Key。"
+        if bad:
+            note.setStyleSheet(self.FAIL_STYLE)
+            note.setText(bad)
+            return
+        if not callable(self._on_key_save):
+            note.setStyleSheet(self.FAIL_STYLE)
+            note.setText("还没连上引擎：这串 Key 没能交出去")
+            return
+
+        block["saving"] = True
+        block["error"] = ""
+        self._key_refresh(slug)
+
+        def done(ok: bool, lines: list[str] | None = None) -> None:
+            block["saving"] = False
+            if ok:
+                block["configured"] = True
+                block["row"]["configured"] = True
+                block["key"].clear()
+                block["error"] = ""
+            else:
+                block["error"] = "\n".join(lines or []) or "引擎没说原因"
+            # 先让 _key_refresh 把徽标/按钮画对，再写回执那句话——反过来的话它会把提示清掉
+            self._key_refresh(slug)
+            if ok:
+                block["note"].setStyleSheet("")
+                block["note"].setText("已保存。")
+                block["note"].setVisible(True)
+                # 这家已经能用了：模型设置那边补一张卡（清单由引擎随回包送来时再换一遍）
+                self._rebuild_models()
+            else:
+                block["note"].setStyleSheet(self.FAIL_STYLE)
+                block["note"].setText(block["error"])
+                block["note"].setVisible(True)
+
+        try:
+            self._on_key_save(slug, text, done)
+        except Exception as exc:  # noqa: BLE001 - 交不出去也得说清，不能停在「保存中…」
+            done(False, [f"没能把 Key 交给引擎：{type(exc).__name__}: {exc}"])
+            return
+        QtCore.QTimer.singleShot(20000, lambda s=slug, t=text: self._key_give_up(s, t))
+
+    def _key_give_up(self, slug: str, text: str) -> None:
+        block = self._key_blocks.get(slug)
+        if not block or not block.get("saving") or block["key"].text().strip() != text:
+            return
+        block["saving"] = False
+        block["error"] = "引擎 20 秒没回话：不确定存没存上，重开一次设置看这家是不是「已配置」。"
+        block["note"].setStyleSheet(self.FAIL_STYLE)
+        block["note"].setText(block["error"])
+        self._key_refresh(slug)
+
+    def _key_refresh(self, slug: str) -> None:
+        """一家的样子：徽标（已配置/未配置/保存中）+ 按钮可不可按。"""
+        block = self._key_blocks.get(slug)
+        if not block:
+            return
+        names = list(block["row"].get("env_vars") or [])
+        if block.get("saving"):
+            self._set_badge(block["badge"], "保存中…")
+            block["button"].setText("保存中…")
+            block["button"].setEnabled(False)
+            block["key"].setEnabled(False)
+            block["note"].setStyleSheet("")
+            block["note"].setText("正在把这串 Key 交给引擎…")
+            return
+        block["button"].setText("确定")
+        block["button"].setEnabled(bool(names))
+        block["key"].setEnabled(bool(names))
+        if block["configured"]:
+            self._set_badge(block["badge"], "已配置", ok=True)
+        else:
+            self._set_badge(block["badge"], "未配置" if names else "用登录态")
+        if not names:
+            block["note"].setText("这家用引擎的登录态，没有要填的密钥。")
+        elif not block.get("error"):
+            block["note"].setText("" if block["configured"] else "")
+        block["note"].setVisible(bool(block["note"].text().strip()))
+
+    def update_rows(self, rows: list[dict], current: str | None = None) -> None:
+        """引擎把新清单送回来了：两页一起按新数据重铺，框里已经敲的东西、选过的模型都留着。
+
+        `current` 是引擎自己报的「现在在跑哪个模型」——设置页副标题照它说，
+        不拿本进程启动时那份（启动时故意不取清单，那份往往还是空的）。
+        """
+        incoming = [row for row in (rows or []) if row.get("provider")]
+        if not incoming:
+            return
+        if current is not None:
+            self._current_option = str(current or "").strip()
+        typed = {
+            slug: block["key"].text()
+            for slug, block in getattr(self, "_key_blocks", {}).items()
+            if block["key"].text().strip()
+        }
+        self._choices = incoming
+
+        if hasattr(self, "_keys_scroller"):
+            layout = self._keys_scroller.widget().layout()
+            for slug in list(self._key_blocks):
+                block = self._key_blocks.pop(slug)
+                block["block"].setParent(None)
+                block["block"].deleteLater()
+            anchor = 0
+            for row in self._ordered_rows():
+                self._add_key_block(layout, row)  # addWidget → 追加在空态/弹簧后面
+                layout.removeWidget(self._key_blocks[str(row["provider"])]["block"])
+                layout.insertWidget(anchor, self._key_blocks[str(row["provider"])]["block"])
+                anchor += 1
+            for slug, text in typed.items():
+                block = self._key_blocks.get(slug)
+                if block is not None:
+                    block["key"].setText(text)
+            self._keys_apply_view()
+
+        if hasattr(self, "_text_scroller"):
+            self._rebuild_models()
+
+    def _text_apply_view(self) -> None:  # 兼容旧调用点：模型设置不做搜索，直接重铺
+        self._rebuild_models()
 
     def _ensure_models(self, slug: str) -> None:
-        """这一家的模型清单还没取：现在取一次，取回来填进它自己的下拉。"""
+        """这一家的清单还没到手：只按现有数据重画，不去别处找。"""
         block = self._text_blocks.get(slug)
         if not block:
             return
-        row = block["row"]
-        if row.get("models"):
+        if block["row"].get("models"):
             self._fill_block_models(block)
-            return
-        if block.get("loading"):
-            return
-        block["loading"] = True
-        block["error"] = ""
-        try:
-            row["models"] = list(catalog.provider_models(slug))
-        except catalog.LLMConfigError as exc:
-            block["error"] = str(exc)
-        finally:
-            block["loading"] = False
-        if row.get("models"):
-            self._fill_block_models(block)
-        self._text_refresh(slug)
+        self._model_refresh(slug)
 
     def _fill_block_models(self, block: dict) -> None:
         """把清单填进这一块自己的下拉，并停在「上次选的那一个」上。"""
@@ -909,7 +1163,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         combo.blockSignals(True)  # 重填不算用户改选
         combo.clear()
         slug = str(block["row"].get("provider") or "")
-        for item in block["row"]["models"]:
+        # 按名字排：引擎给的顺序是线上清单的原序（OpenRouter 那几百个看着就是乱的）
+        for item in sorted(block["row"]["models"], key=lambda it: str(it or "").casefold()):
             _add_short(combo, _model_label(slug, item), item)
         for wanted in (picked, str(block.get("preferred") or "")):
             index = combo.findData(wanted) if wanted else -1
@@ -919,13 +1174,11 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         combo.blockSignals(False)
         _fit_popup(combo)
 
-    def _text_refresh(self, slug: str) -> None:
-        """一块的样子按「框里有没有新值 / 这家配过没有」重画，别的块不动。"""
+    def _model_refresh(self, slug: str) -> None:
+        """模型设置里一块的样子：启用圈 + 徽标（已配置/没有模型）。"""
         block = self._text_blocks.get(slug)
         if not block:
             return
-        row = block["row"]
-        typed = block["key"].text().strip()
         using = slug == self._text_use
         block["use"].blockSignals(True)  # 回填不算用户点选
         block["use"].setChecked(using)
@@ -943,30 +1196,13 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 "#text-block { border: 1px solid rgba(255,255,255,20);"
                 " border-radius: 12px; background-color: rgba(255,255,255,6); }"
             )
-        names = list(row.get("env_vars") or [])
         block["note"].setStyleSheet("")
-        block["note"].setVisible(False)  # 没话说就整行收起来，别留一个空行把块撑高
-        if not row.get("models"):
-            block["badge"].setText("没有模型")
-            if block.get("error"):
-                block["note"].setStyleSheet(self.FAIL_STYLE)
-                block["note"].setText(str(block["error"]))
-            else:
-                block["note"].setText("")  # 下拉里的占位已经在说「点开取模型清单」
-            block["note"].setVisible(bool(block["note"].text().strip()))
-            return
-        if typed:
-            block["badge"].setText("填好了，还没保存")
-            block["note"].setText(f"这一串还没保存（{len(typed)} 位）：点「保存并启用」就写进 .env。")
-        elif block["configured"]:
-            block["badge"].setText("已配置")
-            # 占位提示里已经写了「已经配过就留空」，这里不再重复一遍
-            block["note"].setText("" if names else "这家用引擎的登录态，没有可填的密钥。")
-        else:
-            # 没有 Key 可填的家（走引擎登录态）不叫「未配置」，它压根不缺 Key
-            block["badge"].setText("用登录态" if not names else "未配置")
-            # 占位提示里已经写明「粘贴哪个变量」/「这家用引擎的登录态」，这里不再复述
+        if block["row"].get("models"):
+            self._set_badge(block["badge"], "已配置", ok=True)
             block["note"].setText("")
+        else:
+            self._set_badge(block["badge"], "没有模型")
+            block["note"].setText("引擎这次没返回这家的模型清单：换个时间再打开设置。")
         block["note"].setVisible(bool(block["note"].text().strip()))
 
     def _text_use_changed(self, slug: str, on: bool) -> None:
@@ -974,9 +1210,21 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if not on:
             return
         self._text_use = slug
-        self._ensure_models(slug)  # 点了这一家：它还没有模型清单就现在取
+        self._text_dirty = True
+        self._ensure_models(slug)  # 点了这一家：它还没有模型清单就按现有数据重画
         for other in self._text_blocks:
-            self._text_refresh(other)
+            self._model_refresh(other)
+
+    def _enable_block(self, slug: str) -> None:
+        """用户在下拉里挑了一个模型 → 这一家就是要启用的那家。
+
+        单选被点掉会走 `_text_use_changed`，`_text_use` 自然跟上；别在这里再写一遍。
+        """
+        self._text_dirty = True
+        block = self._text_blocks.get(slug) or {}
+        use = block.get("use")
+        if use is not None and not use.isChecked():
+            use.setChecked(True)
 
     def _build_voice_page(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
         """语音模型页：三家引擎各一块，Key、语言、音色、档位各归各段。
@@ -1307,7 +1555,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             badge = "免费"
         else:
             badge = "未配置"
-        block["badge"].setText(badge)
+        self._set_badge(block["badge"], badge, ok=badge == "已配置")
         block["note"].setStyleSheet("")
         if block.get("error"):
             block["note"].setStyleSheet(self.FAIL_STYLE)
@@ -1441,26 +1689,21 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     # 每家一个框、保存挨个读：旧的「切一家填一家 + 草稿表」整套已经删掉
 
     def selection(self) -> dict:
-        """现在界面上这一页的取值：每家填过的 Key + 每家选的模型 + 哪一家「在用」。
+        """「模型设置」这一页的取值：每家选的模型 + 哪一家「在用」。
 
-        `keys` / `models` 是整张表（一次能配好几家），`key` / `model` 是「在用」那家的，
-        留着给只关心一家的调用方用。
+        密钥不从这里走：每家的 Key 在「密钥设置」里各自按「确定」存了。
         """
         if self._text_saved:
             # 已经交出去过：外面随后再问一次要的还是同一份，别因为界面状态变了给出另一个版本
             return dict(self._text_saved)
-        keys: dict[str, str] = {}
         models: dict[str, str] = {}
         for slug, block in self._text_blocks.items():
-            typed = block["key"].text().strip()
-            if typed:
-                keys[slug] = typed
             models[slug] = str(block["model"].currentData() or "")
         using = self._text_use  # 没圈就是没圈：别替他挑一家
         return {
             "provider": using,
-            "key": keys.get(using, ""),
-            "keys": keys,
+            "key": "",
+            "keys": {},
             "model": models.get(using, ""),
             "models": models,
         }
@@ -1982,18 +2225,17 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         return set(getattr(self, "_saved_pages", set()))
 
     def _save_text_page(self) -> str:
-        """文本模型这一页：挨个读每家的框——填了 Key 的全部交出，只有「在用」那家切模型。
-
-        一页能配好几家：三个 Key 一次填完、一次保存，全落进 `.env`；各家选过的模型也一起记住。
-        """
+        """模型设置这一页：只有「圈中的那家 + 它选的模型」要生效；Key 已经在密钥页各存各的。"""
         from app import text_prefs
 
         if not self._text_blocks:
-            # 还没拿到供应商清单：这页没得改，别挡住别的页；但关窗之后要说清这一页没存
-            self._save_notes.append("文本模型这一页这次没保存：没从引擎拿到模型清单，重开一次设置再试。")
+            # 一家都没配好：这页没得改，别挡住别的页；但关窗之后要说清这一页没存
+            self._save_notes.append("模型设置这一页没动：还没存过任何 Key，先在「密钥设置」里配一家。")
             return "ok"
         data = self.selection()
-        if data == self._initial["text"]:
+        # 「没动过」只在引擎那边真有一个模型在跑时才算数：一个模型都没启用的时候按保存，
+        # 就是要把它用起来——同一份取值也算一次改动，否则点了保存什么都不发生。
+        if not self._text_dirty and str(self._current_option or "").strip():
             return "ok"  # 这页没动过：不写、也不拦着别的页保存
         slug = str(data.get("provider") or "")
         block = self._text_blocks.get(slug) or {}
@@ -2009,28 +2251,13 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return "fail"
 
         if not slug:
-            # 没圈就是没圈：不许替他圈。填了 Key 但没圈「启用」= 这次什么都没生效，
-            # 就得明说没保存——不要让人以为填完就生效了。
-            return fail("还没圈「启用」：这次什么都没保存，先圈一家再点进来一次。")
+            # 没圈就是没圈：不许替他圈。
+            return fail("还没圈「启用」：这次什么都没保存，先圈一家再点保存。")
         if not data["model"]:
-            return fail(f"{row.get('label') or slug} 没有可选模型：换一家当「启用」，或者先给它填好 Key。")
-        names = list(row.get("env_vars") or [])
-        if names and not data["key"] and not row.get("configured"):
-            # 只有「这家本来就要一把 Key」时才要求填。copilot-acp 这种走引擎登录态的没有 Key 可填，
-            # 以前这里对着它喊「填上密钥」，而它的输入框是灰的——纯粹是拿它没法满足的条件去卡它。
-            return fail(f"「启用」的这家还差 {names[0]}：填上再保存，否则这个模型用不了。")
-        typed_key = str(data.get("key") or "")
-        if typed_key:  # 当场拦：写进 .env 之后才发现，就只能在运行时收一个 401 了
-            bad = ""
-            if not typed_key.isascii():
-                bad = "这把 Key 里有中文或全角字符——多半是复制时带进来的。"
-            elif any(ch.isspace() for ch in typed_key):
-                bad = "Key 中间夹了空格或换行：它应该是一串连续字符。"
-            elif len(typed_key) < 8:
-                bad = f"这把 Key 只有 {len(typed_key)} 位，短得不像一把 Key。"
-            if bad:
-                return fail(bad)
+            return fail(f"{row.get('label') or slug} 没有可选模型：换个时间重开设置再取一次。")
         text_prefs.remember_many(data.get("models") or {})  # 每家上次选的模型各自记着
+        self._text_dirty = False
+        self._current_option = f"{slug}:{data['model']}" if slug and data["model"] else self._current_option
         self._text_saved = dict(data)  # 交出去的那份留底
         self._mark_saved("text")
         return "ok"
@@ -2042,7 +2269,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._text_saved = {}  # 新一轮保存：按界面现值重新取一遍（上次的留底只在同一次保存里复用）
         self._pending_steps = []
         steps = (
-            (self.TAB_TEXT, self._save_text_page),
+            (self.TAB_MODELS, self._save_text_page),
             (self.TAB_SOUL, self._save_soul_only),
             (self.TAB_WORKSPACE, self._save_workspace_only),
             (self.TAB_AVATAR, self._save_avatar_only),

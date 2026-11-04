@@ -18,7 +18,7 @@ from noesia_cli.model_setup_flows_common import (
     _ensure_dict_section, _ensure_flow_api_key, _finish_model,
     _load_config_model_section, _models_dev_merged, _oauth_gate, _persist_model, _pick_model_or_prompt,
     _print_numbered, _prompt_auth_credentials_choice,
-    _note_setup_failure, _run_login, _say, _show_curated)
+    _note_setup_failure, _run_login, _say)
 from noesia_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
 from noesia_cli.model_setup_flows_azure import _model_flow_azure_foundry
 from noesia_cli.model_setup_flows_bedrock import _model_flow_bedrock
@@ -227,7 +227,6 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
 
 def _model_flow_qwen_oauth(_config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
-    from noesia_cli.main_provider_setup import _DEFAULT_QWEN_PORTAL_MODELS
     from noesia_cli.auth import (
         get_qwen_auth_status, resolve_qwen_runtime_credentials, _prompt_model_selection, DEFAULT_QWEN_BASE_URL)
     from noesia_cli.models import fetch_api_models
@@ -238,15 +237,14 @@ def _model_flow_qwen_oauth(_config, current_model=""):
              *([f"Error: {status.get('error')}"] if status.get("error") else []))
         return
 
-    # Try live model discovery, fall back to curated list.
+    # 只问线上：取不到就让用户手填，没有随包名单可退。
     models = None
     with contextlib.suppress(Exception):
         creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
         models = fetch_api_models(creds["api_key"], creds["base_url"])
-    if not models:
-        models = list(_DEFAULT_QWEN_PORTAL_MODELS)
+    models = models or []
 
-    default = current_model or (models[0] if models else "qwen3-coder-plus")
+    default = current_model or (models[0] if models else "")
     selected = _prompt_model_selection(models, current_model=default, confirm_provider="qwen-oauth", confirm_base_url=DEFAULT_QWEN_BASE_URL)
     _activate_provider_model(selected, "qwen-oauth", DEFAULT_QWEN_BASE_URL, f"Default model set to: {selected} (via Qwen OAuth)")
 
@@ -273,24 +271,21 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
         _note_setup_failure("auth")
         return
 
-    from noesia_cli.models import _PROVIDER_MODELS
-    model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
+    from noesia_cli.models import provider_model_ids
+    model_ids = provider_model_ids("minimax-oauth")  # 只问线上要，没有随包名单
     selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
     _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
 
 
 def _copilot_model_list(live_ids) -> list:
-    """Live GitHub Copilot ids, or the curated fallback with a warning."""
-    from noesia_cli.models import _PROVIDER_MODELS
-    if live_ids:
-        model_list = [model_id for model_id in live_ids if model_id]
+    """Live GitHub Copilot ids only — 没有随包名单可退，取不到就只让用户手填。"""
+    model_list = [model_id for model_id in (live_ids or []) if model_id]
+    if model_list:
         print(f"  Found {len(model_list)} model(s) from GitHub Copilot")
         return model_list
-    model_list = _PROVIDER_MODELS.get("copilot", [])
-    if model_list:
-        _say("  ⚠ Could not auto-detect models from GitHub Copilot — showing defaults.",
-             '    Use "Enter custom model name" if you do not see your model.')
-    return model_list
+    _say("  ⚠ Could not list models from GitHub Copilot — type the model name instead.",
+         '    Use "Enter custom model name" below.')
+    return []
 
 
 def _copilot_catalog(api_key: str):
@@ -435,7 +430,7 @@ def _model_flow_kimi(config, current_model=""):
     ``sk-kimi-*`` → api.kimi.com/coding/v1 (Kimi Coding Plan), other keys → Moonshot."""
     from noesia_cli.auth import PROVIDER_REGISTRY, KIMI_CODE_BASE_URL
     from noesia_cli.config import get_env_value, save_env_value
-    from noesia_cli.models import _PROVIDER_MODELS
+    from noesia_cli.models import provider_model_ids
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
@@ -456,7 +451,9 @@ def _model_flow_kimi(config, current_model=""):
         save_env_value(base_url_env, "")
     print()
 
-    model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
+    model_list = provider_model_ids(provider_id) or provider_model_ids("moonshot")
+    if not model_list:
+        print("  Could not list models — type the model name.")
     selected = _pick_model_or_prompt(
         model_list, "Enter model name: ", current_model=current_model, confirm_provider=provider_id,
         confirm_base_url=effective_base, confirm_api_key=existing_key)
@@ -470,7 +467,7 @@ def _model_flow_stepfun(config, current_model=""):
     from noesia_cli.main_provider_setup import _infer_stepfun_region, _prompt_provider_choice, _stepfun_base_url_for_region
     from noesia_cli.auth import PROVIDER_REGISTRY
     from noesia_cli.config import save_env_value
-    from noesia_cli.models import _PROVIDER_MODELS, fetch_api_models, provider_model_ids
+    from noesia_cli.models import fetch_api_models, provider_model_ids
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
@@ -500,15 +497,13 @@ def _model_flow_stepfun(config, current_model=""):
     if base_url_env:
         save_env_value(base_url_env, effective_base)
 
-    # Same live+curated merge as the picker (``_stepfun_catalog``): Step Plan /models omits
+    # Same live list as the picker (``_stepfun_catalog``): Step Plan /models omits
     # Standard-API-only models, so the wizard must offer the same list /model shows (#41147).
     model_list = provider_model_ids(provider_id) or fetch_api_models(existing_key, effective_base)
     if model_list:
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
-        if model_list:
-            print(f"  Could not auto-detect models from {pconfig.name} API — showing Step Plan fallback catalog.")
+        print(f"  Could not list models from {pconfig.name} API — type the model name.")
 
     selected = _pick_model_or_prompt(
         model_list, "Model name: ", current_model=current_model, confirm_provider=provider_id,
@@ -528,7 +523,6 @@ def _model_flow_vertex(config, current_model=""):
     GOOGLE_APPLICATION_CREDENTIALS); project ID and region are non-secret, saved under ``vertex:``."""
     from noesia_cli.auth import _prompt_model_selection
     from noesia_cli.config import load_config, get_env_value
-    from noesia_cli.models import _PROVIDER_MODELS
 
     # 1. Credential source detection (fast, no network / no google-auth import).
     sa_path = (get_env_value("VERTEX_CREDENTIALS_PATH") or get_env_value("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
@@ -559,8 +553,8 @@ def _model_flow_vertex(config, current_model=""):
         return
     region = region_input or current_region
 
-    # 4. Model selection (curated list — Vertex has no /models listing route).
-    model_list = _PROVIDER_MODELS.get("vertex", []) or ["google/gemini-3-pro-preview", "google/gemini-3-flash-preview"]
+    # 4. Model selection (Vertex has no /models listing route — type the model id).
+    model_list: list[str] = []
     host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
     base_url_preview = f"https://{host}/v1beta1/projects/<project>/locations/{region}/endpoints/openapi"
     selected = _prompt_model_selection(model_list, current_model=current_model, confirm_provider="vertex", confirm_base_url=base_url_preview)
@@ -633,7 +627,7 @@ def _gemini_tier_ok(existing_key: str, pconfig, base_url_env: str) -> bool:
     return True
 
 
-def _lmstudio_models(pconfig, curated, api_key, base_url):
+def _lmstudio_models(pconfig, api_key, base_url):
     """LM Studio: live /api/v1/models probe only."""
     from noesia_cli.auth import AuthError
     from noesia_cli.models_local import fetch_lmstudio_models
@@ -646,7 +640,7 @@ def _lmstudio_models(pconfig, curated, api_key, base_url):
     return model_list
 
 
-def _ollama_cloud_models(pconfig, curated, api_key, base_url):
+def _ollama_cloud_models(pconfig, api_key, base_url):
     """Ollama Cloud: forced live refresh so newly released models appear the moment the user
     enters their key, not when the disk cache TTL expires."""
     from noesia_cli.models import fetch_ollama_cloud_models
@@ -655,22 +649,21 @@ def _ollama_cloud_models(pconfig, curated, api_key, base_url):
     return model_list
 
 
-def _novita_models(pconfig, curated, api_key, base_url):
-    """Novita: live first, then models.dev, then curated."""
+def _novita_models(pconfig, api_key, base_url):
+    """Novita: live first, then models.dev. 没有随包名单可退。"""
     from noesia_cli.models import fetch_api_models
     live_models = fetch_api_models(api_key, base_url)
     if live_models:
         _report_live_models(live_models, f"{pconfig.name} API")
         return live_models
-    model_list = _models_dev_merged("novita", curated)
+    model_list = _models_dev_merged("novita", [])
     if model_list:
         _report_live_models(model_list, "models.dev registry")
         return model_list
-    _show_curated(curated)
-    return curated
+    return []
 
 
-# provider id -> (pconfig, curated, api_key_for_probe, effective_base) -> model list
+# provider id -> (pconfig, api_key_for_probe, effective_base) -> model list
 _SPECIAL_MODEL_LISTS = {
     "lmstudio": _lmstudio_models,
     "ollama-cloud": _ollama_cloud_models,
@@ -679,46 +672,36 @@ _SPECIAL_MODEL_LISTS = {
 
 def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, key_env: str, effective_base: str) -> list:
     """Model list for an API-key provider: models.dev registry (cached, agentic/tool-capable filter)
-    → curated static list (offline insurance) → provider-owned catalog (``ProviderProfile.fetch_models``
-    merged with ``fallback_models`` exactly like the ``/model`` picker's
-    ``models._profile_live_catalog``; generic /models probe for unregistered providers).
+    → provider-owned catalog (``ProviderProfile.fetch_models`` merged with ``fallback_models``
+    exactly like the ``/model`` picker's ``models._profile_live_catalog``; generic /models probe
+    for unregistered providers). 没有随包静态名单了。
     Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from noesia_cli.config import get_env_value
-    from noesia_cli.models import _PROVIDER_MODELS, fetch_api_models, probe_profile_catalog
-    curated = _PROVIDER_MODELS.get(provider_id, [])
+    from noesia_cli.models import fetch_api_models, probe_profile_catalog
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
     special = _SPECIAL_MODEL_LISTS.get(provider_id)
     if special is not None:
-        return special(pconfig, curated, api_key_for_probe, effective_base)
-    # models.dev first (tool-capable, noise-filtered), merged with curated so newly added
-    # models still appear.
-    model_list = _models_dev_merged(provider_id, curated)
+        return special(pconfig, api_key_for_probe, effective_base)
+    model_list = _models_dev_merged(provider_id, [])
     if model_list:
         _report_live_models(model_list, "models.dev registry")
         return model_list
-    if curated and len(curated) >= 8:
-        # Substantial curated list — use it directly, skip live probe
-        _show_curated(curated)
-        return curated
     from providers import get_provider_profile
     profile = get_provider_profile(provider_id)
     if profile is not None:
         # The profile owns endpoint (models_url), headers and response shape. Same probe as the
-        # ``/model`` picker; when neither live nor fallback_models yields rows, the curated
-        # ``_PROVIDER_MODELS`` row still applies (built-in providers with a short curated list).
+        # ``/model`` picker; 取不到就返回空，让用户手填。
         model_list = probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base)
         if model_list:
             _report_live_models(model_list, f"{pconfig.name} catalog")
             return model_list
-        _show_curated(curated)
-        return list(curated)
+        return []
     live_models = fetch_api_models(api_key_for_probe, effective_base)
-    if live_models and len(live_models) >= len(curated):
+    if live_models:
         _report_live_models(live_models, f"{pconfig.name} API")
         return live_models
-    _show_curated(curated)  # may be empty: falls through to raw input
-    return curated
+    return []  # 取不到就让用户手填
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
@@ -820,7 +803,7 @@ def _anthropic_authenticate() -> bool:
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
     from noesia_cli.auth import get_anthropic_key
-    from noesia_cli.models import _PROVIDER_MODELS
+    from noesia_cli.models import provider_model_ids
 
     # Check ALL credential sources
     existing_key = get_anthropic_key()
@@ -865,7 +848,7 @@ def _model_flow_anthropic(config, current_model=""):
     print()
 
     selected = _pick_model_or_prompt(
-        _PROVIDER_MODELS.get("anthropic", []), "Model name (e.g., claude-sonnet-4-20250514): ",
+        provider_model_ids("anthropic"), "Model name (e.g., claude-sonnet-4-20250514): ",
         current_model=current_model, confirm_provider="anthropic")
     # Clear base_url: resolve_runtime_provider() always hardcodes Anthropic's URL, and a
     # stale value can contaminate other providers on a later switch.

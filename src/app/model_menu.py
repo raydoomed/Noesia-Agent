@@ -32,6 +32,11 @@ def _as_dict(item) -> dict:
     }
 
 
+def _model_sort_key(row: dict) -> tuple:
+    """组内排模型的键：按模型名（不区分大小写），同名再按 id 兜底。"""
+    return (str(row.get("model") or row.get("label") or "").casefold(), str(row.get("id") or ""))
+
+
 def group_models(items) -> list[dict]:
     """按供应商分组：`[{provider, label, available, items: [...]}, ...]`，顺序照原清单。
 
@@ -49,12 +54,17 @@ def group_models(items) -> list[dict]:
             placeholder.append(row)  # 既没 id 也没供应商：真正的「还没配置模型」占位
             continue
         label = str(row.get("label") or provider)
+        # 一级标题只留供应商名：清单项的 label 是「显示名 · 模型名」，把尾巴那截去掉。
+        # 用定长去尾而不是 split(" · ")[0]：供应商名自己带「 · 」时也不会被切成半个名字。
+        model_name = str(row.get("model") or "")
+        if model_name and label.endswith(f" · {model_name}"):
+            label = label[: -len(model_name) - 3]
         if provider not in index:
             index[provider] = len(groups)
             groups.append(
                 {
                     "provider": provider,
-                    "label": label.split(" · ")[0] or provider,
+                    "label": label or provider,
                     "available": False,
                     "items": [],
                 }
@@ -63,7 +73,10 @@ def group_models(items) -> list[dict]:
         group["items"].append(row)
         group["available"] = group["available"] or bool(row.get("available", False))
 
-    groups.sort(key=lambda group: not group["available"])  # 能用的那几组排前面
+    # 先「能用的那几组排前面」，再按名字：同一档里名次稳定，不会因为引擎这次返回的先后变来变去
+    for group in groups:
+        group["items"].sort(key=_model_sort_key)
+    groups.sort(key=lambda group: (not group["available"], group["label"].casefold()))
     return groups + ([{"provider": "", "label": "", "available": False, "items": placeholder}] if placeholder else [])
 
 
@@ -173,4 +186,8 @@ def current_label(items, current: str, *, fallback: str = "选模型") -> str:
         row = _as_dict(raw)
         if str(row.get("id") or "") == current:
             return str(row.get("model") or row.get("label") or current)
+    if current:
+        # 清单这一刻没有它（缓存刚作废、后台还在重探）：引擎说了现在跑的是哪个，就照它写。
+        # 退回「选模型」会让用户以为刚才选的没生效——那正是最容易被当成的「没保存上」。
+        return current.split(":", 1)[1] if ":" in current else current
     return fallback

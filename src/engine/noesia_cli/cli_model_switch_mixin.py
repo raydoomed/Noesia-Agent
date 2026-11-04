@@ -475,11 +475,11 @@ class CLIModelSwitchMixin:
             current_model = slug
             changed = True
 
-        # 2. Replace untouched default with a Codex model
+        # 2. Replace untouched default with a Codex model（只有真问到了才换：没有随包名单可退）
         if self._model_is_default:
-            from noesia_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+            from noesia_cli.codex_models import get_codex_model_ids
 
-            fallback_model = DEFAULT_CODEX_MODELS[0]
+            fallback_model = ""
             try:
                 # self.base_url is the route resolved with self.api_key (#121486).
                 available = get_codex_model_ids(
@@ -488,7 +488,7 @@ class CLIModelSwitchMixin:
                     fallback_model = available[0]
             except Exception:
                 pass
-            if current_model != fallback_model:
+            if fallback_model and current_model != fallback_model:
                 self.model = fallback_model
                 changed = True
         return changed

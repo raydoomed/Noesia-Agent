@@ -773,12 +773,12 @@ def resolve_alias(raw_input: str, current_provider: str, user_providers: Optiona
         declared = _external_process_match(process_catalog, process_aliases, family, provider=current_provider)
         return (current_provider, declared, key) if declared else None
 
-    # models.dev catalog merged with static _PROVIDER_MODELS entries it may be missing.
+    # models.dev catalog merged with this provider's live cache (no bundled static list).
     catalog = list_provider_models(current_provider)
     try:
-        from noesia_cli.models import _PROVIDER_MODELS
+        from noesia_cli.models import provider_catalog_ids
         seen = {m.lower() for m in catalog}
-        catalog.extend(m for m in _PROVIDER_MODELS.get(current_provider, []) if m.lower() not in seen)
+        catalog.extend(m for m in provider_catalog_ids(current_provider) if m.lower() not in seen)
     except Exception:
         pass
 

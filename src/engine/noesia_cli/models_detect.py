@@ -4,8 +4,8 @@ Split out of ``noesia_cli.models``. The detection ladder there consults static c
 OpenRouter catalog, and its answer used to be applied blindly. Two guards close the class of
 "put the user on a provider they never selected":
 
-* the CURRENT provider's live catalog outranks every static guess (Codex early-access ids, Noesia
-  Portal slugs, Ollama Cloud models absent from ``_PROVIDER_MODELS`` — #97487, the $100 Astra
+* the CURRENT provider's live catalog outranks every guess (Codex early-access ids, Noesia
+  Portal slugs, Ollama Cloud models absent from any bundled list — #97487, the $100 Astra
   incident);
 * an auto-detected TARGET must be a provider the user has credentials for. Guessing a vendor the
   user never signed into either 401s or, for OpenRouter (whose runtime resolves with an empty key
@@ -54,7 +54,7 @@ def current_provider_owns_vendor(model_name: str, current_provider: str) -> bool
     switch there". Aggregators, custom endpoints and multi-vendor resellers (nvidia, alibaba, ...)
     have no single native vendor and are skipped."""
     from noesia_cli.model_normalize import detect_vendor
-    from noesia_cli.models import _AGGREGATOR_PROVIDERS, _PROVIDER_MODELS, normalize_provider
+    from noesia_cli.models import _AGGREGATOR_PROVIDERS, provider_catalog_ids, normalize_provider
 
     provider = (current_provider or "").strip().lower()
     if provider in _SKIP or provider.startswith("custom:"):
@@ -67,7 +67,7 @@ def current_provider_owns_vendor(model_name: str, current_provider: str) -> bool
         return False
     # An id the classifier cannot place (Bedrock ``us.anthropic.claude-…``) is evidence the
     # provider is NOT single-vendor; only a fully classified, single-vendor catalog owns the name.
-    native = {detect_vendor(mid) for mid in _PROVIDER_MODELS.get(normalized, ())}
+    native = {detect_vendor(mid) for mid in provider_catalog_ids(normalized)}
     return native == {vendor}
 
 

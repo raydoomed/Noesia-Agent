@@ -403,65 +403,19 @@ def _is_aws_sdk(pconfig) -> bool:
     return bool(pconfig) and getattr(pconfig, "auth_type", "") == "aws_sdk"
 
 
-def _provider_has_live_catalog(slug: str) -> bool:
-    """这家有没有能问的 live 目录源。有的话，静态表就只是"提示/白名单"，不能当清单用。"""
-    try:
-        from noesia_cli.models import _PROVIDER_CATALOG_FETCHERS
-        if slug in _PROVIDER_CATALOG_FETCHERS:
-            return True
-        from noesia_cli.auth import PROVIDER_REGISTRY
-        cfg = PROVIDER_REGISTRY.get(slug)
-        return bool(cfg) and getattr(cfg, "auth_type", "api_key") in {"api_key", "aws_sdk"}
-    except Exception as exc:  # health: allow BLE001 -- 查不到就按"没有 live 源"处理，宁可给静态表也不空着
-        logger.debug("live catalog probe failed for %s: %s", slug, exc)
-        return False
+def _live_ids(slug: str, *, non_blocking: bool = False) -> list:
+    """这家「实时抓到的」模型 id：``cached_provider_model_ids``（``noesia model`` 用的同一份磁盘清单）。
 
-
-def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_models_dev: bool = True,
-                         non_blocking: bool = False) -> list:
-    """``cached_provider_model_ids``（``noesia model`` 用的同一份磁盘清单）优先。
-
-    ``non_blocking``（界面读路径）只读磁盘缓存，不等探测。**缓存里没有时看这家有没有 live 源**：
-    有就空着（下一轮 SWR 暖完自然会出来），绝不拿 `_PROVIDER_MODELS` 那份随包硬编码的静态表
-    顶上——那份既不校验在售、也不校验支不支持工具调用，端出来就是"失败反而多出一截模型"、
-    用户看着数字自己乱跳。只有压根没有 live 源的 provider，静态表才是它唯一可知的目录。
+    ``non_blocking``（界面读路径）只读磁盘缓存，不等探测；缓存没有就空着，下一轮 SWR 暖完自然出来。
+    不再回退任何随包静态表（``_PROVIDER_MODELS`` / models.dev 目录）：那份既不校验在售、也不校验
+    支不支持工具调用，端出来就是过时清单。
     """
-    from noesia_cli.models import (
-        _drop_retired_models, _merge_with_models_dev, cached_provider_model_ids)
+    from noesia_cli.models import _drop_retired_models, cached_provider_model_ids
     from noesia_cli.chat_catalog import without_generation_models
 
     model_ids = cached_provider_model_ids(slug, non_blocking=non_blocking)
-    if not model_ids and not _provider_has_live_catalog(slug):
-        model_ids = _first_curated(curated, fallback_keys or (slug,))
-        if merge_models_dev:
-            model_ids = _merge_with_models_dev(slug, model_ids)
-    # 两条路都要过滤：缓存里的实时清单同样会留着上游已经退役的 id。
+    # 缓存里的实时清单同样会留着上游已经退役的 id，照样过滤。
     return without_generation_models(_drop_retired_models(slug, model_ids))
-
-
-def _first_curated(curated: dict, keys) -> list:
-    """First non-empty curated list under *keys*; the last key's (possibly empty) value otherwise."""
-    model_ids: list = []
-    for key in keys:
-        model_ids = curated.get(key, [])
-        if model_ids:
-            break
-    return model_ids
-
-
-def _aws_live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str,
-                             non_blocking: bool = False) -> list:
-    """Bedrock：live discovery 反映当前 region（eu.*、ap.*），不是静态的 us.* 表。
-
-    探测失败时只有在**没有 live 源**的情况下才用静态表；Bedrock 有 discovery，
-    所以拿不到就空着（同上，别拿随包硬编码的名单冒充"当前区域可用的模型"）。
-    """
-    try:
-        return _live_or_curated_ids(slug, curated, *fallback_keys, merge_models_dev=False,
-                                    non_blocking=non_blocking)
-    except Exception as exc:  # health: allow BLE001 -- discovery 失败不该让整张菜单挂掉
-        logger.debug("aws catalog discovery failed for %s: %s", slug, exc)
-        return _first_curated(curated, fallback_keys or (slug,)) if not _provider_has_live_catalog(slug) else []
 
 
 def _cap_models(model_ids: list, max_models: int | None, slug: str = "") -> list:
@@ -598,7 +552,7 @@ def _discover_endpoint_models(
 
 
 def _collect_authed_provider_slugs(
-    models_dev_data: dict, curated: dict[str, list[str]], excluded: list[str]) -> list[str]:
+    models_dev_data: dict, excluded: list[str]) -> list[str]:
     """Quick-scan which providers have credentials, without fetching model lists.
 
     Mirrors the credential checks of sections 1, 2 and 2b of :func:`list_authenticated_providers`
@@ -790,7 +744,7 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         # LAUNCH profile's env-keyed providers and hid its own .env-keyed ones.
         if not (_any_env(env_vars, _scoped_key_env) or _raw_pool_usable(noesia_id, for_picker=b.for_picker)):
             continue
-        model_ids = _live_or_curated_ids(noesia_id, b.curated, non_blocking=b.non_blocking_catalogs)
+        model_ids = _live_ids(noesia_id, non_blocking=b.non_blocking_catalogs)
         # A providers.<built-in>.models block extends the discovered catalog; section 3 cannot
         # emit it later because this row owns the slug.
         configured = user_providers.get(noesia_id) if isinstance(user_providers, dict) else None
@@ -863,16 +817,11 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         if not _overlay_has_creds(b, pid, noesia_slug, overlay):
             continue
         if noesia_slug in {"openai-codex", "copilot", "copilot-acp"}:
-            # Live OAuth-backed discovery so Pro-only Codex slugs not in the static catalog
-            # appear; falls back to curated when unreachable (or not yet cached on the read path).
-            model_ids = _live_or_curated_ids(noesia_slug, b.curated, merge_models_dev=False,
-                                             non_blocking=b.non_blocking_catalogs)
-        elif overlay.auth_type == "aws_sdk":
-            model_ids = _aws_live_or_curated_ids(noesia_slug, b.curated, noesia_slug, pid,
-                                                 non_blocking=b.non_blocking_catalogs)
+            # 实时问出来才知道有哪些：Pro 专属的 Codex/ACP 模型本来就不在任何静态表里。
+            # 拿不到就空着（不再退回静态表）。
+            model_ids = _live_ids(noesia_slug, non_blocking=b.non_blocking_catalogs)
         else:
-            model_ids = _live_or_curated_ids(noesia_slug, b.curated, noesia_slug, pid,
-                                             non_blocking=b.non_blocking_catalogs)
+            model_ids = _live_ids(noesia_slug, non_blocking=b.non_blocking_catalogs)
         # A providers.<overlay>.models block extends the row exactly as it does for built-in rows
         # (section 1); section 3 never emits it because this row owns the slug (#27989).
         configured = user_providers.get(noesia_slug) or user_providers.get(pid) if isinstance(user_providers, dict) else None
@@ -914,11 +863,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
                 logger.debug("External-process check failed for %s: %s", cp.slug, exc)
         if not has_creds:
             continue
-        if _is_aws_sdk(cp_config):
-            model_ids = _aws_live_or_curated_ids(cp.slug, b.curated, non_blocking=b.non_blocking_catalogs)
-        else:
-            model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
-                                             non_blocking=b.non_blocking_catalogs)
+        model_ids = _live_ids(cp.slug, non_blocking=b.non_blocking_catalogs)
         b.add_builtin_row(
             cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
 
@@ -1122,17 +1067,10 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     """Curated model lists keyed by noesia provider id, plus the dynamic ones (noesia manifest,
     Ollama Cloud, LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud
     ids and warms them in the background rather than waiting on an 8s probe (#114215)."""
-    from noesia_cli.models import _PROVIDER_MODELS
-    curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
-    # openrouter 这份随包名单（OPENROUTER_MODELS，73 条）以前在这里覆盖 curated["openrouter"]，
-    # 于是缓存行一冷、菜单就端出这 73 条未校验的模型（用户看到 58↔72 来回跳）。它有 live 源，
-    # 现在只由 cached_provider_model_ids 提供，curated 不再参与。
-    # Plugin profiles without a static row: their fallback_models are the curated floor, so the
-    # non-blocking GUI read (cold catalog cache) lists them instead of an empty provider row.
-    from providers import list_providers
-    for _pp in list_providers():
-        if _pp.fallback_models and not curated.get(_pp.name):
-            curated[_pp.name] = list(_pp.fallback_models)
+    curated: dict[str, list[str]] = {}
+    # 这份字典现在只装「真的问出来的」动态清单：Ollama Cloud 和本机 LM Studio。
+    # 随包的 _PROVIDER_MODELS 和各 plugin 的 fallback_models 不再进来——那些名字没人校验在售，
+    # 漏进菜单就是一批过时模型。
     if "ollama-cloud" not in curated:
         from noesia_cli.models import fetch_ollama_cloud_models
         # Read path: cache only; the row's own SWR refresh (cached_provider_model_ids) warms it.
@@ -1227,7 +1165,7 @@ def list_authenticated_providers(
     # collects nothing either: every cache-only row read spawns its own deduped background refresh,
     # so no thread pool is joined and no probe can hold up the response.
     prefetch_slugs = ([] if (refresh or non_blocking_catalogs)
-                      else _collect_authed_provider_slugs(data, b.curated, excluded_providers or []))
+                      else _collect_authed_provider_slugs(data, excluded_providers or []))
     if len(prefetch_slugs) > 3:
         try:
             _prefetch_provider_models_parallel(prefetch_slugs)
@@ -1244,11 +1182,11 @@ def list_authenticated_providers(
     if custom_providers and isinstance(custom_providers, list):
         _lap_custom_provider_rows(b, custom_providers)
 
-    return _finalize_picker_rows(b.results, user_providers, current_model)
+    return _finalize_picker_rows(b.results, user_providers)
 
 
-def _finalize_picker_rows(results: list, user_providers, current_model: str) -> list:
-    """Post-passes: drop ``providers.<name>.enabled: false`` rows, inject the current model, sort."""
+def _finalize_picker_rows(results: list, user_providers) -> list:
+    """Post-passes: drop ``providers.<name>.enabled: false`` rows, sort."""
     # The enabled post-filter covers built-in rows (sections 1-2) that bypass the per-section
     # gate; matched by slug and ``provider_id``.
     try:
@@ -1265,22 +1203,9 @@ def _finalize_picker_rows(results: list, user_providers, current_model: str) -> 
     except Exception:
         pass
 
-    # A custom/uncurated model set via `/model <provider>/<name>` would be invisible in every
-    # picker (main and MoA slot pickers read these rows); inject it at the front of the current
-    # provider's row.
-    if current_model:
-        for row in results:
-            if not row.get("is_current") or row.get("native_catalog_empty"):
-                continue
-            models = row.get("models") or []
-            if current_model not in models:
-                from noesia_cli.models import _model_requires_account_discovery
-
-                if _model_requires_account_discovery(row.get("slug"), current_model):
-                    break
-                row["models"] = [current_model, *models]
-                row["total_models"] = row.get("total_models", len(models)) + 1
-            break
+    # 当前模型不再往清单里塞：注入一个这家并不提供的模型，菜单里就会出现一个「点了也切不过去」
+    # 的假选项（引擎校验时会回「模型不在这一家的清单里」），胶囊也跟着显示一个毫不相干的模型名。
+    # 清单只放这家真实提供的，当前项对不上就让界面显示「未选择」。
 
     # Current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

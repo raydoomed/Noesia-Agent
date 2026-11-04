@@ -369,6 +369,32 @@ def _model_value(option_id: str) -> str:
     return str(option_id or "")
 
 
+def _provider_row(providers, provider: str, model: str = "") -> dict:
+    """引擎回的那一行：先按 slug 认，认不出再按「这家有当前模型」认。"""
+    want = str(provider or "").strip()
+    for row in providers or []:
+        if isinstance(row, dict) and str(row.get("slug") or "") == want:
+            return row
+    for row in providers or []:
+        if isinstance(row, dict) and row.get("is_current") and model and model in (row.get("models") or []):
+            return row
+    return {}
+
+
+def _provider_title(providers, provider: str) -> str:
+    row = _provider_row(providers, provider)
+    return str(row.get("name") or row.get("label") or provider or "")
+
+
+def _provider_warning(providers, provider: str) -> str:
+    return str(_provider_row(providers, provider).get("warning") or "")
+
+
+def _provider_usable(providers, provider: str, model: str) -> bool:
+    row = _provider_row(providers, provider, model)
+    return bool(row.get("authenticated"))
+
+
 def _flatten_options(result: dict) -> tuple[list[dict], str]:
     """把引擎的 `model.options` 摊成界面用的平表：一家供应商的每个模型一行。
 
@@ -383,24 +409,15 @@ def _flatten_options(result: dict) -> tuple[list[dict], str]:
         slug = str(provider.get("slug") or "")
         models = [name for name in (provider.get("models") or []) if isinstance(name, str) and name]
         if not models:
-            # 没配密钥的供应商拿不到模型名（清单要靠线上 /v1/models 问）。照样给它一行占位，
-            # 让菜单里看得见「有这家、缺哪个变量」，而不是整家消失。
-            rows.append(
-                {
-                    "id": "",
-                    "label": str(provider.get("name") or slug),
-                    "backend": slug,
-                    "model": "",
-                    "available": False,
-                    "reason": str(provider.get("warning") or provider.get("key_env") or ""),
-                }
-            )
+            # 聊天菜单只列「配了 Key 且探到模型」的家：这家没有模型就整家不出现。
+            # 还缺哪家、该填哪个变量由设置页那份全表负责说明；菜单里留一行灰名字只会让人以为能点。
             continue
+        title = str(provider.get("name") or slug)
         for name in models:
             rows.append(
                 {
                     "id": f"{slug}:{name}",
-                    "label": f"{slug} · {name}",
+                    "label": f"{title} · {name}",
                     "backend": slug,
                     "model": name,
                     "available": bool(provider.get("authenticated")),  # 引擎没说已认证就是不能用，别替它兜底
@@ -423,7 +440,25 @@ def _flatten_options(result: dict) -> tuple[list[dict], str]:
                  if str(row.get("model") or "") == model and row.get("available")),
                 "",
             )
-        current = hit
+        current = hit or current  # 一个都对不上也别把引擎报的当前值抹成空
+
+    ids = {str(row.get("id") or "") for row in rows}
+    if current and current not in ids:
+        # 引擎会为「当前这家」留一条骨架行（哪怕它的目录这次读不到），但那条行没有 models，
+        # 上面的循环就把它丢了——结果胶囊里既没有当前模型、也勾不上，看着像「模型没保存」。
+        # 当前模型是引擎刚说的、它就在跑：这一行必须留在清单里。
+        rows.append(
+            {
+                "id": current,
+                "label": f"{_provider_title(providers, provider)} · {model or current}",
+                "backend": provider or str(current).split(":", 1)[0],
+                "model": model or str(current).split(":", 1)[-1],
+                "available": _provider_usable(providers, provider, model),
+                "reason": _provider_warning(providers, provider) or "这一家的模型清单这次没取到，点下面的「刷新模型」重试",
+                "caps": {},
+                "current": True,
+            }
+        )
     return rows, current
 
 
@@ -596,8 +631,8 @@ class _EngineProcess(QtCore.QObject):
 # 每个请求、每次重试各回一遍，全贴到聊天区就是一屏红字。这不是故障而是还没设好，
 # 所以统一换成一句中文提示，走「配好就消失」的那条路（append_notice）。
 NO_PROVIDER_HINT = (
-    "还没有可用的模型。点右上角「设置」选一个供应商、填上它的 API Key（比如 DeepSeek 就填 "
-    "DEEPSEEK_API_KEY），配好这条提示会自己消失。"
+    "还没有可用的模型。点右上角「设置」→「密钥设置」填上供应商的 API Key（比如 DeepSeek 就填 "
+    "DEEPSEEK_API_KEY）并点确定，再到「模型设置」选一个模型点「保存并启用」，这条提示就会自己消失。"
 )
 
 
@@ -628,6 +663,7 @@ class EngineWire(QtCore.QObject):
     attachment_failed = QtCore.Signal(str, str)  # (附件名, 原因)：引擎没接下这个附件
     display_config = QtCore.Signal(dict)   # 参数：config.yaml 的 display 段（画什么、不画什么照它）
     models = QtCore.Signal(list, str)      # 参数：(模型清单, 当前模型)
+    provider_rows = QtCore.Signal(list, str)  # 设置页：供应商全表（含未配 Key 的家）+ 引擎当前的模型
     save_result = QtCore.Signal(str, dict)  # 设置页保存的回执：(tag, {"ok": True/False, "message"/"slug"})
     delta = QtCore.Signal(str)             # message.delta 的文本增量
     reasoning_delta = QtCore.Signal(str)   # reasoning.delta：思考的流式增量
@@ -688,7 +724,9 @@ class EngineWire(QtCore.QObject):
         self._pending: dict[int, str] = {}
         self._session_id = ""
         self._pending_switch = ""  # save_key 之后要切过去的模型（"provider:model"）
+        # 存完密钥要不要重拿聊天菜单：等设置页那份全表回来再拿，别在全量重探的中途拿（见 model.save_key）
         self._pending_reasoning = ""  # 等会话建好再发的推理强度
+        self._models_after_settings = False  # 存完密钥：等设置页全表回来再重拿聊天菜单
         self._reasoning_effort = ""  # 当前档位：新建会话时带过去，新会话才跟界面上选的一致
         self._onboarding_started = False  # 这次启动是否已经开过引导（别每问一次就再开一个会话）
         self._stored_id = ""  # 对话的存储 id：跨重启不变，resume 用它
@@ -1062,18 +1100,41 @@ class EngineWire(QtCore.QObject):
                                   "session_id": self._session_id}, tag="config.set:reasoning")
 
     def request_models(self, *, refresh: bool = False) -> None:
-        """要一份模型清单（跟引擎的默认口径一致：只列已经配好密钥的那几家）。
+        """要一份「聊天窗菜单」用的清单：**只列用户自己配过的家**（引擎的 `explicit_only`）。
+
+        引擎的 `list_authenticated_providers` 会把机器上自动发现的凭据（例如 GitHub CLI 登录态 →
+        Copilot）也算成「已认证」；那些家不是用户在 Noesia 里填的 Key，不该出现在聊天菜单里。
 
         必须带 `session_id`：引擎的 `model.options` 用 `_model_picker_context(_session_agent(params))`
         取「当前用哪个模型」，没有会话时它读的是**磁盘配置**，而 `config.set model` 是就地把
         活着的 agent 换掉、不写磁盘。不带会话问，切完拉回来的 current 还是旧的那个，
         按钮和勾选就都不动——看着就是「切换没生效」。
         """
-        params: dict = {"session_id": self._session_id} if self._session_id else {}
+        # 只发契约里有的字段（`session_id`/`explicit_only`/`include_unconfigured`/`refresh`）：
+        # 多一个引擎会整条拒掉（invalid params）。「平时只读缓存」是引擎自己按 refresh 决定的，
+        # 客户端不许替它传实现细节。
+        params: dict = {"explicit_only": True}
+        if self._session_id:
+            params["session_id"] = self._session_id
         if refresh:
             # 引擎收到 refresh 就绕过目录缓存、把每家都重新问一遍（界面上的「刷新模型」走这里）
             params["refresh"] = True
-        self._call("model.options", params, tag="model.options")
+        # 记住这一次的请求号：连着发好几份时，先发的那份可能后到，不许它盖掉新的
+        self._models_rid = self._call("model.options", params, tag="model.options")
+
+    def request_provider_rows(self, *, refresh: bool = False) -> None:
+        """要一份「设置页」用的供应商全表：`explicit_only=False` + `include_unconfigured=True`。
+
+        `include_unconfigured` 让没配密钥的家也带着骨架行回来（`authenticated=false` + `key_env`），
+        设置页才有一格能填 Key；`explicit_only=False` 保证已配的家一个不少。带 refresh 时引擎
+        作废 1 小时的模型缓存、逐家重问线上清单。
+        """
+        params: dict = {"explicit_only": False, "include_unconfigured": True}
+        if self._session_id:
+            params["session_id"] = self._session_id
+        if refresh:
+            params["refresh"] = True
+        self._settings_rid = self._call("model.options", params, tag="model.options:settings")
 
     def greet(self) -> None:
         """第一次见面：先问引擎「这台机器该不该跑引导」，该跑且有模型能撑起第一轮，才让它开场。
@@ -1570,7 +1631,24 @@ class EngineWire(QtCore.QObject):
                 # 这次提问已经结束了（她等超时/这轮被打断）：卡上不能再显示「可点」
                 self.notice_show.emit({"text": "这个问题已经结束，不用再答了", "level": "info", "ttl_ms": CONFIRM_TTL_MS,
                                        "key": "clarify.expired"})
+        elif tag == "model.options:settings":
+            # 设置页要的是全部：把引擎的行原样交出去（含未配 Key 的骨架行），
+            # 整理成卡片形状是界面那一层的事。
+            if rid != getattr(self, "_settings_rid", rid):
+                return  # 这不是最新那份：早发的请求可能后到，别拿旧清单盖新的
+            raw = result.get("providers") if isinstance(result, dict) else None
+            rows_now = [dict(row) for row in (raw or []) if isinstance(row, dict)]
+            # 引擎报的「现在在跑」：provider 和 model 都有才拼成 `provider:model`，缺一个就交空
+            cur_model = str((result or {}).get("model") or "").strip() if isinstance(result, dict) else ""
+            cur_provider = str((result or {}).get("provider") or "").strip() if isinstance(result, dict) else ""
+            current = f"{cur_provider}:{cur_model}" if cur_model and cur_provider else cur_model
+            self.provider_rows.emit(rows_now, current)
+            if getattr(self, "_models_after_settings", False):
+                self._models_after_settings = False  # 重探已经落盘：这时候拿菜单才是完整的
+                self.request_models()
         elif tag == "model.options":
+            if rid != getattr(self, "_models_rid", rid):
+                return  # 同上：菜单只认最后一次请求的结果
             items, current = _flatten_options(result)
             self.models.emit(items, current)
         elif tag == "onboarding.set_run":
@@ -1583,19 +1661,15 @@ class EngineWire(QtCore.QObject):
             if due.get("run") and due.get("eligible") and not self._onboarding_started:
                 self._start_onboarding()
         elif tag.startswith("model.save_key"):
-            # 密钥落盘后引擎会返回这一家的最新行：清单要重拿（这家现在能用了），
-            # 用户如果还挑了模型，就接着切过去——「设置模型」一步做完，不用再点一次。
+            # 密钥落盘后引擎会返回这一家的最新行：设置页和聊天菜单两份清单都要重拿
+            # （这家现在能用了、模型清单也得问出来）。
             row = result.get("provider") or {}
             self.notice.emit(f"已保存 {row.get('slug') or '密钥'}")
-            # 供应商表缓存（60 秒 TTL）里这家还是「没配密钥」的旧结论：先失效再问，
-            # 否则刚存完 Key 的菜单要等满一分钟才把它变亮。
-            try:
-                from backends import catalog  # noqa: PLC0415 - 只在这条路上用
-
-                catalog.invalidate_providers()
-            except Exception:  # noqa: BLE001 - 刷不动就靠 TTL 过期，别让保存本身失败
-                logger.warning("供应商表缓存没失效，等 TTL 自然过期", exc_info=True)
-            self.request_models()
+            self.request_provider_rows(refresh=True)
+            # 这份全表是逐家重探线上清单的（几秒）。以前在这里立刻再要一份聊天菜单：
+            # 那时缓存刚被判废、重探还没落地，拿回来的清单里已配的家可能是空的，
+            # 菜单就只剩刚存的那一家。等全表回来（重探已落盘）再拿一次。
+            self._models_after_settings = True
             self.key_saved.emit(str(row.get("slug") or ""))  # 引导可能正等着这个 provider
             # 设置窗口在等这一条：只有拿到它才知道这把 Key 到底写进去没有
             self.save_result.emit(tag, {"ok": True,
