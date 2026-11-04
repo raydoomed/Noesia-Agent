@@ -412,7 +412,9 @@ def fetch_openrouter_models(
                 profile_slot_set(_me, "_openrouter_catalog_cache", disk)
             return list(disk)
     if cache_only:
-        return list(OPENROUTER_MODELS)
+        # 读路径从来不端仓库内那份静态表：它是白名单/提示，不是"当前在售且支持工具调用"的清单。
+        # 只给这台机器上次真正从 live 校验通过的那份，一次都没有就空着。
+        return list(cached or _read_openrouter_catalog_disk(allow_stale=True) or [])
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
     # (tool support, free pricing) is applied on top either way.
@@ -425,7 +427,10 @@ def fetch_openrouter_models(
 
     live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
     if live is None:
-        return list(cached or fallback)
+        # 拉不到 live（401/403/超时）就只给上次真正校验通过的那份。以前这里退 `fallback`
+        # （仓库内白名单 73 条，不校验在售、不校验工具调用），结果失败时菜单反而多出十几个
+        # 已经下架或不支持工具的模型——用户看到的就是"数字自己变了"。
+        return list(cached or _read_openrouter_catalog_disk(allow_stale=True) or [])
     live_items, live_by_id = live
 
     # Free warm-up for the reasoning-capability cache: same payload the caps fetch would pull.
@@ -451,7 +456,8 @@ def fetch_openrouter_models(
         curated.append((preferred_id, desc))
 
     if not curated:
-        return list(cached or fallback)
+        # 一条都没过校验（live 全变了/全不支持工具调用）：同样不端白名单冒充清单。
+        return list(cached or _read_openrouter_catalog_disk(allow_stale=True) or [])
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
     profile_slot_set(_me, "_openrouter_catalog_cache", curated)
@@ -1589,6 +1595,12 @@ def _static_catalog(normalized: str, fetcher: Any) -> list[str]:
     # 进菜单，上游退役（models.dev 标 status: deprecated）的当场消失。离线/拿不到目录时静态表
     # 原样返回，而且绝不用「拿不到」当删除依据。
     curated_static = (CuratedFallbackModels if fetcher is not None else list)(_PROVIDER_MODELS.get(normalized, []))
+    if fetcher is not None:
+        # 这家有 live 目录源，但这次没拿到（401/403/超时/被挡）：以前这里把静态表原样端出来，
+        # 用户看到的就是一批没校验过的旧模型——在不在售没查、支不支持工具调用也没查，
+        # 而且"失败"反而比成功时多出一截，看着像清单自己长了。现在返回空，让上面那层
+        # （cached_provider_model_ids）用这家上次真正从 live 拿到的磁盘清单；连它都没有就空着。
+        return []
     # models.dev keeps listing retired Zen ids too: filter after the merge, not before.
     merged = _drop_delisted_opencode_models(normalized, _merge_with_models_dev(normalized, curated_static))
     merged = _drop_retired_models(normalized, merged)

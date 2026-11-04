@@ -1390,12 +1390,21 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._reply_text += text
         panel = self.chat_panel
         if panel is not None and text:
+            panel.clear_status_notice("turn")  # 新一轮真的开始吐字了：上一轮的报错提示可以撤
             panel.append_chunk(text)
 
     def on_complete(self, payload: dict) -> None:
         """message.complete：正文早就按增量进了气泡，这里只收尾。"""
         panel = self.chat_panel
         if panel is not None:
+            # 失败轮到提示卡片（输入框上方那条，`status_stack`），不进气泡：气泡只说模型的话。
+            # 不带 ttl——没解决就该一直看得见，下一轮开始或成功时再撤。
+            if str(payload.get("status") or "") == "error":
+                failure = str(payload.get("text") or payload.get("error") or "").strip()
+                if failure:
+                    panel.show_notice("turn", failure, level="error")
+            else:
+                panel.clear_status_notice("turn")
             panel.end_assistant()
             panel.set_busy(False)  # 这一轮结束：按钮从「停止」变回「发送」
         self._refresh_processes()  # 立刻查一次：这一轮里跑完的那个，行要从 ▶ 变 ✓

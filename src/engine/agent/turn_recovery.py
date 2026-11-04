@@ -1222,7 +1222,7 @@ def compute_error_backoff(
     if _reset:
         _live_reason = f"{_wait_reason.lower()} — resets in {_reset},"
     else:
-        _live_reason = "the free model is busy —" if _free_busy else "waiting on provider —"
+        _live_reason = "waiting on provider —"
     agent._emit_diagnostic_wait(
         f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )

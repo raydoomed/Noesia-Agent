@@ -84,7 +84,9 @@ def fill_menu(
     menu.clear()
     groups = group_models(items)
     if not any(group["provider"] for group in groups):
-        menu.addAction("还没有模型").setEnabled(False)  # 空清单时说一句话，别弹出个空菜单
+        # 空清单时别弹出个空菜单。措辞要说"没取到"而不是"还没有"：拿不到 live 目录时
+        # 清单就是空的（不再拿仓库内静态表充数），用户该做的是点下面那条刷新。
+        menu.addAction("模型清单没取到，点下面的刷新重试").setEnabled(False)
         if on_refresh is not None:
             return _add_refresh_action(menu, on_refresh, refreshing)
         return None

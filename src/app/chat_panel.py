@@ -3895,6 +3895,9 @@ class ChatPanel(QtWidgets.QWidget):
             # 这一轮结束了：「正在调用 X…」那句是靠 tool.start 撤掉的，
             # 按停时那个工具的 start 永远不会来了，不清就一直挂在输入框上方，看着像还在跑
             self.set_activity("")
+            # 「在等供应商，2s 后第 1/3 次」同理：只有异常路径清过它，正常/失败收尾之前都不清，
+            # 于是上一轮的重试倒计时会一直挂在这轮的错误提示旁边，两句话互相矛盾。
+            self.set_provider_wait("")
 
     def settle_turn(self) -> None:
         """这一轮彻底完了（引擎的 turn.done）：可以重新收字了，排在后面的那句也该发了。
