@@ -1,4 +1,4 @@
-"""审批弹窗：她要动危险东西时，停下来问一句。
+"""弹窗：她要动危险东西、或者要删掉一段对话时，停下来问一句。
 
 引擎负责「什么算危险」（smart / manual 策略、被标记的规则），我们只负责问和显示——
 所以这里没有任何判定逻辑，只有一颗卡片、四个按钮和一段能看清的原文。
@@ -172,3 +172,83 @@ class ApprovalDialog(QtWidgets.QDialog):
         头像窗拖动/缩放时每移动一像素都会调到这里。
         """
         self.move(card_position(anchor, self.size(), screen_area(anchor)))
+
+
+class ConfirmDialog(QtWidgets.QDialog):
+    """一句话说清代价，两个按钮：确认了再动手（删对话这种收不回来的事）。
+
+    外观和窗口标志跟审批卡片同一套（无边框、压在最上面、能拖走）。不用 `QMessageBox`：
+    它是系统原生模样，而且没有置顶标志，会被置顶的人物窗盖住。
+    """
+
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None,
+        title: str,
+        description: str,
+        confirm_label: str,
+    ) -> None:
+        super().__init__(parent)
+        self._accepted = False
+        self.setWindowFlags(
+            QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint
+        )
+        self.setModal(True)
+        self.setStyleSheet(_CARD_STYLE)
+
+        card = QtWidgets.QFrame(self)
+        card.setObjectName("card")
+        lay = QtWidgets.QVBoxLayout(card)
+        lay.setContentsMargins(16, 14, 16, 12)
+        lay.setSpacing(10)
+
+        head = QtWidgets.QLabel(title, card)
+        head.setObjectName("title")
+        lay.addWidget(head)
+
+        body = QtWidgets.QLabel(description, card)
+        body.setObjectName("desc")
+        body.setWordWrap(True)
+        lay.addWidget(body)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(8)
+        row.addStretch(1)
+        cancel = QtWidgets.QPushButton("取消", card)
+        cancel.setCursor(QtCore.Qt.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        confirm = QtWidgets.QPushButton(confirm_label, card)
+        confirm.setObjectName("deny")  # 破坏性动作：跟审批卡片里的「拒绝」同一个红
+        confirm.setCursor(QtCore.Qt.PointingHandCursor)
+        confirm.clicked.connect(self._accept)
+        row.addWidget(confirm)
+        lay.addLayout(row)
+
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(card)
+
+        self.adjustSize()
+        self.setFixedWidth(max(320, min(460, self.sizeHint().width())))
+
+    def _accept(self) -> None:
+        self._accepted = True
+        self.accept()
+
+    @classmethod
+    def ask(
+        cls,
+        parent: QtWidgets.QWidget | None,
+        title: str,
+        description: str,
+        confirm_label: str,
+    ) -> bool:
+        """弹出来等人回答：确认 True，取消/关窗/Esc 都是 False（沉默不算同意）。"""
+        dialog = cls(parent, title, description, confirm_label)
+        if parent is not None:
+            dialog.move(
+                card_position(parent.frameGeometry(), dialog.size(), screen_area(parent.frameGeometry()))
+            )
+        dialog.exec()
+        return dialog._accepted

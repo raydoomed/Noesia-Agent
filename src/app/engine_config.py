@@ -177,7 +177,13 @@ def sync_engine_config(
 
     disk: Any = None
     if config_path.exists():
-        disk = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        try:
+            disk = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            # 读不出来就**不写**：以前这里会当成「磁盘上没有这个键」，于是拿引擎默认值
+            # 把整个文件覆盖掉——用户改过的每一条设置连同注释一起没了。
+            logger.error("[配置] %s 解析失败，这次不写盘：%s", config_path, exc)
+            raise ValueError(f"{config_path} 读不出来，暂停写入以免覆盖你的配置") from exc
     snapshot: Any = None
     if snapshot_path.exists():
         try:
@@ -296,10 +302,13 @@ def set_engine_config(core_path: Path, home: Path, values: dict[str, Any]) -> bo
     if config_path.is_file():
         try:
             disk = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError:
-            disk = {}
+        except (OSError, yaml.YAMLError) as exc:
+            # 跟 sync_engine_config 一个道理：读不出来就不能写，否则一个键的修改会把
+            # 整个文件换成只剩这一个键的新文件，其余全丢。
+            logger.error("[配置] %s 解析失败，这次不写盘：%s", config_path, exc)
+            raise ValueError(f"{config_path} 读不出来，暂停写入以免覆盖你的配置") from exc
     if not isinstance(disk, dict):
-        disk = {}
+        raise ValueError(f"{config_path} 顶层不是键值表，暂停写入以免覆盖你的配置")
 
     for dotted, value in values.items():
         node: dict[str, Any] = disk

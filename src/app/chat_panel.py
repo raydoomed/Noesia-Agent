@@ -30,6 +30,7 @@ from app import (
     voice_input_prefs,
 )
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap
+from app.approval_dialog import ConfirmDialog
 from app.photo_view import PhotoView
 from app.speech_bar import SpeechBar
 from app.status_stack import StatusStack
@@ -695,8 +696,18 @@ IMAGE_SUFFIXES = media_links.IMAGE_SUFFIXES  # 口径只留一份（定义在 me
 _REF_LINE = re.compile(r"@(image|file|folder|url):(`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+'|\S+)\Z")
 _SCREENSHOT_PLACEHOLDER = "[screenshot]"
 
-# 引擎以「用户消息」回灌给模型的机器行：display_kind 标了种类，界面上画成灰说明行
-_NOTICE_DISPLAY_KINDS = {"async_delegation_complete"}
+# 引擎以「用户消息」/「回答」的形式回灌给模型的机器行：display_kind 标了种类。
+# 这些原文是给模型看的英文脚手架，界面上一个字都不能照搬——照搬的结果就是他截的那张图：
+# 一段 `[System note: Your previous turn was interrupted mid-run …]` 像是我说的话，
+# 三句 `Your request was not processed…` 像是我的回答。
+_NOTICE_LABELS = {
+    "auto_continue": "上次那一轮被中断了，引擎重启后自己接着跑完",
+    "failed_turn": "这一轮没跑成：引擎没处理，要的话把话重发一次",
+}
+# 子代理完成那条不是固定文案：正文交给 delegate_view 解析成中文说明行
+_DELEGATION_DISPLAY_KIND = "async_delegation_complete"
+# 事故恢复注记末尾会带上「原来那句话是什么」，摘出来接在中文说明后面
+_AUTO_CONTINUE_REQUEST = "The interrupted request was:]"
 
 # 引擎把 @file:/@folder:/@url: 展开出来的内容补在正文后面这一段里（那是喂给模型看的，不是用户写的话）。
 # 显示时切开：标记之后整段丢掉，里面提到的引用只补回「正文里没有的」那几条。
@@ -1481,16 +1492,15 @@ class ChatPanel(QtWidgets.QWidget):
         # 消息级悬停条：复制整段 / 引用 / 编辑重发 / 重新生成（按角色与位置决定露哪几个）
         self._msgs: list[dict] = []  # 这个窗口里的消息，按出现顺序（截断/清屏时跟着动）
         self._stream_msg: dict | None = None  # 正在流式写的那条回答
-        self._msg_buttons: list[HoverActionButton] = []
+        # 悬停条只有一颗按钮，两种角色（用户/回答）轮着用它
+        self._msg_buttons: list[HoverActionButton] = []  # 悬停条：回答那条是「复制 / 刷新」，用户那条一颗
+        self._reserve_tail_space()
         self._msg_band: QtCore.QRect | None = None  # 悬停条所在那一带（鼠标在里面就别收）
         self._msg_shown: dict | None = None  # 悬停条现在属于哪条消息（窗口一缩放就得重新摆）
         self._edge_cursor_shape = None  # 现在贴在面板上的边缘光标对应哪条边（None = 没设过）
-        self._pending_edit: dict | None = None  # 点了「编辑重发」：下一个发送按重发走
         self._rewind_waiting = False  # 截断重发已经交给引擎，等它真接下来（这期间不许再发）
-        self._rewind_confirm: dict | None = None  # 会删掉后面几轮的那一下：先问一次，再点才算数
-        self._rewind_confirm_timer = QtCore.QTimer(self)
-        self._rewind_confirm_timer.setSingleShot(True)
-        self._rewind_confirm_timer.timeout.connect(self._drop_rewind_confirm)
+        self._rewind_after_stop: tuple[dict, str] | None = None  # 流式中点了重新发送：先叫停，停稳了再重来
+        self._row_stamp_pending: int | None = None  # 截断重发：行号比正文先回，先存着等新消息贴上去
         self._jump: _JumpPill | None = None  # 没看完时底下那颗「滚动到底部」
         # 跟不跟随新内容：状态位，不是「此刻位置」（流式一快，位置永远追不上最大值，
         # 按位置判就会一直判成「翻着看」，然后彻底不再跟）。用户往上翻才熄，回到底才亮。
@@ -1837,11 +1847,12 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.clear()
         self._streaming = False
         self._msgs = []  # 窗口里的消息清单跟着清：悬停条不该再指向已经不存在的段落
+        self._row_stamp_pending = None  # 上一场没落地的行号不能带进新的一场
+        self._reserve_tail_space()  # clear() 把根框架格式冲掉了，文末那一格要重新铺
         self._stream_msg = None
-        self._pending_edit = None
         self._rewind_waiting = False
-        self._rewind_confirm = None
-        self._rewind_confirm_timer.stop()
+        self._rewind_after_stop = None
+        self._row_stamp_pending = None
         self._hide_msg_actions()
         self._assistant_pending = ""
         self._reasoning_pending = ""
@@ -1879,6 +1890,15 @@ class ChatPanel(QtWidgets.QWidget):
         self._fence_cache.clear()
         self._review_count = 0      # 一场对话里的回顾条数跟着新会话重来
         self._review_folded = False
+        # 清屏要真的回到「刚开窗」的样子，否则新会话会继承上一场的残留：
+        # 正文记账没清 → 新回答多出整行空白；错误指纹没清 → 同一个错再不显示；
+        # 跟着最新没复位 → 新会话不自动贴底；忙态没清 → 按钮停在上一次的「停止」。
+        self._bubble_has_text = False
+        self._last_error_key = ""
+        self._follow = True
+        # 按钮文案跟着真实忙态走：这里不硬置 False——引擎自己续跑时窗口刚铺完历史，
+        # 硬置会把 on_session_ready 刚设上的「停止」又抹回「发送」。
+        self._sync_send_button()
         self.speech_bar.dismiss()
         self._hide_hover()
 
@@ -1908,10 +1928,20 @@ class ChatPanel(QtWidgets.QWidget):
                 text = str(item.get("text") or "")
                 if not text.strip():
                     continue
-                if str(item.get("display_kind") or "") in _NOTICE_DISPLAY_KINDS:
+                kind = str(item.get("display_kind") or "")
+                if kind == _DELEGATION_DISPLAY_KIND:
                     # 引擎把子代理的结果以「用户消息」回灌给模型：原文是给模型看的英文脚手架，
                     # 界面上只留一行中文说明，不能伪装成「你」说的话。
                     self.append_notice_lines(delegate_view.completion_lines(text))
+                    continue
+                if kind in _NOTICE_LABELS:
+                    # 事故恢复注记 / 失败轮的收尾行：同样只留中文说明。
+                    # auto_continue 那句末尾带着原来问的是什么，摘出来一起显示。
+                    label = _NOTICE_LABELS[kind]
+                    tail = ""
+                    if kind == "auto_continue" and _AUTO_CONTINUE_REQUEST in text:
+                        tail = " ".join(text.split(_AUTO_CONTINUE_REQUEST, 1)[1].split())
+                    self.append_notice_lines([f"{label}：{tail}" if tail else label])
                     continue
                 if str(item.get("role") or "") == "user":
                     row_id = item.get("row_id")
@@ -1939,6 +1969,10 @@ class ChatPanel(QtWidgets.QWidget):
             f"<br>{html.escape(message)}"
         )
         self._begin_message("user", start, message, row_id)
+        if row_id is None and self._row_stamp_pending is not None:
+            # 这一条是截断重发刚贴回来的：行号早就回了，补上（不然它再也删不掉/刷不了）
+            self._msgs[-1]["row_id"] = self._row_stamp_pending
+            self._row_stamp_pending = None
         for item in items:
             self._append_user_attachment(item)
         if not self._restoring:
@@ -2752,6 +2786,19 @@ class ChatPanel(QtWidgets.QWidget):
         self._folds.retitle(state["fold"], label)
         self._clarify = None
 
+    def expire_clarify(self, request_id: str = "") -> None:
+        """引擎说这次提问已经结束（超时 / 那一轮被打断）：把这卡收掉。
+
+        不收的话 `pending_clarify()` 一直为真——用户下一条消息会被当成这张旧卡的答案
+        吃掉：输入框清空、话不进气泡、只飘一句「这个问题已经结束，不用再答了」。
+        """
+        state = self._clarify
+        if state is None:
+            return
+        if request_id and str(state.get("request_id") or "") != str(request_id):
+            return  # 不是这一张卡（新问题已经顶上来）
+        self._settle_clarify("已结束")
+
     def _on_clarify_click(self, rest: str) -> None:
         state = self._clarify
         if state is None:
@@ -3513,11 +3560,17 @@ class ChatPanel(QtWidgets.QWidget):
         )
 
     def set_state(self, value: str) -> None:
+        """引擎报的状态只改那行字，**不碰忙态**。
+
+        忙态的唯一依据是「引擎手里有没有一轮」（set_busy：提交、message.start、delta、
+        turn.done）。以前这里是 `set_busy(value in {"thinking","speaking"})`，引擎只要发来
+        一条它不认识的状态（idle / working / tool / ready…），按钮就从「停止」跳回「发送」，
+        那一轮从此叫不停——重启后引擎自己续跑时最容易撞上。
+        """
         text = {"thinking": "思考中…", "speaking": "说话中…", "listening": "听着…"}.get(value, "")
         if not text:
             text = self._provider_wait  # 状态覆盖不了「在等供应商」那行时，把它留着
         self._state_label.setText(text)
-        self.set_busy(value in {"thinking", "speaking"})
 
     def set_provider_wait(self, text: str) -> None:
         """引擎在等供应商（`thinking.delta` 里那几句）：桌面端放底部状态行，不进正文。"""
@@ -3988,6 +4041,11 @@ class ChatPanel(QtWidgets.QWidget):
         被中断的轮次走不到 message.complete，只有这一帧能划出「残片到这儿为止」的界线。
         """
         self._interrupted = False
+        pending, self._rewind_after_stop = self._rewind_after_stop, None
+        if pending is not None:
+            # 刚叫停的那一轮是为了「从这条重来」：别再把它排队的那句接上
+            self._emit_rewind(pending[0], pending[1], False)
+            return
         self._drain_queue()
 
     def _send_label(self) -> str:
@@ -4003,13 +4061,10 @@ class ChatPanel(QtWidgets.QWidget):
             return "排队" if typing else "停止"
         if self._rewind_waiting:
             return "重发中"  # 请求发出去了还没落地：这会儿按下去也不会再发一次（见 _emit）
-        return "重发" if self._pending_edit is not None else "发送"
+        return "发送"
 
     def _sync_send_button(self) -> None:
-        if self._pending_edit is not None and not self.input.toPlainText().strip():
-            # 框被清空了：这次「编辑重发」作废——不能让下一条新消息悄悄变成截断重发
-            self._pending_edit = None
-            self.clear_status_notice("edit")
+
         if not hasattr(self, "_send_button"):
             return  # 按钮还没建（__init__ 里文本框先连接）：等 set_busy 时再来一次
         label = self._send_label()
@@ -4368,9 +4423,7 @@ class ChatPanel(QtWidgets.QWidget):
             return
         if self._rewind_waiting:
             return  # 上一次截断重发还没落地：这会儿再发会把同一段贴两遍
-        if self._pending_edit is not None:
-            self._resubmit(message, attachments)
-            return
+
         if not message and not attachments:  # 只粘了图/只选了文件也能发（跟桌面一样）
             return
         self.input.clear()
@@ -4381,21 +4434,6 @@ class ChatPanel(QtWidgets.QWidget):
             # 到这一刻才交给引擎：没点发送的附件既不会落盘、也不会被模型看见
             self.attachment_picked.emit(attachments)
         self.submitted.emit(message, "typed")
-
-    def _resubmit(self, message: str, attachments) -> None:
-        """「编辑重发」那一下的发送：不做普通提交，交给窗口去引擎把这一段截掉重来。"""
-        if not message:
-            return  # 框里清空了：当没按过（`_sync_send_button` 已经把这次编辑撤掉）
-        if self._busy:
-            self.show_notice("edit", "这一轮还在跑，等它结束再重发")
-            return
-        if attachments:
-            self.show_notice("edit", "编辑重发只改文字：先撤掉附件")
-            return
-        if not self._ask_rewind(self._pending_edit, message, False):
-            return  # 先要一次确认：编辑态和正文都留着，再按一次「重发」才算数
-        self._pending_edit = None
-        self.clear_status_notice("edit")
 
     # ---- 语音输入 ----
 
@@ -5281,12 +5319,20 @@ class ChatPanel(QtWidgets.QWidget):
             self._stream_msg = msg
 
     def _message_at(self, block) -> dict | None:
-        """从光标所在块往上找：这条消息是从哪一段开始的（代码块/工具段先命中它们自己）。"""
+        """从光标所在块往上找：这条消息是从哪一段开始的。
+
+        往回走的时候只认消息开头那个 `_MsgMark`；碰到代码块（`_CodeMark`）或工具/折叠
+        正文（disclosure `_BodyMark`）就停——那些行不属于消息正文，它们有自己的按钮
+        （复制代码 / 看完整 diff）。不设这个边界的话，工具行、灰字行会一路往上认领整条
+        消息，于是鼠标一压到工具调用那几行，整条消息的按钮条就挂上来了。
+        """
         probe = block
         while probe.isValid():
             mark = probe.userData()
             if isinstance(mark, _MsgMark):
                 return mark.msg
+            if isinstance(mark, (_CodeMark, disclosure._BodyMark)):
+                return None
             probe = probe.previous()
         return None
 
@@ -5310,7 +5356,13 @@ class ChatPanel(QtWidgets.QWidget):
         return self._msg_head_block(msg, None)
 
     def _msg_tail_block(self, msg: dict):
-        """这条消息的最后一段：下一条消息开头的前一段；最后一条就取文末那一段。"""
+        """这条消息的最后一段：下一条消息开头的前一段；最后一条就取文末那一段。
+
+        「文末」不能照字面用 `lastBlock()`：一轮正在跑的时候，文末是**这一轮刚流出来的
+        思考段/工具行**，它们不属于任何一条消息。照字面取的结果就是按钮挂在思考段下面
+        几十像素的空白处（他截图里那两颗按钮离自己的话两行远）。
+        所以往回退：折叠正文、折叠抬头、代码块都要跳过，落到这条消息自己最后一行字上。
+        """
         document = self.view.document()
         following = None
         seen = False
@@ -5322,9 +5374,21 @@ class ChatPanel(QtWidgets.QWidget):
                 following = item
                 break
         if following is None:
-            return self._skip_blank_back(document.lastBlock())
-        head = self._msg_head_block(following, None)
-        return self._skip_blank_back(head.previous()) if head is not None else None
+            tail = self._skip_blank_back(document.lastBlock())
+        else:
+            head = self._msg_head_block(following, None)
+            tail = self._skip_blank_back(head.previous()) if head is not None else None
+        mine = self._msg_head_block(msg, None)
+        heads = {f.head_block.position() for f in self._folds.all() if f.head_block is not None}
+        while tail is not None and tail.isValid() and mine is not None and tail is not mine:
+            mark = tail.userData()
+            if not isinstance(mark, (_CodeMark, disclosure._BodyMark)) and tail.position() not in heads:
+                break
+            previous = tail.previous()
+            if not previous.isValid():
+                break
+            tail = self._skip_blank_back(previous)
+        return tail
 
     @staticmethod
     def _skip_blank_back(block):
@@ -5333,68 +5397,101 @@ class ChatPanel(QtWidgets.QWidget):
             block = block.previous()
         return block
 
-    def _ensure_msg_buttons(self) -> None:
-        if self._msg_buttons:
-            return
-        for icon, tip in (
-            ("copy", "复制整段"),
-            ("quote", "引用这条消息"),
-            ("edit", "编辑重发"),
-            ("regenerate", "重新生成"),
-        ):
+    def _reserve_tail_space(self) -> None:
+        """文末留出悬停条那一格：最后一条回答的按钮挂在正文下方 6px，
+
+        不留这一格的话，滚到最底下时下面就是视口边缘——`tail_visible` 那条判断永远过不去，
+        按钮就永远不出现（往上滚到别的消息才看得见）。`view.clear()` 会把根框架格式冲掉，
+        所以清窗口之后要重新铺一次。
+        """
+        root = self.view.document().rootFrame()
+        fmt = root.frameFormat()
+        fmt.setBottomMargin(HoverActionButton.BUTTON_PX + 12)
+        root.setFrameFormat(fmt)
+
+    def _ensure_msg_buttons(self, count: int) -> None:
+        """按这条消息要露几个动作准备几颗按钮（回答两颗：复制、刷新；用户一颗：重新发送/停止）。
+
+        按需建、只增不减：换到别的消息时是 retarget 复用，不销毁重来。
+        """
+        while len(self._msg_buttons) < count:
             self._msg_buttons.append(
-                HoverActionButton(self.view.viewport(), icon, tip, lambda: None)
+                HoverActionButton(self.view.viewport(), "copy", "复制", lambda: None)
             )
 
-    def _msg_action_specs(self, msg: dict) -> list[tuple[str, str, Callable[[dict], None]]]:
-        """这条消息该露哪几个动作：没有正文什么都不露；用户消息要有行号才能编辑重发。"""
+    def _msg_action_specs(
+        self, msg: dict,
+    ) -> list[tuple[str, str, Callable[[dict], None], bool]]:
+        """这条消息该露哪几个动作，顺序照桌面端从左往右；第四个值是可不可点。
+
+        回答那条：复制 + 刷新。桌面端那条「刷新」在**每一条回答**上都摆着，只有末尾那条能点，
+        其余灰着（`ActionBarPrimitive.Reload` 自己按 isLast 禁用）；还有朗读和表情回应，
+        那两个能力我们还没有，不摆空壳。
+        用户那条：一颗，最新那条在跑时是停止，其余时候是重新发送。
+        """
         if not str(msg.get("text") or "").strip():
             return []
-        specs: list[tuple[str, str, Callable[[dict], None]]] = [
-            ("copy", "复制整段", self._copy_message),
-            ("quote", "引用这条消息", self._quote_message),
-        ]
         if msg.get("role") == "user":
+            if self._busy and self._latest_user() is msg:
+                return [("stop", "停止", lambda _m: self._stop_turn(), True)]
             if msg.get("row_id") is not None:
-                specs.append(("edit", "编辑重发", self._start_edit))
-        elif self._can_regenerate(msg):
-            specs.append(("regenerate", "重新生成", self._request_regenerate))
-        return specs
+                return [("resend", "重新发送", self._resend_from, True)]
+            return []
+        return [
+            ("copy", "复制", self._copy_message, True),
+            ("refresh", "刷新", self._request_regenerate, self._can_regenerate(msg)),
+        ]
 
     def _show_msg_actions(self, msg: dict, block) -> None:
         specs = self._msg_action_specs(msg)
         if not specs:
             self._hide_msg_actions()
             return
-        self._ensure_msg_buttons()
+        self._ensure_msg_buttons(len(specs))
+        if self._msg_shown is not msg:
+            # 悬停条换到别的消息了：上一行留下的提示是独立小窗，不会自己走
+            QtWidgets.QToolTip.hideText()
         self._msg_shown = msg
-        # 条子挂在消息**最后一行下面**、右对齐：贴在开头那一行会压在这条回复的字上，
-        # 长回答的第一行一直顶到右边，按钮和字挤在一起（他点出来过）。
+        # 条子挂在消息**最后一行**上：用户那条并排在这行右端（右边空着），回答另起一行挂在下面，
+        # 都不压字。末尾那一行必须整行在屏幕里，否则不挂——不然按钮会漂在窗口中间。
         head = self._msg_head_block(msg, block) or block
         tail = self._msg_tail_block(msg) or head
+        # 尾巴要落在「真正的正文」上：工具行、代码块属于它们自己，别把整条消息的按钮挂到那儿
+        while (
+            tail is not None
+            and tail.isValid()
+            and tail is not head
+            and isinstance(tail.userData(), (_CodeMark, disclosure._BodyMark))
+        ):
+            previous = tail.previous()
+            if not previous.isValid():
+                break
+            tail = previous
         tail_rect = self._block_rect(tail, tail)
         view_height = self.view.viewport().height()
-        # 尾巴那一行整行都在屏幕里才有资格挂按钮；否则按钮会被挤到窗口边上，孤零零漂着
         tail_visible = (
             tail_rect.height() > 0
             and tail_rect.bottom() >= 0
             and tail_rect.bottom() + 6 + HoverActionButton.BUTTON_PX <= view_height
         )
-        anchor = tail if tail_visible else block
-        anchor_rect = tail_rect if anchor is tail else self._block_rect(anchor, anchor)
-        # 用户那条：按钮跟它自己的话并排（右边空着），不另起一行；回答另起一行，别压字
-        inline = anchor is not tail or msg.get("role") == "user"
-        band_height = anchor_rect.height() + (0 if inline else HoverActionButton.BUTTON_PX + 10)
-        self._msg_band = QtCore.QRect(0, anchor_rect.top(), self.view.viewport().width(), band_height)
-        step = HoverActionButton.BUTTON_PX + 4
-        for index, button in enumerate(self._msg_buttons):
-            if index >= len(specs):
-                button.hide()
-                continue
-            icon, tip, slot = specs[index]
+        if not tail_visible:
+            self._hide_msg_actions()
+            return
+        inline = msg.get("role") == "user"
+        band_height = tail_rect.height() + (0 if inline else HoverActionButton.BUTTON_PX + 10)
+        self._msg_band = QtCore.QRect(0, tail_rect.top(), self.view.viewport().width(), band_height)
+        buttons = self._msg_buttons[: len(specs)]
+        if len(buttons) < len(specs):  # _ensure_msg_buttons() 刚建过，这里只是让类型检查看得见
+            return
+        # 从右往左排：最后一个动作贴右边，前面的依次往左让一格
+        for index, (icon, tip, slot, usable) in enumerate(reversed(specs)):
+            button = buttons[len(specs) - 1 - index]
             button.retarget(icon, tip, lambda m=msg, s=slot: s(m))
-            self._place_hover(button, anchor, anchor, offset_x=-index * step,
-                              below=not inline, bottom_align=inline)
+            button.set_enabled(usable)
+            self._place_hover(
+                button, tail, tail, offset_x=-index * (HoverActionButton.BUTTON_PX + 4),
+                below=not inline, bottom_align=inline,
+            )
 
     def _hide_msg_actions(self) -> None:
         self._msg_band = None
@@ -5413,26 +5510,29 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self._show_msg_actions(msg, head)
 
-    def _copy_message(self, msg: dict) -> None:
-        QtWidgets.QApplication.clipboard().setText(str(msg.get("text") or ""))
+    def _resend_from(self, msg: dict) -> None:
+        """重新发送：从这条起把后面全删掉，立刻重跑这句话（桌面端那颗 discard）。
 
-    def _quote_message(self, msg: dict) -> None:
-        """引用：把这一条的前 200 字当引文塞进输入框，光标留在引文下面。"""
-        text = " ".join(str(msg.get("text") or "").split())
-        if len(text) > 200:
-            text = text[:200] + "…"
-        who = _user_display_name() if msg.get("role") == "user" else "Noesia"
-        prefix = "\n" if self.input.toPlainText().strip() else ""
-        self.input.insertPlainText(f"{prefix}> {who}：{text}\n")
-        self.input.setFocus()
-
-    def _start_edit(self, msg: dict) -> None:
-        """编辑重发：正文放回输入框，下一个发送走「截断这条之后重来」。"""
-        self._pending_edit = msg
-        self.input.setPlainText(str(msg.get("text") or ""))
-        self._sync_send_button()  # 放完正文再同步：按钮这时才该显示「重发」
-        self.show_notice("edit", "改完按发送：从这条消息起重新开始")
-        self.input.setFocus()
+        桌面端先弹一句「此提示之后的所有消息将从对话中移除」再动手——删的是真对话历史，
+        收不回来。确认之后就按原来的正文重跑，不回到输入框让人改（那是编辑框的事）。
+        """
+        if msg.get("row_id") is None:
+            return
+        if not ConfirmDialog.ask(
+            self.window(),
+            "恢复到此检查点？",
+            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
+            "恢复并重新运行",
+        ):
+            return  # 取消就是不动：历史一条都不删
+        self._hide_msg_actions()
+        text = str(msg.get("text") or "")
+        if self._busy:
+            # 这一轮还在流：桌面端是先叫停再恢复，停稳了（settle_turn）才真发出去
+            self._rewind_after_stop = (msg, text)
+            self._stop_turn()
+            return
+        self._emit_rewind(msg, text, False)
 
     def _can_regenerate(self, msg: dict) -> bool:
         """只有最后一条回答能重新生成：截断点由它前面那条用户消息定。"""
@@ -5440,6 +5540,13 @@ class ChatPanel(QtWidgets.QWidget):
             return False
         before = self._previous_user(msg)
         return bool(before and before.get("row_id") is not None)
+
+    def _latest_user(self) -> dict | None:
+        """窗口里最后一条用户消息（桌面端拿它决定那颗按钮是停止还是重新发送）。"""
+        for item in reversed(self._msgs):
+            if item.get("role") == "user":
+                return item
+        return None
 
     def _previous_user(self, msg: dict) -> dict | None:
         found = None
@@ -5466,37 +5573,23 @@ class ChatPanel(QtWidgets.QWidget):
         """从这条截断会不会把整场对话都清掉（它就是第一句用户消息）。"""
         return self._previous_user(msg) is None
 
-    def _ask_rewind(self, msg: dict | None, text: str, regenerate: bool) -> bool:
-        """交给窗口前先在本地把代价说清楚；发出去返回 True，先要一次确认返回 False。
+    def _emit_rewind(self, msg: dict, text: str, regenerate: bool) -> None:
+        """请引擎从这条截断重来：本地先记着「在等落地」，落地前不许再发一次。
 
-        引擎那两道闸（整场清空 / 后面还有问答）都是「删了不好恢复」的事，
-        按窗口里实际有几步来判断，而不是等引擎报错——报错时人已经点过一遍了。
+        确认在调用方做完（用户那条会弹窗说清要删掉什么）；到这一步只剩「发请求」。
         """
-        if msg is None:
-            return False
-        later = self._rewind_later_users(msg)
-        if later and self._rewind_confirm is not msg:
-            self._rewind_confirm = msg
-            self._rewind_confirm_timer.start(8000)  # 8 秒内再点一次才算数
-            what = "重新生成" if regenerate else "重发"
-            self.show_notice(
-                "edit",
-                f"这条后面还有 {later} 轮问答，{what}会把它们一起删掉；再点一次「{what}」确认",
-                level="warn",
-            )
-            return False
-        self._rewind_confirm = None
-        self._rewind_confirm_timer.stop()
         self._rewind_waiting = True
         self._sync_send_button()
-        self.resubmit_requested.emit(msg, text, regenerate, self._rewind_empties(msg), later > 0)
-        return True
+        self.resubmit_requested.emit(
+            msg, text, regenerate, self._rewind_empties(msg), self._rewind_later_users(msg) > 0
+        )
 
     def _request_regenerate(self, msg: dict) -> None:
+        """刷新：拿这条回答前面那句原话重跑一遍（桌面端的 RefreshCw 不问、直接来）。"""
         user_msg = self._previous_user(msg)
         if user_msg is None:
             return
-        self._ask_rewind(user_msg, str(user_msg.get("text") or ""), True)
+        self._emit_rewind(user_msg, str(user_msg.get("text") or ""), True)
 
     def apply_rewind(self, msg: dict, text: str) -> None:
         """引擎已经按这条消息截断过历史了：窗口回到那一刻，再把正文重新贴一遍。"""
@@ -5511,12 +5604,8 @@ class ChatPanel(QtWidgets.QWidget):
     def cancel_rewind(self) -> None:
         """这次截断重发没成立（被拒 / 换了会话）：正文留在框里，发送键恢复原样。"""
         self._rewind_waiting = False
+        self._row_stamp_pending = None  # 那一下的行号作废：别落到之后别的消息上
         self._sync_send_button()
-
-    def _drop_rewind_confirm(self) -> None:
-        """确认窗口过期：再点「重发/重新生成」要重新问一次。"""
-        self._rewind_confirm = None
-        self.clear_status_notice("edit")
 
     def _truncate_from(self, msg: dict) -> None:
         """把这个窗口从某条消息起的内容抹掉（引擎侧已经截断，界面跟上）。"""
@@ -5553,6 +5642,35 @@ class ChatPanel(QtWidgets.QWidget):
             if msg.get("role") == "user" and msg.get("row_id") is None:
                 msg["row_id"] = int(row_id)
                 return
+        # 截断重发时这个回包比正文先到（窗口要等第一段文字才动），新消息还没贴上去：
+        # 先记着，等 `append_user` 贴的时候再落。不留这一步，那条消息永远没有行号，
+        # 「刷新 / 重新发送」用过一次就再也不出现了。
+        self._row_stamp_pending = int(row_id)
+
+    def bind_turn_receipt(self, receipt: dict) -> None:
+        """这一轮真正落库的行号：截断重发之后新贴的那条就等它。
+
+        引擎在「这一轮开始算隔离计算」那条路上回 `prompt.submit` 时不带新消息的行号，
+        只带活下来的旧行号；新行号要等这一轮跑完的 `persisted_turn` 回执。只认提交回包的话，
+        重跑出来的那条消息永远没有行号——「刷新 / 重新发送」用过一次就再也不出现了。
+        """
+        if not isinstance(receipt, dict):
+            return
+        ids = receipt.get("user_row_ids")
+        if isinstance(ids, list):
+            ints = [int(i) for i in ids if isinstance(i, int) and not isinstance(i, bool)]
+        else:
+            single = receipt.get("user_row_id")
+            ints = [int(single)] if isinstance(single, int) and not isinstance(single, bool) else []
+        if not ints:
+            return
+        waiting = [m for m in self._msgs if m.get("role") == "user" and m.get("row_id") is None]
+        if not waiting:
+            return
+        # 回执按顺序给这一轮的用户行（含 steer 行）：只取末尾还没绑上的那几条
+        for msg, rid in zip(waiting, ints[-len(waiting):]):
+            msg["row_id"] = rid
+        self._row_stamp_pending = None  # 已经有真行号了，之前存的别留给下一条
 
     def is_busy(self) -> bool:
         return bool(self._busy)
@@ -5586,6 +5704,12 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _copy_to_clipboard(self, text: str) -> None:
         QtWidgets.QApplication.clipboard().setText(text)
+
+    def _copy_message(self, msg: dict) -> None:
+        """复制这条回答的正文（桌面端那颗复制图标；用户自己说的话在桌面端没有复制）。"""
+        text = str(msg.get("text") or "")
+        if text:
+            self._copy_to_clipboard(text)
 
     def _open_diff_preview(self, key: int) -> None:
         source = self._diff_texts.get(key)

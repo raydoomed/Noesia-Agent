@@ -69,7 +69,7 @@ class HoverActionButton(QtWidgets.QToolButton):
     ) -> None:
         super().__init__(parent)
         self._flash = flash
-        self._icon_name = icon_name
+        self._icon_name = ""  # 还没画过图标：retarget 第一次必须真的画
         self._slot = slot
         self._reset = QtCore.QTimer(self)
         self._reset.setSingleShot(True)
@@ -94,14 +94,31 @@ class HoverActionButton(QtWidgets.QToolButton):
         self, icon_name: str, tooltip: str, slot: Callable[[], None], done_tooltip: str = ""
     ) -> None:
         """换图标与动作（同一个按钮在「复制代码」和「看完整 diff」之间复用）。"""
+        same = icon_name == getattr(self, "_icon_name", "") and tooltip == getattr(
+            self, "_idle_tooltip", ""
+        )
         self._icon_name = icon_name
         self._slot = slot
         self._idle_tooltip = tooltip
         self._done_tooltip = done_tooltip or tooltip
         self.setToolTip(tooltip)
         self.setAccessibleName(tooltip)
+        if same:
+            # 同一颗按钮、同一个动作（鼠标每动一下都会重新 retarget 一次）：
+            # 别把刚才点出来的 ✓ 抹回图标——之前复制成功的提示一闪就没，就是这样
+            return
+        QtWidgets.QToolTip.hideText()  # 换动作了：旧提示别留在原地
         self._reset.stop()
         self._back_to_idle()
+
+    def set_enabled(self, flag: bool) -> None:
+        """能不能点：桌面端那条「刷新」在非末尾回答上照样摆着，只是灰掉点不动。"""
+        self._enabled = bool(flag)
+        self.setEnabled(self._enabled)
+        self.setCursor(
+            QtCore.Qt.CursorShape.PointingHandCursor if self._enabled
+            else QtCore.Qt.CursorShape.ArrowCursor
+        )
 
     def place_at(self, rect: QtCore.QRect, offset_x: int = 0, below: bool = False,
                  bottom_align: bool = False) -> None:
@@ -135,10 +152,33 @@ class HoverActionButton(QtWidgets.QToolButton):
         """自己把提示弹出来：Qt 自带的悬停提示在无边框置顶窗里不弹（实测没有）。
 
         按钮只有 20px、只画图标，没有这行字就只剩猜。
+
+        提示是独立的小窗，**不会跟着按钮走**：悬停条在我们手里来回摆、换条消息时按钮
+        整批 hide()，这些都不是鼠标「离开」，`leaveEvent` 收不到——于是每挪一次就在
+        原地多留一行字，几个按钮串下来屏幕上就是好几行「编辑重发」。所以这里三条一起：
+        先收掉旧提示、给了超时自收、按钮自己 hide 的时候也收。
         """
+        QtWidgets.QToolTip.hideText()  # 先收旧的：一次只留一行
+        # 挂在按钮**正上方**：以前是往左 48px、往下落，正好压在按钮排自己和气泡正文上
         QtWidgets.QToolTip.showText(
-            self.mapToGlobal(QtCore.QPoint(-48, self.height() + 2)), self.toolTip(), self
+            self.mapToGlobal(QtCore.QPoint(0, -self.height() - 18)),
+            self.toolTip(),
+            self,
+            self.rect(),
+            3000,  # 3 秒自收：定时器比「谁最后 hide 了」可靠
         )
+
+    def event(self, event: QtCore.QEvent) -> bool:
+        """吃掉 Qt 原生的 tooltip 事件：我们自己弹（上面那个），两条同时走就会在
+        气泡里留下两行同样的字，而且原生那条不跟着按钮走。"""
+        if event.type() == QtCore.QEvent.Type.ToolTip:
+            return True
+        return super().event(event)
+
+    def hideEvent(self, event: QtGui.QHideEvent) -> None:  # noqa: N802
+        """按钮收起来，提示也得跟着收（hide 不走 leaveEvent）。"""
+        QtWidgets.QToolTip.hideText()
+        super().hideEvent(event)
 
     def _clicked(self) -> None:
         self._slot()
@@ -155,4 +195,8 @@ class HoverActionButton(QtWidgets.QToolButton):
         icon = icon_pixmap(self._icon_name, self.IDLE_COLOR, self.ICON_PX)
         if icon is not None:
             self.setIcon(QtGui.QIcon(icon))
+        else:
+            # 图标名字不在表里（曾经 'edit' 就是这样）：至少别留着上一颗的图标，
+            # 否则从 ✓ 退回来会一直挂着绿勾，看着像「已复制」永远不还原
+            self.setIcon(QtGui.QIcon())
         self.setToolTip(self._idle_tooltip)

@@ -499,6 +499,12 @@ class _EngineProcess(QtCore.QObject):
         self._env: dict[str, str] | None = None
         self._cwd: str | None = None
 
+    def reset_buffers(self) -> None:
+        """把管道上攒着没读的字节扔掉：换一趟引擎进程时，旧字节会和新的第一帧粘一起。"""
+        with self._lock:
+            self._out = b""
+            self._err = b""
+
     # ---- 起进程 ----
 
     def setProcessChannelMode(self, _mode) -> None:  # noqa: N802 —— 对齐 QProcess 的叫法
@@ -675,7 +681,10 @@ class EngineWire(QtCore.QObject):
     subagent = QtCore.Signal(dict)         # subagent.start / .tool / .complete：子代理在跑什么
     completed = QtCore.Signal(dict)        # message.complete 的 payload
     turn_settled = QtCore.Signal(str)      # turn.done：这一轮彻底完了（被中断的轮次没有 complete，只有这个）
-    status = QtCore.Signal(str)            # status.update / state
+    turn_started = QtCore.Signal()         # message.start：引擎真的开了一轮（谁发起的都算）
+    status = QtCore.Signal(str)            # session.info 里的 state（thinking / speaking …）
+    status_text = QtCore.Signal(str, str)  # status.update：(kind, 文字)：引擎自己的状态句子
+    clarify_expired = QtCore.Signal(str)   # clarify.lock 回 status=expired：这次提问作废了
     approval = QtCore.Signal(dict)         # 引擎发来的审批请求（含 request_id、prompt…）
     setup_beat = QtCore.Signal(dict)       # 引导卡片：只接名字那张（beat == "name"），带 reply_id
     key_saved = QtCore.Signal(str)         # 某个 provider 的密钥刚落盘（引导可能正等它）
@@ -793,6 +802,18 @@ class EngineWire(QtCore.QObject):
         # 打字时正好赶上引擎退出：那几句也一并作废。新一趟进程里没有上一趟的上下文，
         # 悄悄补发出去，用户看到的是「我早忘了的一句」，还可能和重打的重复。
         self._pending_text = ""
+        # 「等会话就绪」的意图状态也属于上一趟：留着的话，新进程第一次 resume 成功就会
+        # 把我们早就放弃的模型/推理档偷偷写进 config.yaml。
+        self._pending_switch = ""
+        self._pending_reasoning = ""
+        self._models_after_settings = False
+        # 上一趟攒着的「带附件的轮次」和正在交接的那一轮，都带旧会话的账：留着会在
+        # 新进程里发出去，或者永远等着一个不会来的回执。
+        self._pending_turns.clear()
+        self._turn = None
+        # 管道里可能还压着旧进程没读走的字节：不丢掉，新进程第一帧会和残片粘成一条
+        # 不是 JSON 的行（界面上表现为「凭空多出的一段文字/一次状态跳变」）。
+        self._proc.reset_buffers()
 
     def start(self) -> None:
         if self._started:
@@ -963,8 +984,9 @@ class EngineWire(QtCore.QObject):
         if not items:
             self.submit(text, queued=queued)
             return
-        if not self._session_id or self._attaching:
-            # 会话还没起来：整轮排进队列（连着发两轮不能互相顶掉），会话好了从附件开始走
+        if not self._session_id or self._attaching or self._turn is not None:
+            # 会话还没起来 / 上一轮的附件还没交接完：整轮排进队列（连着发两轮不能互相顶掉）。
+            # 顶掉的话，上一轮永远凑不齐回执，那句话连提示都没有就消失了。
             self._pending_turns.append((text, items))
             self._ensure_session()
             return
@@ -1197,7 +1219,11 @@ class EngineWire(QtCore.QObject):
         if tag:
             self._pending[rid] = tag
         self._sent[rid] = {"method": method, "params": dict(params), "tag": tag}
-        self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        if not self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}):
+            # 没发出去就别记着：留着的话它会一直算「在途」，回执永远不会来，
+            # 内存里越攒越多，界面上却什么也不显示（调用方看到 failed 提示就够）。
+            self._pending.pop(rid, None)
+            self._sent.pop(rid, None)
         return rid
 
     def _session_ready(self, session_id: str, stored_id: str = "") -> None:
@@ -1349,13 +1375,15 @@ class EngineWire(QtCore.QObject):
 
     WRITE_CHUNK = 32 * 1024  # 一次最多往管道塞这么多字节
 
-    def _write(self, frame: dict) -> None:
+    def _write(self, frame: dict) -> bool:
+        """发一帧；返回是否真的排进了发送队列（引擎没起时 false）。"""
         if not self.is_running():
             self.failed.emit("引擎未运行，指令没发出去")
-            return
+            return False
         line = json.dumps(frame, ensure_ascii=False) + "\n"
         self._outbox.append(line.encode("utf-8"))
         self._pump_writes()
+        return True
 
     def _pump_writes(self) -> None:
         """分块把待发字节推进管道，块与块之间让出一次事件循环。
@@ -1629,6 +1657,8 @@ class EngineWire(QtCore.QObject):
         elif tag == "clarify.lock":
             if str(result.get("status") or "") == "expired":
                 # 这次提问已经结束了（她等超时/这轮被打断）：卡上不能再显示「可点」
+                # 卡只有一张（新问题会顶掉旧卡），不用带 id：面板收掉当前那张就行
+                self.clarify_expired.emit("")
                 self.notice_show.emit({"text": "这个问题已经结束，不用再答了", "level": "info", "ttl_ms": CONFIRM_TTL_MS,
                                        "key": "clarify.expired"})
         elif tag == "model.options:settings":
@@ -1788,7 +1818,16 @@ class EngineWire(QtCore.QObject):
             # 这一轮彻底完了。被中断的轮次走不到 message.complete，只有这一帧能告诉界面
             # 「后面再来的字都是下一轮的了」（残片一定排在它前面，同一条连接有先后）。
             self.turn_settled.emit(str(payload.get("status") or ""))
-        elif kind in {"status.update", "session.info"}:
+        elif kind == "message.start":
+            # 引擎开了一轮：不管这轮是不是这个窗口发起的，界面都得知道
+            # （否则引擎自己续跑时按钮一直是「发送」，那一轮根本叫不停）
+            self.turn_started.emit()
+        elif kind == "status.update":
+            # 载荷是 {"kind": ..., "text": ...}，根本没有 state/status 两个键。
+            # 以前按 state 取，取到的永远是空串 → main.on_status 挡空串 → 整类帧被静默丢掉，
+            # 于是「正在继续上次被打断的那一轮…」这类说明一条都没显示过。
+            self.status_text.emit(str(payload.get("kind") or ""), str(payload.get("text") or ""))
+        elif kind == "session.info":
             self.status.emit(str(payload.get("state") or payload.get("status") or ""))
             effort = payload.get("reasoning_effort")
             if effort is not None:  # 引擎建好 agent 后才会带这个字段，以它为准

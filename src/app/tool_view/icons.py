@@ -67,7 +67,7 @@ def icon_svg(name: str | None, color: str = "currentColor") -> str | None:
 #
 # 复制按钮与“看完整 diff”用的是 lucide 图标（24×24、描边、stroke-width 2）。
 # Phosphor 那套是实心填充，形状对不上，所以单独放一张表，各自按各自的画法出 SVG。
-UI_PATHS: dict[str, str] = {
+UI_PATHS: dict[str, str | tuple[str, str, str]] = {
     "copy": (
         '<rect width="14" height="14" x="8" y="8" rx="2" ry="2" />'
         '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />'
@@ -85,24 +85,54 @@ UI_PATHS: dict[str, str] = {
         '<line x1="12" x2="12" y1="15" y2="3" />'
     ),
     "arrow-down": '<line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" />',
-    # 消息悬停条上的两个动作：引用（text-quote）与重新生成（refresh-cw）
-    "quote": (
-        '<path d="M17 6H3" /><path d="M21 12H8" /><path d="M21 18H8" /><path d="M3 12v6" />'
+    # 消息悬停条上的动作（对齐桌面端）：用户气泡那颗是回转箭头（restore/discard），
+    # 回答末尾那颗是刷新（RefreshCw）——两种角色各一颗，没有第二套。
+    # 桌面端这颗用的是 codicon 的 discard：16 格、实心、一条回转的箭头——
+    # 不是细线画的圆箭头，所以这里跟别的图标放法不同（自带 viewBox 和填充）。
+    "resend": (
+        "0 0 16 16",
+        'fill="{color}" stroke="none"',
+        '<path d="M3.00098 2.5C3.00098 2.22386 3.22483 2 3.50098 2C3.77712 2 4.00098 2.22386 4.00098 2.5V6.34262L7.17202 3.17157C8.73412 1.60948 11.2668 1.60948 12.8289 3.17157C14.391 4.73367 14.391 7.26633 12.8289 8.82843L7.80375 13.8536C7.60849 14.0488 7.2919 14.0488 7.09664 13.8536C6.90138 13.6583 6.90138 13.3417 7.09664 13.1464L12.1218 8.12132C13.2933 6.94975 13.2933 5.05025 12.1218 3.87868C10.9502 2.70711 9.0507 2.70711 7.87913 3.87868L4.75781 7H8.50098C8.77712 7 9.00098 7.22386 9.00098 7.5C9.00098 7.77614 8.77712 8 8.50098 8H3.60098C3.26961 8 3.00098 7.73137 3.00098 7.4V2.5Z" />',
     ),
-    "regenerate": (
-        '<polyline points="23 4 23 10 17 10" />'
-        '<path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />'
+    # 编辑（lucide 的铅笔）：工具行里的写文件/改文件用它
+    "edit": (
+        '<path d="M12 20h9" />'
+        '<path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />'
+    ),
+    # 停止：桌面端那颗是 tabler 的 player-stop 实心方块（跑着的时候顶掉重新发送）
+    "stop": (
+        "0 0 24 24",
+        'fill="{color}" stroke="none"',
+        '<path d="M17 4h-10a3 3 0 0 0 -3 3v10a3 3 0 0 0 3 3h10a3 3 0 0 0 3 -3v-10a3 3 0 0 0 -3 -3z" />',
+    ),
+    # 刷新：桌面端用的是 tabler 的 refresh（两道半圆 + 两个箭头），
+    # 不是 lucide 那个单弧带一个箭头的 refresh-cw——两枚长得不一样。
+    "refresh": (
+        '<path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" />'
+        '<path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" />'
     ),
 }
 
 
 def ui_icon_svg(name: str, color: str, px: int = 12) -> str | None:
-    """lucide 图标 → 一段最小 SVG（描边画法）。名字不认识就返回 None。"""
-    body = UI_PATHS.get(name)
-    if not body:
+    """名字 → 一段最小 SVG；名字不认识就返回 None。
+
+    表里两种写法：普通条目是 lucide 的 24 格细线 path（这里统一套描边属性）；
+    写成一个 `(viewBox, 属性, path)` 三元组的条目自己带视图框和填充——
+    codicon 那种 16 格实心图标必须这么放，套上细线会变成另一枚图形。
+    """
+    entry = UI_PATHS.get(name)
+    if not entry:
         return None
+    if isinstance(entry, tuple):
+        view_box, attrs, body = entry
+        attrs = attrs.format(color=color)
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{px}" height="{px}" viewBox="{view_box}"'
+            f" {attrs}>" + body + "</svg>"
+        )
     return (
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{px}" height="{px}" viewBox="0 0 24 24"'
         ' fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round"'
-        ' stroke-linejoin="round">' + body + "</svg>"
+        ' stroke-linejoin="round">' + entry + "</svg>"
     )

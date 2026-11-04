@@ -624,6 +624,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self.speaker.stop()
         if self._streamer is not None:
             self._streamer.stop()
+        # 排着队还没开口的那句也要撤：否则停完它照样念出来，用户按了停止却在下一句里
+        # 又听见声音。
+        self._pending_speech = ""
         if self._avatar is not None:
             self._avatar.interrupt()
         self._show_avatar(False)  # 被打断：立刻回待机画面，不留一张定住的嘴
@@ -1379,7 +1382,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 self.chat_panel.show_error("引擎还没起来，这句话没发出去")
             return
         # 新一轮开始：先说下一句，别让上一句还在念；按钮同时变「停止」
-        self._reply_text = ""  # 上一轮失败/被叫停残留的正文不能拼进这一轮
+        if self.chat_panel is None or not self.chat_panel.is_busy():
+            # 空闲时发：上一轮失败/被叫停残留的正文不能拼进这一轮。
+            # 正跑着发的是排队（引擎把话递进当前这一轮），那一轮还没结束，
+            # 现在清空会让它的朗读只剩后半句。
+            self._reply_text = ""
         self._turn_stopped = False
         self._stop_voice()
         if self.chat_panel is not None:
@@ -1464,8 +1471,31 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if panel is not None:
             panel.clear_status_notice("speech")
 
+    def on_turn_started(self) -> None:
+        """引擎开了一轮（`message.start`）：不管谁发起的，按钮都该是「停止」。
+
+        引擎自己续跑的那一轮以前完全没有通知：界面一直写「发送」，只能眼睁睁看着它跑。
+        """
+        if self._turn_stopped:
+            return  # 刚按过停止：这一帧是上一轮的尾巴
+        panel = self.chat_panel
+        if panel is not None and not panel.is_busy():
+            panel.set_busy(True)
+
+    def on_status_text(self, kind: str, text: str) -> None:
+        """引擎的状态句子（`status.update`）：放到输入框上方那行进度的位置。"""
+        panel = self.chat_panel
+        if panel is None or not text:
+            return
+        if kind in {"ready", "idle"} and not panel.is_busy():
+            panel.set_activity("")
+            return
+        panel.set_activity(text)
+
     def on_delta(self, text: str) -> None:
         """引擎的 message.delta：直接进气泡，界面不解释内容。"""
+        if self._turn_stopped:
+            return  # 按过停止：残片本来就不进气泡，也别把按钮改回「停止」
         if text:
             self._reply_text += text
         panel = self.chat_panel
@@ -1474,6 +1504,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             # 提前截断的话，请求被拒时屏幕上就少了那几条、引擎里却还在。
             self._apply_pending_rewind(panel)
         if panel is not None and text:
+            if not panel.is_busy():
+                # 这一轮不是这个窗口发起的（引擎按「上次被打断」自己续跑）：照样算在跑，
+                # 否则发送键停在「发送」，用户看着它在写却没有任何东西能叫停。
+                panel.set_busy(True)
             panel.clear_status_notice("turn")  # 新一轮真的开始吐字了：上一轮的报错提示可以撤
             panel.append_chunk(text)
 
@@ -1481,6 +1515,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """message.complete：正文早就按增量进了气泡，这里只收尾。"""
         panel = self.chat_panel
         if panel is not None:
+            # 这一轮真落库的行号（`persisted_turn`）：截断重发之后新贴的那条靠它才有行号，
+            # 否则「刷新 / 重新发送」只能点一次。
+            panel.bind_turn_receipt(payload.get("persisted_turn") or {})
             # 失败轮到提示卡片（输入框上方那条，`status_stack`），不进气泡：气泡只说模型的话。
             # 不带 ttl——没解决就该一直看得见，下一轮开始或成功时再撤。
             if str(payload.get("status") or "") == "error":
@@ -1526,6 +1563,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         # 正要发出去的那一条的「在跑」状态又抹回去（按钮显示成「发送」，引擎其实在跑）。
         panel.set_busy(False)
         panel.settle_turn()
+        # 这一轮完了：卡着的提问也作废（被打断的那一轮不会再有答案回来）
+        panel.expire_clarify()
+        # 这一轮到此为止：按停标记和正文缓冲都归位。否则「按过停止」的状态会漏到下一轮
+        # （下一轮回答有字没声），残留正文也会被并进下一次朗读。
+        self._turn_stopped = False
+        self._reply_text = ""
 
     def on_tool_event(self, event: dict) -> None:
         """tool.start / tool.complete：标题、副标题、计数、正文全部由模型层算（`app/tool_view`）。
@@ -1692,13 +1735,18 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         say(f"[引擎] {message}")
 
     def on_engine_error(self, message: str) -> None:
-        """某条请求被引擎拒了：红色错误行（这是真失败，跟通知分开）。"""
+        """某条请求被引擎拒了：红色错误行（这是真失败，跟通知分开）。
+
+        **不能**顺手把这一轮判死：引擎对任何请求都可能回 error（config.get、每 5 秒一次
+        process.list、session.interrupt…），一轮回答还在流式输出时收到其中一条，
+        按钮就会从「停止」跳回「发送」，之后再也叫不停那一轮。
+        """
         if not message:
             return
-        self._reply_text = ""  # 这一轮废了：残留正文别带进下一轮
         if self.chat_panel is not None:
             self.chat_panel.show_error(message)
-            self.chat_panel.set_busy(False)  # 这一轮已经废了，别让按钮停在「停止」
+            if not self.chat_panel.is_busy():
+                self._reply_text = ""  # 没在跑：上一轮残留的正文别带进下一轮
         if self._rewind_pending is not None:
             # 这次截断重发被拒了：窗口一个字都不动（屏幕和引擎里仍然是同一段历史）
             self._rewind_pending = None
@@ -1747,6 +1795,15 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._reasoning_fresh = False
             self.request_reasoning()
         panel = self.chat_panel
+        if panel is not None and (
+            bool(result.get("running"))
+            or str(result.get("status") or "") == "running"
+            or result.get("auto_continue")
+        ):
+            # 引擎手里已经有一轮在跑（典型：上次被打断，启动时它自己接着跑）。
+            # 这一轮不是这个窗口发起的，界面却必须知道——否则发送键一直写「发送」，
+            # 看着它在那儿写却没有东西能叫停。
+            panel.set_busy(True)
         requested = self._new_session_pending
         self._new_session_pending = False
         queued, self._new_session_queued = self._new_session_queued, 0
@@ -2519,6 +2576,8 @@ def main() -> int:
     wire.history.connect(window.on_history)
     wire.user_row_stamped.connect(window.on_user_row_stamped)
     wire.delta.connect(window.on_delta)
+    wire.turn_started.connect(window.on_turn_started)
+    wire.status_text.connect(window.on_status_text)
     wire.reasoning_delta.connect(window.on_reasoning_delta)
     wire.reasoning_done.connect(lambda _t: window.chat_panel and window.chat_panel.flush_reasoning())
     wire.reasoning_block.connect(window.on_reasoning_block)
@@ -2535,6 +2594,9 @@ def main() -> int:
     wire.notice_show.connect(window.on_notice_show)
     wire.notice_clear.connect(lambda key: window.chat_panel and window.chat_panel.clear_status_notice(key))
     wire.clarify.connect(window.on_clarify_request)
+    wire.clarify_expired.connect(
+        lambda rid: window.chat_panel and window.chat_panel.expire_clarify(rid)
+    )
     wire.secret_prompt.connect(window.on_secret_request)
     wire.reaction.connect(window.on_reaction)
     wire.processes.connect(lambda rows: window.chat_panel and window.chat_panel.set_processes(rows))
