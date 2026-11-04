@@ -1306,6 +1306,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._turn_stopped = False
         self._stop_voice()
         if self.chat_panel is not None:
+            # 新一轮开始：上一轮的红字不能让它在「正在调用…」旁边继续挂着（内容还是上一轮的错，
+            # 看着像这次也失败了）。要在发出之前撤，不是等第一个字回来。
+            self.chat_panel.clear_status_notice("turn")
             self.chat_panel.set_busy(True)
         items, self._sending_attachments = self._sending_attachments, []
         logger.info("[附件] 这一轮带 %d 个附件", len(items))
@@ -1400,7 +1403,13 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             # 失败轮到提示卡片（输入框上方那条，`status_stack`），不进气泡：气泡只说模型的话。
             # 不带 ttl——没解决就该一直看得见，下一轮开始或成功时再撤。
             if str(payload.get("status") or "") == "error":
-                failure = str(payload.get("text") or payload.get("error") or "").strip()
+                # 引擎在失败轮里：`text` 是已经流出来的正文（有就原样带），真正的失败原因在
+                # `error`，并用 `partial` 标出「有正文被保留」。所以有 partial 时必须读 error，
+                # 否则红字里会出现她说到一半的那句话，用户看不到哪里出错。
+                if payload.get("partial"):
+                    failure = str(payload.get("error") or payload.get("text") or "").strip()
+                else:
+                    failure = str(payload.get("text") or payload.get("error") or "").strip()
                 if failure:
                     panel.show_notice("turn", failure, level="error")
             else:
