@@ -252,6 +252,7 @@ def _open_link(text: str) -> bool:
 
 
 from app.user_state import window_settings
+from app.env_keys import env_file
 from app.tool_view.ansi import has_ansi_codes as ansi_codes, parse_ansi
 from app.tool_view.diffview import diff_rows, strip_diff_file_headers
 from app.tool_view.code import highlight_code as code_highlight
@@ -273,6 +274,42 @@ PANEL_WIDTH = 420  # 默认（第一次打开）大小；之后记在 QSettings 
 PANEL_HEIGHT = 460
 MIN_PANEL_WIDTH = 280
 MIN_PANEL_HEIGHT = 240
+
+# USER.md 里的名字：文件没动就不重读（每条用户消息都要用它）
+_USER_NAME_CACHE: dict[str, object] = {"stamp": None, "name": ""}
+
+
+def _name_from_profile(text: str) -> str:
+    """从 USER.md 正文里挑出名字：只认 `Name: X` / `名字：X` 这种键值行，最多 12 个字。"""
+    found = re.search(
+        r"^[ \t]*(?:name|名字)[ \t]*[:：][ \t]*(.+?)[ \t]*$", text, re.MULTILINE | re.IGNORECASE
+    )
+    return " ".join(found.group(1).split())[:12] if found else ""
+
+
+def _user_display_name() -> str:
+    """用户那条冒什么名：USER.md 里记着名字就用名字，没有就叫「你」。
+
+    引擎起名那一轮会把名字写成一条 `Name: Ray`，所以这里只认这种键值行（中英文冒号都认）。
+    档案还没写、读不到、或者行不成样子，一律退回「你」——宁可叫「你」，不能叫错。
+    """
+    path = env_file().with_name("memories") / "USER.md"
+    try:
+        stamp = path.stat().st_mtime_ns
+    except OSError:
+        return "你"
+    if _USER_NAME_CACHE["stamp"] == stamp:
+        return str(_USER_NAME_CACHE["name"] or "你")
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        text = ""
+    name = _name_from_profile(text)
+    _USER_NAME_CACHE["stamp"] = stamp
+    _USER_NAME_CACHE["name"] = name
+    return name or "你"
+
+
 RESIZE_MARGIN = 12  # 距边缘多少像素内按下算缩放
 SNAP_DISTANCE = 24  # 拖到离她下缘这么近就自动吸过去
 # 不可用的模型项：置灰（setEnabled(False) 只是不能选，颜色还得自己给，
@@ -1897,7 +1934,8 @@ class ChatPanel(QtWidgets.QWidget):
         items = [*refs, *attachments]
         start = self.view.document().characterCount() - 1  # 插入前的文末位置：这条消息从这儿开始
         self._insert_html(
-            f"<span style='color:#9ad0ff;'><b>你</b></span><br>{html.escape(message)}"
+            f"<span style='color:#9ad0ff;'><b>{html.escape(_user_display_name())}</b></span>"
+            f"<br>{html.escape(message)}"
         )
         self._begin_message("user", start, message, row_id)
         for item in items:
@@ -5382,7 +5420,7 @@ class ChatPanel(QtWidgets.QWidget):
         text = " ".join(str(msg.get("text") or "").split())
         if len(text) > 200:
             text = text[:200] + "…"
-        who = "你" if msg.get("role") == "user" else "Noesia"
+        who = _user_display_name() if msg.get("role") == "user" else "Noesia"
         prefix = "\n" if self.input.toPlainText().strip() else ""
         self.input.insertPlainText(f"{prefix}> {who}：{text}\n")
         self.input.setFocus()
