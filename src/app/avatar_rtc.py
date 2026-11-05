@@ -309,10 +309,17 @@ class AvatarRtc(QtCore.QObject):
 
     @property
     def audio_idle_seconds(self) -> float:
-        """云端有多久没再回音频了（0=刚刚还在回）。"""
-        if not self._last_audio_at:
-            return 999.0
-        return time.monotonic() - self._last_audio_at
+        """云端有多久没再回音频了（0=刚刚还在回）。
+
+        还没收到过这一句的第一帧时，从「这句开始」算起，不能报 999——收尾判据看见
+        「几百秒没音频」会立刻把这句判成断流（日志里「云端断流 999.0s、已过 0.5s、
+        回传 0 帧」就是这么来的：长句首帧本来就慢，0.5 秒就被掐掉，一个字都没念出来）。
+        久到 5 秒还没首帧，才真的是断流。
+        """
+        mark = max(self._last_audio_at, self._speak_mark)
+        if not mark:
+            return 0.0
+        return time.monotonic() - mark
 
     def reset_audio_frames(self) -> None:
         """新一句开始：云端时间轴和"她有没有在出声"全部归零。
