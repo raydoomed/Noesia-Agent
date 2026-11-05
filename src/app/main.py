@@ -663,8 +663,14 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
 
     def _end_avatar_session(self) -> None:
         """闲置挂断：会话不再计费。引擎留着（预加载过就不必再载 dll）。"""
-        if self._avatar is not None and (self._streamer is None or not self._streamer.playing):
-            self._avatar.hangup()
+        if self._avatar is None:
+            return
+        if self._streamer is not None and self._streamer.playing:
+            # 到点还在念（用户在连续说话）：这句念完还会重排一次；这里再等一轮，
+            # 免得计时器一次没命中就再也没人挂断，会话挂着按秒计费。
+            self._avatar_idle.start()
+            return
+        self._avatar.hangup()
 
     def _stop_voice(self) -> None:
         """停下所有发声路径：纯语音的声卡、互动的流播放，以及数字人那边正在渲染的嘴。"""
@@ -777,6 +783,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._warm_idle.stop()
         if self.chat_panel is not None:
             self.chat_panel.clear_status_notice("avatar")
+        # 建好了却没有要念的话：15 秒超时后才连上，那句已经退回纯语音——这台会话没人会用，
+        # 5 秒后挂掉。少了这一步它会一直挂着按秒计费。
+        if not self._pending_speech and not (self._streamer is not None and self._streamer.playing):
+            self._avatar_idle.start()
 
     def _avatar_blocked(self) -> bool:
         """互动档刚因为积分不足失败过：别每句话都再去建一次会话（白等、还刷提示）。"""
@@ -882,6 +892,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
 
         avatar = self._ensure_avatar()
         if not avatar.begin_speak():
+            # 开不了口（会话没了或状态不对）：这句走纯语音；万一会话还在，5 秒后挂掉。
+            self._avatar_idle.start()
             self.speaker.speak(text)
             return
         avatar.reset_audio_frames()  # 这一句的云端时间轴从 0 开始算
@@ -910,6 +922,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._streamer.failed.connect(
                 lambda _msg: panel.speech_done() if panel is not None else None
             )
+            # 这句没念成，会话还开着也没用：5 秒后挂断（在念的话到点会重排，不会误断）。
+            self._streamer.failed.connect(lambda _msg: self._avatar_idle.start())
         from app.speech_speaker import speakable
 
         clean = speakable(text)

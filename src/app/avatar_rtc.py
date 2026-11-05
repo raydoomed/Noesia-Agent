@@ -448,6 +448,7 @@ class AvatarRtc(QtCore.QObject):
         with self._lock:
             self._state = "idle"
         if session is not None:
+            logger.info("[数字人] 挂断会话（停计费）")
             threading.Thread(target=session.hangup, daemon=True, name="avatar-hangup").start()
         if self._module is not None:
             try:
@@ -465,6 +466,7 @@ class AvatarRtc(QtCore.QObject):
         session = self._session
         self._session = None
         if session is not None:
+            logger.info("[数字人] 退出时挂断会话（停计费）")
             session.hangup()
 
     # ---- 画面 ----
