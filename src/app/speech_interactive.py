@@ -248,6 +248,7 @@ class StreamSpeaker(QtCore.QObject):
     def _pump(self) -> None:
         if not self._active:
             return  # 已经停止/收尾：晚到的定时器和完成回调都别再往下走（会重复发 finished）
+        if not self._play_local:
             # 声音由 RTC 出：进度按时间走（远端回传会一路多送静音，不能当进度用），
             # 收尾看"远端还响不响"（她真的念完了才安静）。
             now = time.monotonic()

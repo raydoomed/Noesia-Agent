@@ -310,4 +310,3 @@ class GlobalHotkey(QtCore.QObject):
         if w_param in _UP:
             self.released.emit()
         return u.CallNextHookEx(None, HC_ACTION, w_param, l_param)
-        return u.CallNextHookEx(None, HC_ACTION, w_param, l_param)
