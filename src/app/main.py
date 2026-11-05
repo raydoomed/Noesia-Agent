@@ -690,6 +690,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self._avatar is not None:
             self._avatar.interrupt()
         self._show_avatar(False)  # 被打断：立刻回待机画面，不留一张定住的嘴
+        if self.chat_panel is not None:
+            # 「正在准备音频」那条是 warm 阶段自己弹出来的：那时 speaker 的 _active 还是假、
+            # _streamer 还没建，上面两个 stop() 都不会发 stopped。不在这里收掉，它会一直挂着
+            # ——pending 已经被清空，15 秒超时到点也不会再走朗读，没人来 dismiss。
+            self.chat_panel.speech_done()
 
     def _voice_stopped(self) -> None:
         """被 stop() 打断（换句/新消息/中断）：这条路径不该在"开始念"时触发，出问题看这行日志。"""
