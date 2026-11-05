@@ -287,11 +287,33 @@ class ViduSession:
                 except Exception:  # noqa: BLE001
                     break
                 if isinstance(raw, str):
-                    msg = json.loads(raw)
-                    if msg.get("type") == 2 and msg["payload"]["conn_init_ack"].get("success"):
-                        threading.Thread(target=self._recv_loop, daemon=True,
-                                         name="vidu-recv").start()
-                        return
+                    try:
+                        msg = json.loads(raw)
+                    except ValueError:
+                        continue
+                    kind = msg.get("type")
+                    if kind == 103:
+                        # 建会话阶段被拒（资源没开通、并发超限、参数不对）：原因就在这一帧里。
+                        # 以前这一帧直接丢掉，用户等满 20 秒只拿到「conn_init 未就绪」，
+                        # 真正的原因码和翻好的人话永远到不了眼前。
+                        error = (msg.get("payload") or {}).get("error") or {}
+                        raise RuntimeError(
+                            describe_error(
+                                str(error.get("source") or ""),
+                                str(error.get("code") or ""),
+                                str(error.get("message") or ""),
+                            )
+                        )
+                    if kind == 6:
+                        raise RuntimeError("服务端在建会话阶段强制挂断了")
+                    if kind == 2:
+                        # 缺键就 `KeyError` 冒到界面上：payload 里没有 ack 说明协议不对，
+                        # 宁可报错也别假装收到了一个成功回执。
+                        ack = (msg.get("payload") or {}).get("conn_init_ack") or {}
+                        if ack.get("success"):
+                            threading.Thread(target=self._recv_loop, daemon=True,
+                                             name="vidu-recv").start()
+                            return
             seq += 1
             time.sleep(2)
         raise RuntimeError("conn_init 未就绪")

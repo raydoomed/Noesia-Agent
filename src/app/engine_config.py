@@ -16,10 +16,51 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# 「读不出来就别写」这一段保护是靠调用方的 `except (OSError, yaml.YAMLError)` 兜住的。
+# 中文 Windows 上 config.yaml 很常被记事本/旧编辑器存成 GBK 或带 BOM 的 UTF-8，硬解 UTF-8
+# 抛的是 `UnicodeDecodeError`——它哪一个都接不住，于是保护分支不执行，坏文件被默认值覆盖。
+_BAD_TEXT = "这份文件不是能识别的文本（既不是 UTF-8 也不是 GBK）：另存为 UTF-8 后重开设置"
+
+
+def _read_text(path: Path) -> str:
+    """按 UTF-8（含 BOM）读；不成再退一步 GB18030（中文 Windows 的 ANSI）。
+
+    两种编码都不成，就当成「读不出来」抛 `OSError`：既有的保护分支会照常执行
+    （不写盘、保留原文件），用户看到的也是一句能懂的中文，而不是 `0xd6 in position 2`。
+    """
+    data = path.read_bytes()  # 读不出来（文件锁、权限）照样抛 OSError，交给调用方
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise OSError(f"{path}：{_BAD_TEXT}")
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """先写同目录的临时文件，再 `os.replace`：写一半断电/磁盘满，原文件还是完整的。
+
+    直接 `write_text` 覆盖最坏：截成 0 字节的 config.yaml 下次启动解析失败，而解析失败按设计
+    「不写盘」，于是这份配置永远停在坏的状态，模型、审批档、记忆上限全部读不出来。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
 
 _HEADER = (
     "# 引擎配置：全部键与当前值，直接改，重开应用生效（删掉一行 = 回默认）。\n"
@@ -36,7 +77,7 @@ _SNAPSHOT_REL = ("data", "runtime", "config-defaults.json")
 
 def _is_ours(path: Path) -> bool:
     try:
-        return path.read_text(encoding="utf-8").startswith(_LEGACY_MARK)
+        return _read_text(path).startswith(_LEGACY_MARK)
     except OSError:
         return False
 
@@ -160,6 +201,20 @@ def _render_section(
             out.append(f"{pad}{key}: {_scalar(value)}")
 
 
+def _apply_overrides(merged: dict, overrides: dict) -> None:
+    """外壳决定的键每次启动按当前值写，不跟磁盘协商。
+
+    目前只有 `terminal.cwd`。它以前跟别的键走同一套「磁盘上跟快照不同就当用户改过」的规则，
+    结果第一次启动写下的那个绝对路径被当成了用户的选择：之后搬了安装目录、或者改了
+    app.json 里的 engine.workdir，config.yaml 里还是老路径，工具继续在旧目录里干活。
+    """
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            _apply_overrides(merged[key], value)
+        else:
+            merged[key] = value
+
+
 def sync_engine_config(
     core_path: Path,
     home: Path,
@@ -178,7 +233,7 @@ def sync_engine_config(
     disk: Any = None
     if config_path.exists():
         try:
-            disk = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            disk = yaml.safe_load(_read_text(config_path)) or {}
         except (OSError, yaml.YAMLError) as exc:
             # 读不出来就**不写**：以前这里会当成「磁盘上没有这个键」，于是拿引擎默认值
             # 把整个文件覆盖掉——用户改过的每一条设置连同注释一起没了。
@@ -187,13 +242,14 @@ def sync_engine_config(
     snapshot: Any = None
     if snapshot_path.exists():
         try:
-            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot = json.loads(_read_text(snapshot_path))
         except (OSError, ValueError):
             snapshot = None
 
     missing = object()
     defaults = engine_defaults(core_path)
     merged = _merge(defaults, disk, snapshot, overrides, missing)
+    _apply_overrides(merged, overrides if isinstance(overrides, dict) else {})
     if isinstance(merged, dict) and isinstance(defaults, dict):
         _prune_optin(merged, defaults)
         _prune_legacy(merged, defaults)
@@ -207,16 +263,19 @@ def sync_engine_config(
     lines: list[str] = []
     _render_section(merged, comments, (), 0, lines)
     body = _HEADER + "\n".join(lines) + "\n"
-    changed = not config_path.exists() or config_path.read_text(encoding="utf-8") != body
+    changed = not config_path.exists() or _read_text(config_path) != body
     if changed:
-        config_path.write_text(body, encoding="utf-8")
+        _atomic_write(config_path, body)
         logger.info("引擎配置已同步：%s（%d 个顶层段）", config_path, len(merged))
 
     # 快照记「引擎当前的默认值」——下次启动时某键与快照相同 = 用户没动过，可以跟随新默认；
     # 不同 = 用户改过，必须保留。这里绝不能记 merged：把用户的值记成基线，下一轮就会被当成
     # 「没动过」而换成默认值（踩过：`model:` 的 {default, provider, base_url} 被换成空串）。
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    snapshot_path.write_text(json.dumps(defaults, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    _atomic_write(
+        snapshot_path,
+        json.dumps(defaults, ensure_ascii=False, sort_keys=True),
+    )
 
     legacy = home / _LEGACY_REFERENCE
     if legacy.exists() and _is_ours(legacy):
@@ -238,7 +297,7 @@ def workspace_from_config(home: Path, fallback: Path) -> Path:
     path = Path(home) / "config.yaml"
     if path.is_file():
         try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load(_read_text(path)) or {}
             raw = str(((data.get("terminal") or {}).get("cwd") or "")).strip()
         except (OSError, yaml.YAMLError):
             raw = ""
@@ -255,7 +314,7 @@ def read_engine_config(home: Path) -> dict[str, Any]:
 
     path = Path(home) / "config.yaml"
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        data = yaml.safe_load(_read_text(path)) or {}
     except (OSError, yaml.YAMLError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -301,7 +360,7 @@ def set_engine_config(core_path: Path, home: Path, values: dict[str, Any]) -> bo
     disk: Any = {}
     if config_path.is_file():
         try:
-            disk = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            disk = yaml.safe_load(_read_text(config_path)) or {}
         except (OSError, yaml.YAMLError) as exc:
             # 跟 sync_engine_config 一个道理：读不出来就不能写，否则一个键的修改会把
             # 整个文件换成只剩这一个键的新文件，其余全丢。
@@ -322,7 +381,7 @@ def set_engine_config(core_path: Path, home: Path, values: dict[str, Any]) -> bo
         node[parts[-1]] = value
 
     home.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(yaml.safe_dump(disk, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    _atomic_write(config_path, yaml.safe_dump(disk, allow_unicode=True, sort_keys=False))
     changed = sync_engine_config(core_path, home)
     logger.info("已写入引擎配置：%s", ", ".join(values))
     return changed

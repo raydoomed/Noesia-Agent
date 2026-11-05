@@ -32,7 +32,11 @@ def main() -> int:
     global OUT
     args = sys.argv[1:]
     if "--out" in args:
-        OUT = args[args.index("--out") + 1]
+        index = args.index("--out")
+        if index + 1 >= len(args):
+            # 参数写在末尾时 `args[i+1]` 直接 IndexError 栈回溯：这是用法错误，不是崩溃
+            fail("--out 后面要跟输出路径，例如 --out src\\app\\_alirtc.pyd")
+        OUT = args[index + 1]
     print("输出:", OUT)
     include = sysconfig.get_paths()["include"]
     libdir = sysconfig.get_config_var("LIBDIR")

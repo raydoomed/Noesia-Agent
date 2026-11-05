@@ -109,6 +109,7 @@ class AvatarRtc(QtCore.QObject):
         self._target: QtCore.QSize | None = None
         self._lock = threading.Lock()
         self._state = "idle"           # idle / warming / ready
+        self._warm_seq = 0             # 建会话的代次：挂断/失败会把它推上去，晚回来的那条 worker 自己收摊
         # 不设上限：TTS 合成得比实时快好几倍，设 50 帧（1 秒）会把前面的话直接丢掉，
         # 结果就是"声音念完了、嘴只做了开头"。100 秒（5000 帧）当保险丝，正常永远碰不到。
         self._queue: deque[bytes] = deque()
@@ -185,11 +186,39 @@ class AvatarRtc(QtCore.QObject):
             if self._state != "idle":
                 return
             self._state = "warming"
+            self._warm_seq += 1
+            seq = self._warm_seq
 
-        threading.Thread(target=self._warm_worker, daemon=True, name="avatar-warm").start()
+        threading.Thread(
+            target=self._warm_worker, args=(seq,), daemon=True, name="avatar-warm"
+        ).start()
 
-    def _warm_worker(self) -> None:
-        """后台线程：建会话 → 入会 → 开流 → 推 1 秒静音把画面叫起来。"""
+    def _warm_current(self, seq: int) -> bool:
+        """这次建会话还算数吗（挂断/失败会把代次推上去，晚回来的那条就作废）。"""
+        with self._lock:
+            return seq == self._warm_seq
+
+    def _discard_warm(self, session: "ViduSession") -> None:
+        """建会话途中被挂断：刚建出来的这一台已经在计费，当场挂掉，绝不挂到身上。"""
+        logger.info("[数字人] 建会话途中被挂断：这一台直接挂掉，不挂到身上")
+        if self._session is session:
+            self._session = None
+        if self._module is not None:
+            try:
+                self._module.leave()
+            except Exception:  # noqa: BLE001 - 收摊失败不该盖住别的
+                logger.debug("[数字人] leave 出错", exc_info=True)
+        threading.Thread(target=session.hangup, daemon=True, name="avatar-discard").start()
+
+    def _warm_worker(self, seq: int) -> None:
+        """后台线程：建会话 → 入会 → 开流 → 推 1 秒静音把画面叫起来。
+
+        `seq` 是发起时的代次。这条链每一步都要一两秒，中间用户随时可能挂断（闲置超时、
+        关窗口、自己点停）。每段等待回来都核对一次代次：过期就把这一台挂掉走人——
+        不核对的话，`hangup()` 之后这条线程仍会 `self._session = session`、把状态置成
+        `ready` 并启动保活播放，凭空复活一场按秒计费的会话，界面上还看不出来。
+        """
+        session: ViduSession | None = None
         try:
             if self._module is None:  # 预加载没跑或失败过：这里补一次，别拿 None 去判断属性
                 why = self.preload()
@@ -201,6 +230,9 @@ class AvatarRtc(QtCore.QObject):
             # 这一行出现在日志里 = 从这一刻开始按秒计费。只在"按了发送、真要念这句"时才该看到它。
             logger.info("[数字人] 建会话（开始按秒计费）")
             session.create()
+            if not self._warm_current(seq):
+                self._discard_warm(session)
+                return
             # create 成功就已经在计费：先挂上，之后任何一步失败 `_fail` 才能把它挂断
             self._session = session
             rtc = session.rtc
@@ -214,8 +246,14 @@ class AvatarRtc(QtCore.QObject):
             )
             if code != 0:
                 raise RuntimeError(f"入会失败，返回 {code}")
+            if not self._warm_current(seq):
+                self._discard_warm(session)
+                return
             session.open_stream()
             session.push_pcm(b"\x00\x00" * (SAMPLE_RATE // 2))  # 1 秒静音：她被叫醒但不说话
+            if not self._warm_current(seq):
+                self._discard_warm(session)
+                return
             with self._lock:
                 self._state = "ready"
             self._send_run.set()
@@ -241,6 +279,7 @@ class AvatarRtc(QtCore.QObject):
             except Exception:  # noqa: BLE001 — 收摊失败不能盖住真正的原因
                 logger.warning("[数字人] 挂断失败的会话时出错", exc_info=True)
         with self._lock:
+            self._warm_seq += 1  # 正在建的那一台也作废（它回来会自己挂掉）
             self._state = "idle"
         self._last_error = message
         self._send_run.clear()
@@ -402,6 +441,8 @@ class AvatarRtc(QtCore.QObject):
     def hangup(self) -> None:
         self._send_run.clear()
         self._queue.clear()
+        with self._lock:
+            self._warm_seq += 1  # 正在进行的那次建会话作废：它回来会自己把这台挂掉
         session = self._session
         self._session = None
         with self._lock:
@@ -419,6 +460,8 @@ class AvatarRtc(QtCore.QObject):
         """退出时用：挂断停账，引擎不拆（Destroy 要 1.8 秒，进程退出时系统回收）。"""
         self._convert_run.clear()
         self._send_run.clear()
+        with self._lock:
+            self._warm_seq += 1  # 退出时正在建的那一台也得作废，不然它会在关窗后又冒出来计费
         session = self._session
         self._session = None
         if session is not None:

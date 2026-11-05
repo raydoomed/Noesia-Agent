@@ -73,7 +73,19 @@ def write(key: str, value: str) -> None:
             continue
         kept.append(line)
     kept.append(f"{key}={value}")
-    env.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    # 临时文件 + replace：直接覆盖时中途失败会留下一个空的 `.env`，
+    # 所有厂商的 Key 一起没，用户还看不出是哪一步坏的。
+    body = "\n".join(kept) + "\n"
+    tmp = env.with_name(f".{env.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        os.replace(tmp, env)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     os.environ[key] = value  # 本进程立刻生效，不用等重启
 
 

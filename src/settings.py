@@ -115,16 +115,18 @@ def _str(data: dict, dotted: str, path: Path) -> str:
 
 
 
-def _non_empty_str(data: dict, dotted: str, path: Path) -> str:
-    """必须是非空字符串。
+def _non_empty_str(data: dict, dotted: str, path: Path, default: str = "") -> str:
+    """必须是非空字符串；给了 `default` 时，空串就按模板里的标准值补上。
 
     空串不是「没填」那么轻：`Path("")` 就是 `.`，引擎家目录会退化成项目根，
     `cache/scratch`、会话、配置全长在项目根目录里（真发生过）。
     """
     value = _str(data, dotted, path)
-    if not value.strip():
-        raise ConfigError(f"配置 {dotted} 不能为空（{path}）")
-    return value
+    if value.strip():
+        return value
+    if default:
+        return default
+    raise ConfigError(f"配置 {dotted} 不能为空（{path}）")
 
 
 def _bool(data: dict, dotted: str, path: Path) -> bool:
@@ -139,12 +141,20 @@ def _read(path: Path, root: Path) -> dict:
         template = root / APP_TEMPLATE
         if not template.is_file():
             raise ConfigError(f"配置不在（{path}），模板也不在（{template}）：没有可用的参数")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
+        except OSError as exc:
+            # 首次运行写不进去（`data` 建不出来、装到只读盘、`data` 这个位置是个文件）。
+            # 裸 OSError 会让 `noesia check-config` 打一屏 traceback、GUI 直接双击无反应；
+            # 同一个「配置不可用」必须抛同一个类型，才有人能接住它并说人话。
+            raise ConfigError(f"配置 {path} 写不进去：{exc}") from None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ConfigError(f"{path} 不是合法 JSON：{exc}") from None
+    except OSError as exc:
+        raise ConfigError(f"配置 {path} 读不出来：{exc}") from None
     if not isinstance(data, dict):
         raise ConfigError(f"{path} 的最外层要是一个对象")
     return data
@@ -162,9 +172,11 @@ def _build(data: dict, path: Path) -> Settings:
         ),
 
         engine=_Engine(
-            core_path=_str(data, "engine.core_path", path),
-            home=_non_empty_str(data, "engine.home", path),
-            workdir=_str(data, "engine.workdir", path),
+            # 空串等于没写：`Path("")` 会安静地变成当前目录，引擎就在源码树里干活。
+            # 回落值就是 `data/settings/app.json` 模板里那三个标准值。
+            core_path=_non_empty_str(data, "engine.core_path", path, "src/engine"),
+            home=_non_empty_str(data, "engine.home", path, "data/NoesiaHome"),
+            workdir=_non_empty_str(data, "engine.workdir", path, "data/workspace"),
         ),
         ui=_Ui(
             floating=_Floating(

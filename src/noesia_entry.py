@@ -16,7 +16,20 @@ import importlib.util
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+
+def _find_root(start: Path) -> Path:
+    """向上找「哪一层下面有 `src/engine`」。
+
+    源码树里就是仓库根；`pip install`（非 -e）之后整棵树在 site-packages 里，
+    引擎根本不随包发布——那时找不到，返回默认值，由 `main()` 说清楚而不是 IndexError/ImportError。
+    """
+    for candidate in start.parents[1:]:
+        if (candidate / "src" / "engine").is_dir():
+            return candidate
+    return start.parents[1]
+
+
+ROOT = _find_root(Path(__file__).resolve())
 ENGINE = ROOT / "src" / "engine"
 
 # 引擎优先：`cli` 这个名字两边都有，引擎的必须赢（前端进程那个从 src/cli.py 按路径加载）
@@ -60,6 +73,16 @@ def _add_local_commands(subparsers) -> None:
 def main(argv: list[str] | None = None) -> int:
     if argv is not None:
         sys.argv = [sys.argv[0], *argv]
+
+    if not ENGINE.is_dir():
+        # 装成 wheel（非 -e）时引擎不在包里：给一句能照做的说明，
+        # 而不是后台抛 `ModuleNotFoundError: No module named 'noesia_cli'`。
+        print(
+            "noesia 命令行要在源码树里跑：引擎（src/engine）不随 wheel 发布。\n"
+            "请 `pip install -e .` 后在本仓库目录执行，或直接用仓库里的脚本。",
+            file=sys.stderr,
+        )
+        return 2
 
     import noesia_cli.main as engine_cli
 

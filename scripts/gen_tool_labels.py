@@ -147,6 +147,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="生成 src/app/tool_view/labels.py")
     parser.add_argument("--i18n-dir", required=True, help="含 zh.ts / en.ts 的目录")
     source = Path(parser.parse_args().i18n_dir)
+    for name in ("zh.ts", "en.ts"):
+        if not (source / name).is_file():
+            raise SystemExit(f"{source} 里没有 {name}：--i18n-dir 指的是含 zh.ts / en.ts 的那个目录")
     zh_text = (source / "zh.ts").read_text(encoding="utf-8")
     en_text = (source / "en.ts").read_text(encoding="utf-8")
     zh_src = to_python(block(zh_text, "tool", "    ", "copyCode"))

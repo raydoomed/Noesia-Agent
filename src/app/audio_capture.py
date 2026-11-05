@@ -217,8 +217,18 @@ class WasapiCapture:
                        POINTER(c_ulong), POINTER(ctypes.c_ulonglong), POINTER(ctypes.c_ulonglong))(
                 self._capture, byref(data), byref(frames), byref(flags), byref(position), byref(qpc)
             )
-            if hr != 0 or not frames.value:
-                break
+            if hr < 0:
+                # 负 HRESULT 是「出事了」，不是「这一刻没数据」：设备被拔、驱动重启、
+                # 蓝牙链路断（AUDCLNT_E_DEVICE_INVALIDATED = 0x88890004）全在这里。
+                # 以前一律 break 当成没数据：流看着还开着，音频再也不来，松手得到
+                # 「说话太短了」或半句话，界面一次都不知道麦克风已经死了。
+                self._opened = False
+                self._release_all()
+                raise CaptureError(
+                    f"「{self.endpoint.name}」录音中断开了（hr=0x{hr & 0xFFFFFFFF:08X}）"
+                )
+            if not frames.value:
+                break  # AUDCLNT_S_BUFFEREMPTY：这一刻真没数据，下一轮再来取
             size = frames.value * self._format.nBlockAlign
             if data:
                 chunks.append(ctypes.string_at(data, size))

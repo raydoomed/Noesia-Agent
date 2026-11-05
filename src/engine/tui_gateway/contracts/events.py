@@ -237,6 +237,20 @@ class MessageCompletePayload(Payload):
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")
 
 
+class TurnDonePayload(Payload):
+    """``prompt_turn.py`` — the turn is fully over.
+
+    Fires for every turn, including interrupted ones that never produce ``message.complete``;
+    the desktop uses it to know that later deltas belong to the *next* turn.
+    """
+
+    status: TurnStatus | None = None
+
+
+event("turn.done", TurnDonePayload,
+      doc="The turn ended (also emitted when it was interrupted and no message.complete follows).")
+
+
 class StatusUpdatePayload(Payload):
     """``server._status_update`` and the direct emitters (goal / loop / heartbeat / process)."""
 

@@ -101,7 +101,8 @@ def fit_width(
     height = clamped * aspect
     if max_height and height > max_height:
         height = float(max_height)
-        clamped = height / aspect
+        # 反推出的宽度不能又掉到最小值以下：窗口矮的时候会缩成一条比 MIN_WIDTH 还窄的图
+        clamped = max(float(min_width), height / aspect)
     return QtCore.QSize(max(1, round(clamped)), max(1, round(height)))
 
 

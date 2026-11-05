@@ -2,6 +2,11 @@
 
 引擎负责「什么算危险」（smart / manual 策略、被标记的规则），我们只负责问和显示——
 所以这里没有任何判定逻辑，只有一颗卡片、四个按钮和一段能看清的原文。
+
+刻意**不抢焦点**：卡片是在用户正打字时弹出来的，抢了焦点下一次敲键盘就落到卡片上
+（`WA_ShowWithoutActivating` 让 show() 不切活动窗口）。但键盘并不是废的——用户点了卡片
+任何一处之后它就有了焦点，这时 Esc 等于「拒绝」（和关掉卡片一个意思），Enter 不设默认，
+免得手快一句回车就批准了危险命令。
 """
 
 from __future__ import annotations
@@ -58,14 +63,16 @@ class ApprovalDialog(QtWidgets.QDialog):
         self._answered = False
         self._drag_offset: QtCore.QPoint | None = None  # 按住卡片拖动时的抓点
 
-        # 不抢焦点、不进任务栏，但必须压在其它窗口上面——用户可能正看着别的窗口
+        # 不抢焦点、不进任务栏，但必须压在其它窗口上面——用户可能正看着别的窗口。
+        # 不给 `WindowDoesNotAcceptFocus`：那样连点了之后键盘也进不来，Esc / 方向键全哑，
+        # 与桌面端那张卡不一致（它是一张普通的可聚焦卡片）。不抢活动窗口由下面的属性保证。
         self.setWindowFlags(
             QtCore.Qt.Tool
             | QtCore.Qt.FramelessWindowHint
             | QtCore.Qt.WindowStaysOnTopHint
-            | QtCore.Qt.WindowDoesNotAcceptFocus
         )
         self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.setModal(False)
         self.setStyleSheet(_CARD_STYLE)
 
@@ -86,13 +93,26 @@ class ApprovalDialog(QtWidgets.QDialog):
         if desc and desc.strip().lower() not in _FRIENDLY:
             sub = QtWidgets.QLabel(desc, card)
             sub.setObjectName("desc")
+            # 纯文本：说明里带 `<...>`（重定向、占位符、HTML 片段）时，AutoText 会把它们
+            # 当标签吃掉，用户看到的不是真正的内容
+            sub.setTextFormat(QtCore.Qt.TextFormat.PlainText)
             lay.addWidget(sub)
 
         if command:
-            box = QtWidgets.QLabel(command[:400] + ("…" if len(command) > 400 else ""), card)
+            # 整条命令原样给出，不截断：`python -c "…"`、heredoc、批量脚本、ffmpeg 长参数
+            # 轻松超过 400 字，截掉一半等于让人凭前半句批准整条命令；手选也选不到被砍掉的部分。
+            box = QtWidgets.QPlainTextEdit(command, card)
             box.setObjectName("cmd")
-            box.setWordWrap(True)
-            box.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+            box.setReadOnly(True)  # 只读但可选中、可滚动：长命令自己滚，卡片不撑破
+            box.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            box.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
+            box.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
+            lines = command.count("\n") + 1
+            box.setFixedHeight(min(240, 20 * lines + 12))
+            # 别用控件级样式表（会盖掉 `#cmd` 那条边框/配色）：只把底色设成透明
+            pal = box.palette()
+            pal.setColor(box.backgroundRole(), QtCore.Qt.GlobalColor.transparent)
+            box.setPalette(pal)
             lay.addWidget(box)
 
         row = QtWidgets.QHBoxLayout()
@@ -131,6 +151,21 @@ class ApprovalDialog(QtWidgets.QDialog):
             self.close()
 
     # 关窗＝拒绝：沉默不是同意，含糊更不是
+    def dismiss(self) -> None:
+        """引擎自己撤了这张卡：关掉，但**不回任何选择**（不是用户拒绝）。
+
+        走 `close()` 会触发 closeEvent 里的兜底拒绝，等于替用户回了一个已经失效的 reply_id。
+        """
+        self._answered = True
+        self.close()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        """Esc＝拒绝（和关掉卡片同义）。Enter 故意不接：回一句手快的回车不该批准危险命令。"""
+        if event.key() == QtCore.Qt.Key.Key_Escape:
+            self._answer("deny")
+            return
+        super().keyPressEvent(event)
+
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
         # 无边框卡片必须自己处理拖动，否则用户没法把它从挡住的内容上挪开。
         # 输入/按钮自己吃掉按下事件，所以点它们不会连带拖窗。
@@ -152,12 +187,6 @@ class ApprovalDialog(QtWidgets.QDialog):
             self._answered = True
             self._on_choice("deny")
         super().closeEvent(event)
-
-    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
-        if event.key() == QtCore.Qt.Key_Escape:
-            self._answer("deny")
-            return
-        super().keyPressEvent(event)
 
     def show_near(self, anchor: QtCore.QRect | None) -> None:
         """放在锚点（头像窗）旁边；没有锚点就放屏幕中间。"""
@@ -204,10 +233,12 @@ class ConfirmDialog(QtWidgets.QDialog):
 
         head = QtWidgets.QLabel(title, card)
         head.setObjectName("title")
+        head.setTextFormat(QtCore.Qt.TextFormat.PlainText)  # 同审批卡：不把 <...> 当标签吃掉
         lay.addWidget(head)
 
         body = QtWidgets.QLabel(description, card)
         body.setObjectName("desc")
+        body.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         body.setWordWrap(True)
         lay.addWidget(body)
 

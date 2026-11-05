@@ -184,7 +184,10 @@ class Speaker(QtCore.QObject):
         self._done_internal.connect(self._on_done)
         self._failed_internal.connect(self._on_failed)
         self._pool = QtCore.QThreadPool(self)
-        self._pool.setMaxThreadCount(1)  # 串行：避免两句同时合成抢额度
+        # 串行是为了不几句一起抢额度，但**不能只给一条线程**：停止/换句只是把 token 推一格，
+        # 正在跑的那次合成看不到（它可能卡在等第一个字节上），新句子就得排队等它念完 30–60 秒。
+        # 留两条线程：旧的跑完自己作废（seq 对不上，分片全丢），新句子立刻开始。
+        self._pool.setMaxThreadCount(2)
         self._seq = 0
         self._active = False  # 这条（合成中或正在播）还算数吗；停下/换条就失效
         self._cancel = threading.Event()
@@ -217,8 +220,8 @@ class Speaker(QtCore.QObject):
         self._active = True
         self._announced = False
         self._text = plain
-        # 每条一个取消旗：池子只有一条线程，旧那句还在跑时把它自己的旗 clear 掉，
-        # 它就再也看不到「取消」，必须等它整句合成完才轮到新句（表现就是很久没声音）。
+        # 每条一个取消旗：池子里留了两条线程（见 `setMaxThreadCount`），旧那句还在跑时
+        # 把它自己的旗 set 掉，它的分片会因为 seq 对不上被丢掉，新句立刻开跑。
         self._cancel = threading.Event()
         self.preparing.emit()
         self._pool.start(_StreamJob(plain, self, self._seq, self._cancel))

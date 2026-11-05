@@ -19,6 +19,10 @@ from typing import Any
 # 需要「连着几行一起看」的行首标记：列表项、引用、表格、标题、缩进续行
 _STRUCTURAL = re.compile(r"^(\s{2,}|[-*+]\s|\d+[.)]\s|>|\||#{1,6}\s)")
 
+# 「结构标记写到一半」的样子：流式切分常常把 `- 项` 切成 `-` + ` 项`。
+# 只认真的可能长成结构行的半截，别把正文里的 `-` 独行之外的东西也扣下。
+_STRUCTURAL_PREFIX = re.compile(r"^\s*(?:[|>`]|[-*+]|\d+[.)]?|#{1,6})$")
+
 # 代码块的底色：悬停复制按钮要靠它认出“这块是代码”（见 `chat_panel._is_code_block`）。
 CODE_BACKGROUND = "#15161c"
 
@@ -205,6 +209,15 @@ def is_structural(line: str) -> bool:
     return bool(_STRUCTURAL.match(line))
 
 
+def is_structural_prefix(line: str) -> bool:
+    """这半行是不是「还没写完的结构标记」（`-`、`1.`、`##`、`|`、`` ` `` 这些）。
+
+    流式按 token 切，`- 项` 会先到 `-`、`## 标题` 会先到 `##`。只判完整结构行的话，
+    这些半截标记会被当普通文字画进上一段，剩下的字也再进不了结构段落——列表/标题就没了。
+    """
+    return bool(_STRUCTURAL_PREFIX.match(line))
+
+
 def is_fence(line: str) -> bool:
-    """围栏代码块的分界行（```）。"""
-    return line.strip().startswith("```")
+    """围栏代码块的分界行（``` 或 ~~~，两种写法 markdown 都认）。"""
+    return line.strip().startswith(("```", "~~~"))

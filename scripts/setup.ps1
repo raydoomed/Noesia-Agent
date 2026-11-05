@@ -242,7 +242,7 @@ if (Test-Path "src\engine\deps.txt") {
     if (Test-EngineDeps) {
         Say "[3/6] 引擎依赖已装好，跳过。"
     } else {
-        Say "[3/6] 安装引擎依赖（46 个直接依赖，连传递依赖约 100 个包，第一次要几分钟）..."
+        Say "[3/6] 安装引擎依赖（按 src\engine\deps.txt，连传递依赖约一百个包，第一次要几分钟）..."
         foreach ($src in $sources) {
             Say "用 $($src.Name) 安装 ..."
             $extra = $src.Args
@@ -252,7 +252,9 @@ if (Test-Path "src\engine\deps.txt") {
             Say "这个源没装上，换下一个。"
         }
         if (-not (Test-EngineDeps)) {
-            Fail "引擎依赖没装上：她能聊天，但还不能干活。换网络或挂代理再双击 setup.bat。"
+            # 不 exit：后面「把 noesia 加进 PATH」和起步配置还得做完，否则用户既没有命令、
+            # 又会以为整台机器装坏了。依赖没上只是「还不能干活」，聊天照样能用。
+            Say "[WARN] 引擎依赖没装上：她能聊天，但还不能干活。换网络或挂代理再跑一次 setup.bat。"
         }
     }
 } else {
@@ -281,7 +283,7 @@ if ((Test-Path (Join-Path $ffBin "ffmpeg.exe")) -and (Test-Path (Join-Path $ffBi
 } elseif ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
     Say "[4/6] 系统里已经有 ffmpeg / ffprobe，跳过。"
 } else {
-    Say "[4/6] 补 ffmpeg / ffprobe（Edge 朗读要边解码边播，约 140 MB）..."
+    Say "[4/6] 补 ffmpeg / ffprobe（Edge 朗读要边解码边播，下载约 50 MB）..."
     $tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
     if (-not (Test-Path $tarExe)) {
         Say "[WARN] 这台系统没有 tar.exe，跳过补 ffmpeg；Edge 语音会念不出来。"
@@ -294,7 +296,7 @@ if ((Test-Path (Join-Path $ffBin "ffmpeg.exe")) -and (Test-Path (Join-Path $ffBi
         try {
             New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
             New-Item -ItemType Directory -Force -Path $ffBin | Out-Null
-            # 走 npmmirror（国内），两个包一共约 50 MB，几秒钟
+            # 走 npmmirror（国内），两个包几秒钟就下来
             $packages = @(
                 @{ Name = "ffmpeg"; Url = "https://registry.npmmirror.com/@ffmpeg-installer/win32-x64/-/win32-x64-4.1.0.tgz" },
                 @{ Name = "ffprobe"; Url = "https://registry.npmmirror.com/@ffprobe-installer/win32-x64/-/win32-x64-5.1.0.tgz" }

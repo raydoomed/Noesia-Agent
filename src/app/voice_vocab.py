@@ -37,9 +37,14 @@ _CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
 # 英文 / 数字串：至少两个字符，允许中间带 . _ -
 _LATIN = re.compile(r"[A-Za-z][A-Za-z0-9._-]{1,}")
 
-# 候选的频次区间。上限挡住常用词，下限挡住只出现过一次的口误
+# 下限挡住只出现过一次的口误。
 _MIN_FREQ = 3
-_MAX_FREQ = 300
+# 上限按「出现在多少条消息里」的比例判，不按总出现次数：总数是个绝对值，语料越攒越长，
+# 真正该进表的专名（在 4000 条里被提 400 次 = 10%）反而先被踢掉；而「今天」「什么」
+# 这类要挡的常用词本来就是靠比例才分得出来的。0.3 = 三成以上的消息里都有，太泛了。
+_MAX_DF = 0.3
+# 语料太少时比例没有意义（5 条消息里出现 5 次就是 100%）：少于这个条数只按频次判
+_DF_MIN_DOCS = 50
 # 凝聚度门槛：log2(p(xy) / (p(x)·p(y)))，越大越黏
 _MIN_PMI = 3.0
 # 邻接熵门槛：左右各自至少这么多比特，才算能自由移动。
@@ -52,6 +57,8 @@ _MAX_WORDS = 200
 _MIN_NEW = 50
 # 语料最多留这么多条：统计看的是最近怎么说，再多也不会更准，只会让重算变慢
 _MAX_CORPUS = 4000
+# 重算词表的最小间隔：全量扫一遍要几十到几百毫秒，不能每打一句就重来
+_REBUILD_EVERY_S = 600.0
 
 
 def _entropy(counter: Counter) -> float:
@@ -65,16 +72,21 @@ def _discover_chinese(texts: list[str]) -> dict[str, float]:
     """中文 n-gram：频次 + 凝聚度 + 邻接熵。返回 {词: 分数}。"""
     char_freq: Counter = Counter()
     ngram_freq: Counter = Counter()
+    doc_freq: Counter = Counter()  # 多少条消息里出现过（算上限用）
     left: dict[str, Counter] = {}
     right: dict[str, Counter] = {}
 
     for text in texts:
+        seen: set[str] = set()
         for run in _CJK_RUN.findall(text):
             char_freq.update(run)
             for n in (2, 3, 4):
                 for i in range(len(run) - n + 1):
                     gram = run[i:i + n]
                     ngram_freq[gram] += 1
+                    if gram not in seen:
+                        seen.add(gram)
+                        doc_freq[gram] += 1
                     left.setdefault(gram, Counter())[run[i - 1] if i > 0 else "^"] += 1
                     tail = i + n
                     right.setdefault(gram, Counter())[run[tail] if tail < len(run) else "$"] += 1
@@ -84,9 +96,12 @@ def _discover_chinese(texts: list[str]) -> dict[str, float]:
         return {}
 
     found: dict[str, float] = {}
+    n_docs = max(1, len(texts))
     for gram, freq in ngram_freq.items():
-        if not (_MIN_FREQ <= freq <= _MAX_FREQ):
+        if freq < _MIN_FREQ:
             continue
+        if n_docs >= _DF_MIN_DOCS and doc_freq[gram] / n_docs > _MAX_DF:
+            continue  # 太泛：三成以上的消息里都有它
         # 凝聚度取最弱的一处，只要有一处不黏就不算一个词
         weakest = math.inf
         for i in range(len(gram) - 1):
@@ -118,17 +133,25 @@ def _discover_chinese(texts: list[str]) -> dict[str, float]:
 def _discover_latin(texts: list[str]) -> dict[str, float]:
     """英文 / 数字串：整段就是一个词，只按频次筛。"""
     counter: Counter = Counter()
+    doc_freq: Counter = Counter()
     spellings: dict[str, Counter] = {}
     for text in texts:
+        seen: set[str] = set()
         for match in _LATIN.finditer(text):
             word = match.group(0)
             key = word.lower()  # 计数按小写归并：Noesia / noesia 是同一个词
             counter[key] += 1
             spellings.setdefault(key, Counter())[word] += 1
+            if key not in seen:
+                seen.add(key)
+                doc_freq[key] += 1
     found: dict[str, float] = {}
+    n_docs = max(1, len(texts))
     for key, freq in counter.items():
-        if not (_MIN_FREQ <= freq <= _MAX_FREQ):
+        if freq < _MIN_FREQ:
             continue
+        if n_docs >= _DF_MIN_DOCS and doc_freq[key] / n_docs > _MAX_DF:
+            continue  # 同中文侧：按比例判，不按总次数
         # 写回出现最多的那种大小写写法（Noesia 而不是 noesia）
         shown = spellings[key].most_common(1)[0][0]
         found[shown] = math.log2(1 + freq)
@@ -269,12 +292,20 @@ def learn() -> dict | None:
     if len(texts) < _MIN_NEW:
         return None
     target = vocab_path()
-    previous = _payload(target).get("samples")
-    # 和上一次算的时候比，没多够就不重算：扫描全部语料要毫秒级到半秒，别每句都来
-    if isinstance(previous, int) and len(texts) - previous < _MIN_NEW:
-        return None
+    previous = _payload(target)
+    built_at = previous.get("built_at") or 0
+    newest = str(previous.get("newest") or "")
+    # 先裁剪再读：`samples` 记的是裁剪后的条数，两轮之间必须用同一个基准。
     _trim_corpus()
+    texts = _read_corpus()
+    if not texts or texts[-1] == newest:
+        return None  # 没有新语料
+    # 条数到上限以后，「多了几条」永远是 0（裁剪把它抹平了），只能看最新那一句变没变；
+    # 但每来一句就全量重扫要几百毫秒，所以再夹一道时间闸：最多十分钟算一次。
+    if time.time() - float(built_at) < _REBUILD_EVERY_S:
+        return None
     payload = build(texts)
+    payload["newest"] = texts[-1]
     try:
         save(payload, target)
     except OSError:

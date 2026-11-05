@@ -21,6 +21,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import uuid
 from collections.abc import MutableMapping
@@ -30,6 +31,7 @@ from app import winproc
 from app.status_stack import CONFIRM_TTL_MS
 
 CREATE_NO_WINDOW = 0x08000000  # Win32：子进程给一个控制台，但不显示窗口（后代进程都继承它）
+START_TIME_DRIFT = 200  # 进程创建时间的容差（厘秒），与引擎 gateway.status.START_TIME_DRIFT_TOLERANCE 同口径
 
 from PySide6 import QtCore
 
@@ -254,13 +256,30 @@ def close_console_sessions(project_root) -> list[str]:
     return notes
 
 
+def _same_incarnation(pid: int, recorded_start: object) -> bool:
+    """锁里写的 pid 现在还真的是当初那个进程吗？
+
+    锁文件是**自证的**：pid、kind、argv 都是它自己写的。硬杀、崩溃、断电之后锁会留在盘上，
+    Windows 再把那个 pid 复用给别的程序（浏览器、编辑器），只按「进程还活着 + argv 在项目里」
+    判就会把陌生人连同它的子进程一起结束。引擎写锁时留了进程创建时间，就拿它比；
+    锁里没有、或读数拿不到，就是「说不清」——说不清一律不动手，让用户点卡片确认。
+    """
+    if sys.platform != "win32":
+        return True
+    current = winproc.start_time(pid)
+    if not isinstance(recorded_start, int) or current is None:
+        logger.info("pid %s 的创建时间对不上账（锁里 %r，实际 %r），不认它", pid, recorded_start, current)
+        return False
+    return abs(current - recorded_start) <= START_TIME_DRIFT
+
+
 def blocking_owner(home: "Path | str", project_root: "Path | str") -> int | None:
     """占着数据根、且确实是**本项目的**那个后台进程的 pid（不是就别动）。
 
-    只认四个条件同时成立：锁里写的是 `noesia-gateway`、锁说的 home 就是我们的 home、
-    argv 落在本项目目录里、**那个 pid 现在还活着**。任一条不成立就返回 None——
-    宁可不杀，也不去结束别人的进程；而且硬杀/自退之后锁文件会留在原地（里面还是旧 pid），
-    不判活的话会把一条早就没了的进程当成「还占着」报给用户。
+    只认五个条件同时成立：锁里写的是 `noesia-gateway`、锁说的 home 就是我们的 home、
+    argv 落在本项目目录里、**那个 pid 现在还活着**、**它的创建时间和锁里记的对得上**。
+    任一条不成立就返回 None——宁可不杀，也不去结束别人的进程；而且硬杀/自退之后锁文件会留在
+    原地（里面还是旧 pid），不判活、不比对创建时间，就会把复用了这个 pid 的陌生程序当成「还占着」。
     """
     data = _lock_owner(home)
     pid = data.get("pid")
@@ -275,6 +294,9 @@ def blocking_owner(home: "Path | str", project_root: "Path | str") -> int | None
         return None
     argv = data.get("argv") or []
     root = Path(project_root).resolve()
+    if not _same_incarnation(pid, data.get("start_time")):
+        logger.info("锁里的 pid %s 已经不是当初那个进程（pid 被复用了），不动它", pid)
+        return None
     entry = str(argv[0]) if argv else f"{root}{os.sep}src{os.sep}engine{os.sep}tui_gateway{os.sep}entry.py"
     try:
         Path(entry).resolve().relative_to(root)
@@ -670,6 +692,7 @@ class EngineWire(QtCore.QObject):
     display_config = QtCore.Signal(dict)   # 参数：config.yaml 的 display 段（画什么、不画什么照它）
     models = QtCore.Signal(list, str)      # 参数：(模型清单, 当前模型)
     provider_rows = QtCore.Signal(list, str)  # 设置页：供应商全表（含未配 Key 的家）+ 引擎当前的模型
+    provider_rows_failed = QtCore.Signal(str)  # 设置页那张表取不到（5098/5033）：原因回给窗口本身
     save_result = QtCore.Signal(str, dict)  # 设置页保存的回执：(tag, {"ok": True/False, "message"/"slug"})
     delta = QtCore.Signal(str)             # message.delta 的文本增量
     reasoning_delta = QtCore.Signal(str)   # reasoning.delta：思考的流式增量
@@ -694,6 +717,8 @@ class EngineWire(QtCore.QObject):
     clarify = QtCore.Signal(dict)          # 引擎在问「你要选哪个」（带 reply_id 与 questions）
     secret_prompt = QtCore.Signal(dict)    # 引擎要一个密钥 / sudo 密码（secret、sudo）
     reaction = QtCore.Signal(str)          # 她对你的温柔话有反应（ily / <3）
+    approvals_cancelled = QtCore.Signal(list)  # approval.cancelled：引擎自己撤了那几张审批卡（超时/本轮作废）
+    request_cancelled = QtCore.Signal(str, str)  # request.cancel：引擎收回一个提问（kind=clarify/secret，id=reply_id）
     processes = QtCore.Signal(list)        # process.list：还在跑的后台进程
     voice_text = QtCore.Signal(str, str)   # voice.transcribe 回执：录音文件路径 + 识别出的文字
     voice_failed = QtCore.Signal(str, str)  # 同上但失败：录音文件路径 + 原因
@@ -733,6 +758,7 @@ class EngineWire(QtCore.QObject):
         self._pending: dict[int, str] = {}
         self._session_id = ""
         self._pending_switch = ""  # save_key 之后要切过去的模型（"provider:model"）
+        self._pending_switch_token = ""  # 上面那次切换属于设置窗的哪一轮
         # 存完密钥要不要重拿聊天菜单：等设置页那份全表回来再拿，别在全量重探的中途拿（见 model.save_key）
         self._pending_reasoning = ""  # 等会话建好再发的推理强度
         self._models_after_settings = False  # 存完密钥：等设置页全表回来再重拿聊天菜单
@@ -744,7 +770,9 @@ class EngineWire(QtCore.QObject):
         self._replay: list[dict] = []  # 4001 之后要原样重发的那几条：一次 attach 回来统一补发
         self._recovering = False  # 已经有一次重新 attach 在路上：别一个错开一次 resume
         self._attaching = False  # 会话正在起（create/resume 已发、回包没到）：这期间别再发第二次
+        self._attach_since = 0.0  # 上面这个「正在起」是从什么时候开始的（挂太久要能自己收回）
         self._outbox: deque[bytes] = deque()  # 排队等着推进管道的字节（大附件分块写）
+        self._write_failed = False  # 刚刚这一帧是不是被管道拒收了（`_write` 靠它决定返回 true/false）
         self._recover_rounds = 0  # 连着救了几轮：超了就开新会话，别在同一个错上打转
         self._pending_text = ""  # 会话还没 attach 时打的字，attach 完再发
         self._pending_turns: list[tuple[str, list]] = []  # 会话还没起来时攒下的几轮：(正文, 附件)
@@ -791,11 +819,13 @@ class EngineWire(QtCore.QObject):
         self._err_decoder = None
         self._pending.clear()
         self._outbox.clear()
+        self._write_failed = False
         self._sent.clear()
         self._retried.clear()
         self._replay.clear()
         self._recovering = False
         self._attaching = False
+        self._attach_since = 0.0
         self._recover_rounds = 0
         self._attach_names.clear()
         self._session_id = ""
@@ -805,6 +835,7 @@ class EngineWire(QtCore.QObject):
         # 「等会话就绪」的意图状态也属于上一趟：留着的话，新进程第一次 resume 成功就会
         # 把我们早就放弃的模型/推理档偷偷写进 config.yaml。
         self._pending_switch = ""
+        self._pending_switch_token = ""
         self._pending_reasoning = ""
         self._models_after_settings = False
         # 上一趟攒着的「带附件的轮次」和正在交接的那一轮，都带旧会话的账：留着会在
@@ -899,13 +930,21 @@ class EngineWire(QtCore.QObject):
         # 而它马上要被替换（界面随后清屏），发进去的话用户再也看不见；
         # 同时挡住 submit 再发一次 session.create（两场会话并存，对话被劈成两半）。
         self._attaching = True
-        # 默认 cwd 是工作区：新会话的 agent 就在这儿干活，不落到源码目录里
-        params = {"cwd": cwd or str(self._workspace)}
+        self._attach_since = time.monotonic()  # 起点：不回包的话 `_needs_attach` 到点会自己收回
+        # 默认 cwd 是工作区：新会话的 agent 就在这儿干活，不落到源码目录里。
+        # `cwd_explicit` 必须带上：引擎只在它为真时，才把「宿主探不到但桌面端坚持的路径」
+        # （UNC / 远程 / 容器拓扑）当成用户明确选的工作区记下来；不带就回落启动目录。
+        params = {"cwd": cwd or str(self._workspace), "cwd_explicit": True}
         # 档位是会话级的：新会话不带就等于回到全局默认（中），界面却还勾着上一场选的那档。
         # 引擎 `session.create` 认 `reasoning_effort`（`create_overrides` → `parse_reasoning_effort`）。
         if self._reasoning_effort:
             params["reasoning_effort"] = self._reasoning_effort
-        self._call("session.create", params, tag="session.create")
+        rid = self._call("session.create", params, tag="session.create")
+        if rid not in self._sent:
+            # 建会话这一帧压根没出去（引擎正在退）：别把「正在起」挂上——
+            # 挂着的话之后每句话只往 `_pending_text` 里堆，界面一个字都不说。
+            self._attaching = False
+            self._attach_since = 0.0
         self.reasoning_pending.emit(False)  # 新建会话的档位就是刚带过去的那档，不算未知
 
     def resume_session(self, session_id: str) -> None:
@@ -915,9 +954,14 @@ class EngineWire(QtCore.QObject):
         self._stored_id = session_id or self._stored_id
         # 回包之前打的字先攒着：这会儿 `_session_id` 还是上一场的，直接发就进了旧会话
         self._attaching = True
+        self._attach_since = time.monotonic()
         # 恢复的会话是懒加载的：resume 只挂历史、不建 agent，此刻问档位只会回全局默认。
         self.reasoning_pending.emit(True)
-        self._call("session.resume", {"session_id": session_id}, tag="session.resume")
+        rid = self._call("session.resume", {"session_id": session_id}, tag="session.resume")
+        if rid not in self._sent:
+            # 同 create：这一帧没出去就不能把「正在起」挂着，否则之后的话全堆在队列里
+            self._attaching = False
+            self._attach_since = 0.0
 
     def request_most_recent(self) -> None:
         self._call("session.most_recent", {}, tag="session.most_recent")
@@ -939,7 +983,7 @@ class EngineWire(QtCore.QObject):
 
         `queued=False` 只给语音用：语音是插话，就是要引擎把这句话作为纠正递进当前这一轮。
         """
-        if not self._session_id or self._attaching:
+        if self._needs_attach():
             # 冷启动窗口期连着打了两句：都攒着，别后一句把前一句顶掉；会话只起一场
             self._pending_text = f"{self._pending_text}\n\n{text}" if self._pending_text else text
             self._ensure_session()
@@ -960,7 +1004,7 @@ class EngineWire(QtCore.QObject):
         `confirm_empty_truncate` = 这一截会把整场对话清空（截的是第一句）；
         `confirm_deep_truncate` = 这条后面还有别的问答，会被一起删掉。
         """
-        if not self._session_id or self._attaching:
+        if self._needs_attach():
             self.error.emit("会话还没准备好，等这条回复出来再重发")
             return
         params = {
@@ -984,7 +1028,7 @@ class EngineWire(QtCore.QObject):
         if not items:
             self.submit(text, queued=queued)
             return
-        if not self._session_id or self._attaching or self._turn is not None:
+        if self._needs_attach() or self._turn is not None:
             # 会话还没起来 / 上一轮的附件还没交接完：整轮排进队列（连着发两轮不能互相顶掉）。
             # 顶掉的话，上一轮永远凑不齐回执，那句话连提示都没有就消失了。
             self._pending_turns.append((text, items))
@@ -998,6 +1042,7 @@ class EngineWire(QtCore.QObject):
         self._turn = {
             "text": text,
             "refs": [],
+            "attached": 0,  # 真挂上了几个：只贴图不打字时靠它判断要不要发那句兜底话
             "left": len(items),
             "images": sum(1 for item in items if item.get("kind") == "image"),
             "tag": tag,
@@ -1007,6 +1052,11 @@ class EngineWire(QtCore.QObject):
             rid = self._call(method, {**params, "session_id": self._session_id}, tag=tag)
             # 文件必须带回 `@file:` 引用才算成立（模型靠它知道有文件）；图片挂上就够
             self._attach_names[rid] = (name, method == "file.attach")
+            if rid not in self._sent:
+                # 这一张压根没发出去（引擎正在退）：回执永远不会来，这一轮的账当场结掉。
+                # 不结的话 `left` 永不归零，之后每一轮带附件的话都排在这轮后面，界面上
+                # 连一句「附件没发出去」都看不到。
+                self._on_attach_done(rid, tag, {"attached": False, "message": "引擎没接住这个附件"})
 
     @staticmethod
     def _attach_frame(item: dict) -> tuple[str, dict, str]:
@@ -1027,6 +1077,12 @@ class EngineWire(QtCore.QObject):
         if turn is None:
             return
         text = "\n\n".join([*[ref for ref in turn["refs"] if ref], turn["text"]]).strip()
+        if not text and turn["images"] and turn["attached"] == 0:
+            # 只贴了图、一张都没挂上（引擎拒收/挂载失败）：不能拿兜底话顶上——
+            # 模型没收到图却收到「你看这张图里有什么」，会凭想象编一段画面出来，
+            # 用户以为图发出去了。这一轮就到此为止，失败提示前面已经发过了。
+            self._flush_after_attach()
+            return
         if not text and turn["images"]:
             text = self.IMAGE_ONLY_CAPTION  # 只粘了图没打字：照桌面的兜底话说一句
         if not text:
@@ -1069,10 +1125,11 @@ class EngineWire(QtCore.QObject):
         clean = str(name or "").strip()
         self._reply(reply_id, {"answer": {"name": clean}} if clean else {})
 
-    def set_model(self, model: str) -> None:
-        self._switch_model(model)
+    def set_model(self, model: str, token: str = "") -> None:
+        """`token` 只进 tag：设置窗每一轮带一个编号，迟到的上一轮回执才认得出来。"""
+        self._switch_model(model, token)
 
-    def _switch_model(self, model: str) -> None:
+    def _switch_model(self, model: str, token: str = "") -> None:
         """切换模型；先保证有会话。
 
         引擎的 `config.set model` 只认带 `session_id` 的请求——没会话时它直接回 4001
@@ -1089,12 +1146,20 @@ class EngineWire(QtCore.QObject):
             return
         value = _model_value(model)
         self._pending_switch = model
+        self._pending_switch_token = token
         if self._session_id:
             self._pending_switch = ""
+            self._pending_switch_token = ""
             self._call("config.set", {"key": "model", "value": value,
-                                      "session_id": self._session_id}, tag="config.set:model")
+                                      "session_id": self._session_id}, tag=self._switch_tag(token))
         else:
             self.create_session("")
+
+    @staticmethod
+    def _switch_tag(token: str = "") -> str:
+        """切换模型的 tag。带轮次编号：两轮「保存并启用」叠在一起时，上一轮的迟到回执
+        才不会被当成这一轮的结果（否则窗口按旧结果关掉，引擎里跑的还是上一个模型）。"""
+        return f"config.set:model:{token}" if token else "config.set:model"
 
     def set_approval_mode(self, mode: str) -> None:
         """审批档位：键名照引擎的 getter/setter 表（`approvals.mode`），回包带回来的值才算数。"""
@@ -1197,7 +1262,7 @@ class EngineWire(QtCore.QObject):
         }, tag="onboarding.start")
         self._onboarding_started = True
 
-    def save_key(self, slug: str, api_key: str, then_model: str = "") -> None:
+    def save_key(self, slug: str, api_key: str, then_model: str = "", token: str = "") -> None:
         """保存某家的密钥；存完自动刷清单，`then_model` 给了就接着切过去。
 
         参数名照引擎的契约（`ModelSaveKeyParams`：`slug` / `api_key` / `session_id`），
@@ -1205,6 +1270,7 @@ class EngineWire(QtCore.QObject):
         """
         if then_model:  # 只存 Key 的调用别把已经排好的切换冲掉
             self._pending_switch = then_model
+            self._pending_switch_token = token
         params = {"slug": slug, "api_key": api_key}
         if self._session_id:
             params["session_id"] = self._session_id
@@ -1214,17 +1280,40 @@ class EngineWire(QtCore.QObject):
     # ---- 内部：发帧 ----
 
     def _call(self, method: str, params: dict, *, tag: str = "") -> int:
+        # 卡死的 handler 被引擎 kill 掉时不会回包：那条请求就永远留在 _sent 里，万一之后
+        # 同 rid 撞上 4001，会把一条几分钟前的旧帧重发进新会话。每次发帧顺手清一遍。
+        cutoff = time.monotonic() - self._SENT_TTL_S
+        for old, frame in list(self._sent.items()):
+            if float(frame.get("at") or 0) < cutoff:
+                self._sent.pop(old, None)
+                self._pending.pop(old, None)
         self._next_id += 1
         rid = self._next_id
         if tag:
             self._pending[rid] = tag
-        self._sent[rid] = {"method": method, "params": dict(params), "tag": tag}
+        self._sent[rid] = {
+            "method": method, "params": dict(params), "tag": tag, "at": time.monotonic()
+        }
         if not self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}):
             # 没发出去就别记着：留着的话它会一直算「在途」，回执永远不会来，
             # 内存里越攒越多，界面上却什么也不显示（调用方看到 failed 提示就够）。
             self._pending.pop(rid, None)
             self._sent.pop(rid, None)
         return rid
+
+    def _needs_attach(self) -> bool:
+        """这句话该不该先攒着：还没会话，或者会话正在起。顺手把「起太久」的那种收回。
+
+        `_attaching` 只能由回包、出错、换进程三条路摘掉。万一三条都没来（引擎收了建会话的帧
+        却一直不回），它就一直挂着：之后每句话只往 `_pending_text` 里堆，一个字也送不出去，
+        界面连报错都没有——只有重启程序能恢复。这里给一个时限。
+        """
+        if self._attaching and self._attach_since:
+            if time.monotonic() - self._attach_since >= self.ATTACH_TIMEOUT_S:
+                self._attaching = False
+                self._attach_since = 0.0
+                self.failed.emit("引擎一直没回会话，这次没接上")
+        return not self._session_id or self._attaching
 
     def _session_ready(self, session_id: str, stored_id: str = "") -> None:
         """会话真到手了：在途结束、恢复计数清零、运行时 id 换上。
@@ -1237,6 +1326,7 @@ class EngineWire(QtCore.QObject):
         """
         self._recovering = False
         self._attaching = False
+        self._attach_since = 0.0
         self._recover_rounds = 0
         self._session_id = session_id
         if stored_id:
@@ -1282,7 +1372,11 @@ class EngineWire(QtCore.QObject):
         """会话没了：4001 + 「找不到」。不能只认码——4001 也是参数错误码
         （`session_id is required` 同样是 4001），认错就会把真错误当成可恢复状态吞掉。"""
         text = str(message).lower()
-        return code == 4001 and ("not found" in text or "not exist" in text or "不存在" in text)
+        # 4007：`session.resume` 定位不到会话时引擎用的是这个码（`methods_session._resume_locate`
+        # → `_err(rid, 4007, "session not found")`），和别的路径上的 4001 是同一个语义。
+        # 只认 4001 的话，存储 id 一旦失效（在别处删了那场对话、换了数据根），之后每句话都
+        # 只换来一条「session not found」红字，永远发不出去——不是一次报错，是永久卡死。
+        return code in (4001, 4007) and ("not found" in text or "not exist" in text or "不存在" in text)
 
     def _recover(self, failed: dict | None, method: str, rid=None) -> None:
         """会话句柄被回收（4001）：按存储 id 重新挂上，再把刚才那条原样重发。
@@ -1292,6 +1386,7 @@ class EngineWire(QtCore.QObject):
         """
         if failed is not None:
             queued = dict(failed)
+            queued.pop("at", None)  # 发帧时刻只用于清理在途表，别跟着重发的帧一路传下去
             if queued["tag"].startswith("attach:") and isinstance(rid, int):
                 # 附件的登记（名字、是否必须有 @file: 回执）跟着这条帧一起搬过去：
                 # 重发会换一个新 rid，不搬的话名字丢了，文件没带引用也会被当成挂成功
@@ -1368,21 +1463,47 @@ class EngineWire(QtCore.QObject):
         self._voice_seq += 1
         job = self._voice_seq
         self._voice_jobs[job] = str(path)
-        self._call("voice.transcribe", {"path": str(path)}, tag=f"voice.transcribe:{job}")
+        rid = self._call("voice.transcribe", {"path": str(path)}, tag=f"voice.transcribe:{job}")
+        if rid not in self._sent:
+            # 这一帧没出去：回执不会来，任务表里那条必须当场撤掉，并且告诉界面
+            # 「这段没发出去」——否则语音球永久停在「正在识别…」，录音文件也不删。
+            self._voice_jobs.pop(job, None)
+            self.voice_failed.emit(str(path), "录音没送到引擎，再说一次")
 
     def _reply(self, request_id, result: dict) -> None:
         self._write({"jsonrpc": "2.0", "id": request_id, "result": result})
 
+    def _reply_unsupported(self, request_id, method: str) -> None:
+        """回「没有这个 handler」：契约要的是 JSON-RPC `-32601`，不是一条成功空结果。"""
+        self._write({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32601, "message": f"桌面端没有 {method} 这个 handler"},
+        })
+
     WRITE_CHUNK = 32 * 1024  # 一次最多往管道塞这么多字节
+    ATTACH_TIMEOUT_S = 15.0  # 建/恢复会话最多等这么久：再不来就收回「正在起」，别把输入永久堵死
+    _SENT_TTL_S = 120.0  # 在途请求最多留这么久：卡死的 handler 不会回包，超过就当它没了
 
     def _write(self, frame: dict) -> bool:
-        """发一帧；返回是否真的排进了发送队列（引擎没起时 false）。"""
+        """发一帧；返回是否真的进了管道（引擎没起、或管道当场拒收时 false）。"""
         if not self.is_running():
             self.failed.emit("引擎未运行，指令没发出去")
             return False
         line = json.dumps(frame, ensure_ascii=False) + "\n"
-        self._outbox.append(line.encode("utf-8"))
+        data = line.encode("utf-8")
+        # 只看 `is_running()` 不够：进程还活着、管道也可能已经拒收（写到一半退出）。
+        # 以前一律返回 True，于是调用方按「发出去了」登记在飞请求和 `_attaching`，
+        # 那笔账永远等不到回包——之后每句话只往队列里堆，界面还不报错。
+        self._write_failed = False
+        self._outbox.append(data)
         self._pump_writes()
+        if self._write_failed:
+            try:
+                self._outbox.remove(data)  # 残片还在队里就摘掉，别留给下一帧拼成半句话
+            except ValueError:
+                pass
+            return False
         return True
 
     def _pump_writes(self) -> None:
@@ -1395,6 +1516,7 @@ class EngineWire(QtCore.QObject):
         while self._outbox:
             if not self.is_running():
                 self._outbox.clear()
+                self._write_failed = True
                 self.failed.emit("引擎未运行，指令没发出去")
                 return
             chunk = self._outbox[0]
@@ -1404,6 +1526,7 @@ class EngineWire(QtCore.QObject):
                 if written is not None and written < 0:
                     # 一个字节都没进去：这一帧已经断了，别把剩下的残片继续灌进管道
                     self._outbox.clear()
+                    self._write_failed = True
                     self.failed.emit("引擎没接住指令，这一步没送出去")
                     return
                 QtCore.QTimer.singleShot(0, self._pump_writes)
@@ -1411,6 +1534,7 @@ class EngineWire(QtCore.QObject):
             self._outbox.popleft()
             written = self._proc.write(chunk)
             if written is not None and written < 0:
+                self._write_failed = True
                 self.failed.emit("引擎没接住指令，这一步没送出去")
                 return
 
@@ -1510,8 +1634,11 @@ class EngineWire(QtCore.QObject):
             params["reply_id"] = frame.get("id")
             self.secret_prompt.emit(params)
             return
-        # 其余请求（vault/connection/desktop 桥）当前界面不提供，明确回缺席，别让引擎卡住
-        self._reply(frame.get("id"), {"unsupported": True})
+        # 其余请求（vault/connection/desktop 桥）当前界面不提供，按契约回 `-32601`。
+        # 回成功帧 `{"unsupported": true}` 是错的：引擎会当成「这个窗口答复了、只是值为空」，
+        # 多窗口的 decline 计票被一次假成功提前结算，`server_requests: true` 的声明
+        # 也让引擎的快速失败路径失效——表现是「工具说没窗口应答 / 预览失败」，查不到客户端头上。
+        self._reply_unsupported(frame.get("id"), str(method))
 
     def _on_response(self, frame: dict) -> None:
         rid = frame.get("id")
@@ -1523,6 +1650,9 @@ class EngineWire(QtCore.QObject):
             err = frame["error"]
             code = err.get("code") if isinstance(err, dict) else None
             message = err.get("message", err) if isinstance(err, dict) else err
+            # 错误码以前只用来判两条特例就丢了：出了别的失败，日志里只有一句人话，
+            # 分不清是引擎 500、方法不存在还是上游超时。留一行在日志里。
+            logger.debug("RPC 失败 id=%s code=%s %s", rid, code, message)
             if self._is_session_gone(code, message):
                 # 运行时 id 只是这个后端进程里的句柄：关掉程序、会话被回收，它就没了。
                 # 引擎自己写明「client should resume the stored session」——这是可以自己救回来的状态，
@@ -1531,13 +1661,18 @@ class EngineWire(QtCore.QObject):
                     return  # 这一条已经救过一次：再错就不再同一条上来回打转
                 if isinstance(rid, int):
                     self._retried.add(rid)
-                failed = self._sent.get(rid) if isinstance(rid, int) else None
+                failed = self._sent.pop(rid, None) if isinstance(rid, int) else None
                 self._recover(failed, str(failed.get("method") if failed else ""), rid)
                 return
             if tag in {"session.create", "session.resume"}:
                 self._attaching = False  # 起会话这一趟失败了：下一句还能重新发起，别被标志挡死
             if isinstance(rid, int):
                 self._sent.pop(rid, None)  # 别的失败不再留着「原样重发」的副本
+            if tag == "model.options:settings":
+                # 设置页正等这张表：错误必须回到那个窗口里。设置页是模态的，聊天区被盖住，
+                # 落到下面那个通用 error.emit 等于没有提示——用户只看到一张空表。
+                self.provider_rows_failed.emit(str(message))
+                return
             if tag == "voice.transcribe.download":
                 # 没下成：把原因交回界面，让它把「正在下」那条换成一句能看懂的
                 self.voice_model.emit({"ready": False, "failed": str(message)})
@@ -1553,13 +1688,14 @@ class EngineWire(QtCore.QObject):
                 # 引擎说这一轮还在跑：截断重发必须等它真停下（引擎绝不在跑着的时候截断）
                 self.error.emit("这一轮还没停下，等它真结束再重发")
                 return
-            if tag.startswith("model.save_key") or tag == "config.set:model":
+            if tag.startswith("model.save_key") or tag.startswith("config.set:model"):
                 # 设置窗口正等这一条：失败原因原样交给那个窗口，别改成「没配供应商」的泛提示，
                 # 也别往聊天区再喷一条无关的英文
                 if tag.startswith("model.save_key"):
                     # 这把 Key 没存上：排着的那次切换跟着作废，
                     # 否则下一次存别家成功时会突然切回这个旧选择。
                     self._pending_switch = ""
+                    self._pending_switch_token = ""
                 self.save_result.emit(tag, {"ok": False, "message": str(message)})
                 return
             if code == 5080 or looks_unconfigured(message, code):
@@ -1621,7 +1757,7 @@ class EngineWire(QtCore.QObject):
                 self.history.emit(rows)
             self.session_ready.emit(result)
             if self._pending_switch:  # 攒着的模型选择：会话一到就切
-                self._switch_model(self._pending_switch)
+                self._switch_model(self._pending_switch, self._pending_switch_token)
             if self._pending_reasoning:  # 攒着的推理强度，同理
                 level, self._pending_reasoning = self._pending_reasoning, ""
                 self.set_reasoning(level)
@@ -1705,8 +1841,8 @@ class EngineWire(QtCore.QObject):
             self.save_result.emit(tag, {"ok": True,
                                         "slug": tag.split(":", 1)[1] if ":" in tag else str(row.get("slug") or "")})
             if self._pending_switch:
-                self._switch_model(self._pending_switch)
-        elif tag == "config.set:model":
+                self._switch_model(self._pending_switch, self._pending_switch_token)
+        elif tag.startswith("config.set:model"):
             # 切换成功后引擎的当前值变了，但不会自己再推一份清单：这里主动要一次，
             # 界面上的按钮文字和菜单勾选才跟得上（不然就是「保存了但没生效」的样子）。
             self.request_models()
@@ -1745,8 +1881,11 @@ class EngineWire(QtCore.QObject):
             self.attachment_failed.emit(name or "附件", str(result.get("message") or "引擎没接下这个附件"))
         elif needs_ref and not result.get("ref_text"):
             self.attachment_failed.emit(name or "附件", "引擎没给出 @file: 引用，这个文件没送进去")
-        elif result.get("ref_text") and self._turn is not None:
-            self._turn["refs"].append(str(result["ref_text"]))
+        else:
+            if self._turn is not None:
+                self._turn["attached"] += 1
+            if result.get("ref_text") and self._turn is not None:
+                self._turn["refs"].append(str(result["ref_text"]))
         self._settle_turn(tag)
 
     def _settle_turn(self, tag: str) -> None:
@@ -1828,10 +1967,30 @@ class EngineWire(QtCore.QObject):
             # 于是「正在继续上次被打断的那一轮…」这类说明一条都没显示过。
             self.status_text.emit(str(payload.get("kind") or ""), str(payload.get("text") or ""))
         elif kind == "session.info":
-            self.status.emit(str(payload.get("state") or payload.get("status") or ""))
+            # 契约里根本没有 state/status 两个键（`SessionLiveInfo`）：以前按它们取，
+            # 取到的永远是空串，main 挡空串 → 「思考中…」这一路从来没显示过。
+            # 真正能拿到的是 `running`（引擎手里有没有一轮在跑）。
+            running = payload.get("running")
+            if running is not None:
+                self.status.emit("thinking" if running else "idle")
             effort = payload.get("reasoning_effort")
             if effort is not None:  # 引擎建好 agent 后才会带这个字段，以它为准
                 self.reasoning_reported.emit(str(effort), str(payload.get("reasoning_effort_wire") or ""))
+        elif kind == "approval.cancelled":
+            # 引擎自己撤掉了审批卡（等太久、这一轮被作废）：卡片必须跟着关。
+            # 不关的话，那张卡上的按钮点下去会回一个已经失效的 request_id，
+            # 引擎那边什么都不会发生，用户以为批了、工具却一直没动。
+            ids = payload.get("request_ids")
+            self.approvals_cancelled.emit([str(item) for item in ids] if isinstance(ids, list) else [])
+        elif kind == "request.cancel":
+            # 引擎收回一个提问：载荷是 `{id, method, reason}`（`RequestCancelPayload`），
+            # `id` 就是我们当作 request_id 的那个帧号。对应那张卡直接关掉，别再回话。
+            self.request_cancelled.emit(str(payload.get("method") or ""), str(payload.get("id") or ""))
+        elif kind == "session.reclaimed":
+            # 引擎单方回收了会话（闲置超时 / 淘汰 / 孤儿）：这个运行时 id 已经作废。
+            # 不清掉的话，下一句会撞 4001，界面先闪一条红字才自愈；清掉就当作「还没挂会话」，
+            # 下一句自己 resume，用户看不到任何异常。
+            self._session_id = ""
         elif kind == "notification.show":
             self.notice_show.emit(dict(payload))
             return

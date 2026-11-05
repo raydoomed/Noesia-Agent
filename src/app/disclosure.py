@@ -84,6 +84,15 @@ class Folds:
         self._items.clear()
         self._marks.clear()
 
+    def drop_invalid(self) -> None:
+        """文档被截断后，把已经不在文档里的段丢出登记表。
+
+        删掉的那些块会变成 `isValid() == False`；不丢的话 `all()` 还把它们算作「屏幕上有东西」，
+        `has_transcript()` 就永远为真（换会话时判断要不要重铺历史全靠它）。
+        """
+        for key in [key for key, fold in self._items.items() if not fold.head_block.isValid()]:
+            self._items.pop(key, None)
+
     def owns(self, pos: int) -> bool:
         """这个位置是不是落在某个折叠段的正文里（抬头不算）。"""
         return isinstance(self._doc.findBlock(pos).userData(), _BodyMark)
@@ -116,12 +125,30 @@ class Folds:
         self._items[fold.key] = fold
         return fold
 
+    def _body_cursor(self, fold: Fold) -> QtGui.QTextCursor:
+        """给这个折叠段新开一段正文，光标落在新段里。
+
+        必须接在**这张卡自己的**正文尾部，不能写死成「文档末尾」：引擎并发调两把工具时，
+        先回来的那张的输出会被排到后一张下面——收起 A 时消失的却是 B 下面那一行。
+        """
+        after = self._tail_block(fold)
+        if after is None or not after.isValid():
+            cursor = self._end_cursor()
+            self._start_block(cursor, margin=0)
+            return cursor
+        cursor = QtGui.QTextCursor(self._doc)
+        cursor.setPosition(after.position() + after.length() - 1)  # 码元数：emoji 占两个
+        cursor.insertBlock()
+        block_format = cursor.blockFormat()
+        block_format.setTopMargin(0)
+        cursor.setBlockFormat(block_format)
+        return cursor
+
     def append(self, fold: Fold, text: str, *, body_format: QtGui.QTextCharFormat | None = None) -> None:
         """往折叠段下面加一段（折叠着加进去的段落一样是藏着的）。"""
         if not text:
             return
-        cursor = self._end_cursor()
-        self._start_block(cursor, margin=0)
+        cursor = self._body_cursor(fold)
         start = cursor.position()
         cursor.insertText(text, body_format or self._body_format)
         end = cursor.position()
@@ -169,7 +196,10 @@ class Folds:
         # 换字会把这一块并到上一块里去（两行子代理挤成一行）
         cursor = QtGui.QTextCursor(block)
         cursor.setPosition(block.position())
-        cursor.setPosition(block.position() + len(block.text()), QtGui.QTextCursor.MoveMode.KeepAnchor)
+        # 用 `block.length() - 1`（Qt 的码元数）而不是 `len(block.text())`（码点数）：
+        # 一个 emoji 在 Python 里算 1、在 Qt 里算 2，用 len 会把位置落在行中间，
+        # 上一行末字被切到下一行开头，而且每追加一次就再错一次。
+        cursor.setPosition(block.position() + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.insertText(text, body_format or self._body_format)
         self._doc.markContentsDirty(0, self._doc.characterCount())
 
@@ -212,7 +242,7 @@ class Folds:
             cursor = self._end_cursor()
             self._start_block(cursor, margin=0)
         else:
-            cursor.setPosition(after.position() + len(after.text()))
+            cursor.setPosition(after.position() + after.length() - 1)  # 码元数：emoji 占两个
             cursor.insertBlock()
             block_format = cursor.blockFormat()
             block_format.setTopMargin(0)
@@ -245,10 +275,9 @@ class Folds:
         """
         if not rows:
             return
-        cursor = self._end_cursor()
         # `start` 必须取**另起一段之后**的位置：取在那之前，`findBlock(start)` 落在抬头块
         # 的末尾，抬头会被一起标成正文块——折叠着的时候整行（连标题）跟着消失。
-        self._start_block(cursor, margin=0)
+        cursor = self._body_cursor(fold)
         start = cursor.position()
         for index, row in enumerate(rows):
             if index:
@@ -299,7 +328,7 @@ class Folds:
         pos = block.position()
         cursor = QtGui.QTextCursor(self._doc)
         cursor.setPosition(pos)
-        cursor.setPosition(pos + len(block.text()), QtGui.QTextCursor.KeepAnchor)
+        cursor.setPosition(pos + block.length() - 1, QtGui.QTextCursor.KeepAnchor)  # 码元数，不是 len()
         if fold.glyph is not None:
             cursor.insertImage(fold.glyph)
             cursor.insertText(" ")

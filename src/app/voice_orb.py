@@ -71,7 +71,17 @@ class VoiceOrb(QtWidgets.QWidget):
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(16)  # 60fps，跟采集的取数节奏一致
         self._timer.timeout.connect(self._tick)
+        # 不在构造里启动：这个球几乎一直藏着，60fps 空转是白耗电（笔记本上很明显）。
+        # 由 showEvent/hideEvent 开关。
+
+    # 看得见才转：动画只在显示时有意义
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        super().showEvent(event)
         self._timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+        self._timer.stop()
+        super().hideEvent(event)
 
     # ---------------------------------------------------------- 外部接口
 

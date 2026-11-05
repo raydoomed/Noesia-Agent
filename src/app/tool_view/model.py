@@ -10,6 +10,7 @@ import re
 from datetime import datetime
 from typing import Any, Mapping
 
+from app.redact import redact
 from app.tool_view.i18n import tr
 from app.tool_view.types import (
     CountMetric,
@@ -178,7 +179,13 @@ def read_file_display_target(args: dict[str, Any], result: dict[str, Any]) -> st
 # `context` 是 tool.start 阶段网关发来的**摘要**（"sleep 70 + 2 commands"），
 # 当临时占位可以，但 `$` 转录里必须显示真正执行的东西。
 def shell_command(args: dict[str, Any]) -> str:
-    return first_string_field(args, ["command", "code"]) or first_string_field(args, ["context", "preview"]) or context_value(args)
+    # 命令原文的**唯一出口**：工具行、展开正文、`$` 转录都从这里取，所以在这一处打码，
+    # 三处一起生效。以前审批卡打了码、工具行里还是明文，同一条命令两个样子。
+    return redact(
+        first_string_field(args, ["command", "code"])
+        or first_string_field(args, ["context", "preview"])
+        or context_value(args)
+    )
 
 
 # ---- TOOL_META ----

@@ -85,6 +85,7 @@ def main() -> None:
     print(f"注释 {len(items)} 条，已有译文 {len(translated)}，待翻 {len(pending)}")
 
     tokens_in = tokens_out = 0
+    dropped: list[int] = []
     for start in range(0, len(pending), BATCH):
         chunk = pending[start : start + BATCH]
         for attempt in range(3):
@@ -95,7 +96,10 @@ def main() -> None:
                 print(f"  批次 {start} 第 {attempt + 1} 次失败：{exc}")
                 time.sleep(2 * (attempt + 1))
         else:
-            print(f"  批次 {start} 放弃")
+            # 放弃的批次记下来：以前 continue 之后照样打印「译文 N 条」并退 0，
+            # 磁盘上是「一半新一半旧」，调用方根本分不出这次翻完没翻完。
+            print(f"  批次 {start} 放弃（{len(chunk)} 条）")
+            dropped.append(start)
             continue
         tokens_in += usage.get("prompt_tokens", 0)
         tokens_out += usage.get("completion_tokens", 0)
@@ -106,6 +110,10 @@ def main() -> None:
         print(f"  {min(start + BATCH, len(pending))}/{len(pending)}")
 
     print(f"译文 {len(translated)} 条；tokens in={tokens_in} out={tokens_out}")
+    if dropped:
+        # 非 0 退出：这批没翻完，文件是不完整状态，别让人以为已经落好了
+        print(f"有 {len(dropped)} 个批次失败，{OUT.name} 只写进去了成功的部分——重跑一次补齐")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

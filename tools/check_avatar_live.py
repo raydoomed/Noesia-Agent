@@ -25,18 +25,59 @@ sys.path.insert(0, str(ROOT / "src"))
 from PySide6 import QtCore, QtWidgets  # noqa: E402
 
 from app.avatar_rtc import AvatarRtc  # noqa: E402
-from app.vidu_session import FRAME_BYTES, SAMPLE_RATE, load_wav  # noqa: E402
+from app.vidu_session import FRAME_BYTES, SAMPLE_RATE  # noqa: E402
+
+
+def load_wav(path: pathlib.Path) -> bytes:
+    """读成 24k / 单声道 / s16le 的裸 PCM。
+
+    这段以前在 `vidu_session` 里（后来随重构删掉了），工具一直 import 不到、跑不起来，
+    所以放回它唯一的调用方这里：`wave` 只能解 wav，mp3 先自己转。
+    """
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(path), "rb") as fh:
+        channels, width, rate = fh.getnchannels(), fh.getsampwidth(), fh.getframerate()
+        raw = fh.readframes(fh.getnframes())
+    if width != 2:
+        raise SystemExit(f"只支持 16 位 wav（这段是 {width * 8} 位）：先 ffmpeg 转一下")
+    samples = np.frombuffer(raw, dtype="<i2")
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1).astype("<i2")
+    if rate != SAMPLE_RATE:
+        count = max(1, int(round(len(samples) * SAMPLE_RATE / rate)))
+        old = np.linspace(0.0, 1.0, len(samples), endpoint=False)
+        new = np.linspace(0.0, 1.0, count, endpoint=False)
+        samples = np.interp(new, old, samples).astype("<i2")
+    return samples.tobytes()
+
+
+def _flag(name: str, default: str | None = None) -> str | None:
+    """取 `--name 值`；写在末尾少给了值就是用法错误，别抛 IndexError 栈回溯。"""
+    if name not in sys.argv:
+        return default
+    index = sys.argv.index(name)
+    if index + 1 >= len(sys.argv):
+        raise SystemExit(f"用法：{name} 后面要跟一个值")
+    return sys.argv[index + 1]
+
 
 OUT = pathlib.Path(tempfile.gettempdir()) / "noesia_avatar_check"
 OUT.mkdir(exist_ok=True)
 
-WAV = pathlib.Path(sys.argv[sys.argv.index("--wav") + 1]) if "--wav" in sys.argv else None
-if WAV is None or not WAV.exists():
+_wav = _flag("--wav")
+if not _wav:
     raise SystemExit("用法：python tools/check_avatar_live.py --wav 语音.wav")
+WAV = pathlib.Path(_wav)
+if not WAV.exists():
+    raise SystemExit(f"找不到这段 wav：{WAV}")
 app = QtWidgets.QApplication([])
 avatar = AvatarRtc()
-HOLD = float(sys.argv[sys.argv.index("--hold") + 1]) if "--hold" in sys.argv else 0.0
-FULL = pathlib.Path(sys.argv[sys.argv.index("--save-full") + 1]) if "--save-full" in sys.argv else None
+HOLD = float(_flag("--hold", "0") or 0.0)
+_full = _flag("--save-full")
+FULL: pathlib.Path | None = pathlib.Path(_full) if _full else None
 if FULL is None:
     avatar.set_target_size(QtCore.QSize(360, 480))  # 不存原图就直接按显示尺寸跑
 

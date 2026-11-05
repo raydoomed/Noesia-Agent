@@ -65,7 +65,8 @@ class BootSplash(QtWidgets.QWidget):
 
     # ---- 内部 ----
     def _center_on_screen(self) -> None:
-        screen = QtGui.QGuiApplication.primaryScreen()
+        # 摆在鼠标所在那块屏：双屏时主屏可能在另一边，动画会跑到看不见的地方
+        screen = QtGui.QGuiApplication.screenAt(QtGui.QCursor.pos()) or QtGui.QGuiApplication.primaryScreen()
         if screen is None:
             return
         area = screen.availableGeometry()
@@ -108,10 +109,22 @@ class BootSplash(QtWidgets.QWidget):
         body.setBold(False)
         painter.setFont(body)
         painter.setPen(QtGui.QColor(255, 255, 255, 190))
+        # 失败原因是整句中文（端口被占、超时、缺文件、日志路径）：320px 一行只放得下约 24 个汉字，
+        # 直接 drawText 会把后半句裁掉、连省略号都没有——启动时唯一能看到的说明停在半句。
+        box = QtCore.QRectF(20, 118, self.width() - 40, 40)
+        metrics = QtGui.QFontMetrics(body)
+        need = metrics.boundingRect(
+            QtCore.QRect(0, 0, int(box.width()), 1000), QtCore.Qt.TextWordWrap, self._step
+        ).height()
+        text = self._step
+        if need > box.height():
+            text = metrics.elidedText(
+                self._step, QtCore.Qt.TextElideMode.ElideRight, int(box.width()) * 2
+            )
         painter.drawText(
-            QtCore.QRectF(20, 122, self.width() - 40, 22),
-            QtCore.Qt.AlignHCenter | QtCore.Qt.AlignVCenter,
-            self._step,
+            box,
+            QtCore.Qt.AlignHCenter | QtCore.Qt.AlignVCenter | QtCore.Qt.TextWordWrap,
+            text,
         )
         painter.setPen(QtGui.QColor(255, 255, 255, 110))
         painter.drawText(

@@ -44,22 +44,18 @@ def occupied_pid(message: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def takeover(wire, agree: bool, pid: int | None = None) -> tuple[bool, str]:
-    """同意后：替占着数据根的那个进程按 Ctrl+C（它自己收尾就到此为止），等不到再硬结束，然后启动。
+def release(project_root, pid: int) -> tuple[bool, str]:
+    """把挡路的东西请走：先让命令行会话 Ctrl+C 退出，再收起那个后台 gateway。
 
-    返回 (是否已重启引擎, 给人看的一句话)。不同意、或者不知道是哪个 pid，就一个进程都不碰。
+    阻塞（最多几秒），只在后台线程里调。`project_root` 给 None 就只处理 pid，
+    ——认不出项目根时宁可少动，也不去扫全局进程表乱杀。
     """
-    if not agree:
-        return False, "没有结束任何进程"
-    if pid is None:
-        return False, "报错里没有进程号，没动任何进程"
+    from app.engine_wire import close_console_sessions, quit_process  # 模块函数，不是 EngineWire 的方法
 
-    from app.engine_wire import quit_process  # 模块函数，不是 EngineWire 的方法
-
+    notes: list[str] = []
+    if project_root is not None:
+        notes.extend(close_console_sessions(project_root))
     ok, note = quit_process(pid)
-    logger.info("接管：%s", note)
-    if not ok:
-        return False, note
-
-    wire.start()
-    return True, f"{note}；已重新启动引擎"
+    notes.append(note)
+    logger.info("接管：%s", "；".join(notes))
+    return ok, "；".join(text for text in notes if text)

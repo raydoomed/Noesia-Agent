@@ -408,6 +408,53 @@ method("voice.tts", params=VoiceTtsParams, result=VoiceTtsResult,
        doc="Speak text through the backend TTS engine (barge-in aware).")
 
 
+class VoiceTranscribeReadyParams(Params):
+    """No fields: the desktop asks 「本地识别模型在不在」."""
+
+
+class VoiceTranscribeReadyResult(Result):
+    """``methods_voice.py::voice.transcribe.ready`` — local STT model state and download progress."""
+
+    ready: bool
+    downloaded: int = 0
+    total: int = 0
+    missing: list[str] | None = None
+    error: str | None = None
+
+
+method("voice.transcribe.ready", params=VoiceTranscribeReadyParams, result=VoiceTranscribeReadyResult,
+       doc="Report whether the local STT model is installed and how many bytes are downloaded.")
+
+
+class VoiceTranscribeDownloadParams(Params):
+    """No fields: download whatever the local STT model needs (~230 MB)."""
+
+
+class VoiceTranscribeDownloadResult(Result):
+    """``methods_voice.py::voice.transcribe.download`` — only says whether it ended up ready."""
+
+    ready: bool
+
+
+method("voice.transcribe.download", params=VoiceTranscribeDownloadParams,
+       result=VoiceTranscribeDownloadResult,
+       doc="Download the local STT model; callers poll voice.transcribe.ready for progress.")
+
+
+class VoiceTranscribeParams(Params):
+    path: str  # absolute path to a 16 kHz mono 16-bit WAV the desktop recorded
+
+
+class VoiceTranscribeResult(Result):
+    """``methods_voice.py::voice.transcribe`` — the recognised text (may be empty)."""
+
+    text: str
+
+
+method("voice.transcribe", params=VoiceTranscribeParams, result=VoiceTranscribeResult,
+       doc="Transcribe a recorded WAV locally; capture itself happens in the desktop client.")
+
+
 # ── wake word ─────────────────────────────────────────────────────────────────────────────────
 
 

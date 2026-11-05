@@ -75,6 +75,10 @@ _TEMPLATE: dict = {
     "sample_rate": 16000,
     "voices": [],  # ElevenLabs 的音色缓存：[{"id": ..., "name": ...}]
     "voice_history": {},  # 每个引擎各自上次选的音色：{"edge": {"id": ..., "name": ...}, ...}
+    # 每个引擎各自上次用的模型/资源：豆包是资源 id（seed-tts-2.0），ElevenLabs 是档位（eleven_v3）。
+    # 以前三家共用一个 model_id，从豆包切回 ElevenLabs 时把豆包的资源 id 当模型名送出去，
+    # 对不上就退回默认档，用户挑过的档位静默丢了。
+    "model_history": {},
 }
 # 缺一个都不行：语音设置只有这一份，缺键当场报错，不拿代码默认值顶
 _REQUIRED = (
@@ -109,6 +113,7 @@ def load() -> dict:
     data.update(stored)
     data["voices"] = list(data.get("voices") or [])
     data["voice_history"] = dict(data.get("voice_history") or {})
+    data["model_history"] = dict(data.get("model_history") or {})
     return data
 
 
@@ -129,6 +134,16 @@ def save(**changes) -> dict:
     """存音色/开关；`api_key=` 会被转去写 `.env`，不落在 json 里。"""
     changes = dict(changes)
     typed_key = changes.pop("api_key", None)
+    provider_now = str(changes.get("provider") or "") or str(load()["provider"] or "edge")
+    # 先验 Key 再动别的：以前是先存音色、后写 Key，Key 里混了中文（复制时带上说明文字）
+    # 就在 clean_api_key 里被清成空串，write_api_key 返回 False 也没人管——
+    # 用户以为存上了，实际第一次合成才发现没 Key。
+    if typed_key is not None and str(typed_key).strip() and provider_now in KEYED_PROVIDERS:
+        if not clean_api_key(str(typed_key)):
+            raise ConfigError(
+                "这把 Key 里有中文或空格以外的非英文字符，多半是复制时把说明文字带上了；"
+                "只粘 sk-… 这一串"
+            )
     data = load()
     # 空串不是「改成空」，是「这一项没填」：别让它把已经存好的音色/资源/名字抹掉
     for key in ("model_id", "voice_id", "voice_name"):
@@ -142,13 +157,32 @@ def save(**changes) -> dict:
                 f"豆包的资源 id 不认识：{changes['model_id']}；"
                 f"能填的是 {'、'.join(sorted(known))}（换资源时先在控制台开通）"
             )
+    old_provider = str(data.get("provider") or "edge")
+    history = dict(data.get("voice_history") or {})
+    if data.get("voice_id"):
+        # 切换**之前**那家选的音色记在它自己名下（记在新引擎名下等于把对方的 id 认成自己的）
+        history[old_provider] = {"id": data["voice_id"], "name": data.get("voice_name") or ""}
     data.update({key: value for key, value in changes.items() if key in _TEMPLATE})
     provider = data.get("provider") or "edge"
+    models = dict(data.get("model_history") or {})
+    if "model_id" in changes:
+        models[provider] = str(data.get("model_id") or "").strip()
+    elif "provider" in changes:
+        # 只换了引擎：不能把上一家的 id 当这一家的用（豆包的资源 id 在 ElevenLabs 上是非法档位，
+        # 界面会静默退回默认档）。用这一家上次用过的，没有才用它自己的默认。
+        data["model_id"] = models.get(provider) or (
+            doubao_voices.default_resource() if provider == "doubao" else _TEMPLATE["model_id"]
+        )
+    data["model_history"] = models
+    if "provider" in changes and "voice_id" not in changes:
+        # 音色同理：Edge 的 zh-CN-… 送到 ElevenLabs 上是非法 id，合成只会报一句看不懂的错。
+        # 换成这一家自己上次用的；没记过就留空，由 current() 回落这一家的默认音色。
+        picked = history.get(provider) or {}
+        data["voice_id"] = str(picked.get("id") or "")
+        data["voice_name"] = str(picked.get("name") or "")
     if data.get("voice_id"):
-        # 记住「这个引擎上次选的音色」，换引擎再换回来才不会掉回默认
-        history = dict(data.get("voice_history") or {})
         history[provider] = {"id": data["voice_id"], "name": data.get("voice_name") or ""}
-        data["voice_history"] = history
+    data["voice_history"] = history
     _write(data)
     if typed_key is not None:
         write_api_key(str(typed_key), provider)
@@ -186,6 +220,7 @@ def current() -> dict:
     """叠加后的生效值：用户选过就用用户的，没有就回落到该引擎的默认。"""
     data = load()
     provider = data["provider"] or "edge"
+    models = dict(data.get("model_history") or {})
     if provider == "edge":
         default_voice = EDGE_VOICES[0]["id"]
     elif provider == "doubao":
@@ -204,10 +239,13 @@ def current() -> dict:
         "provider": provider,
         "voice_id": data["voice_id"] or default_voice,
         "voice_name": data["voice_name"] or "默认音色",
-        # 豆包的「模型」就是资源 id：用户在 speech.json 里可以换资源，认不出来的值回落默认
+        # 豆包的「模型」就是资源 id：用户在 speech.json 里可以换资源，认不出来的值回落默认。
+        # 别的引擎按 model_history 取自己上次用的档位，取不到才用默认——共用一个字段会让
+        # 两家互相污染（豆包的资源 id 送到 ElevenLabs 上，界面只能退回默认档）。
         "model_id": (
-            _doubao_model_id(data.get("model_id")) if provider == "doubao"
-            else (data["model_id"] or _TEMPLATE["model_id"])
+            _doubao_model_id(models.get("doubao") or data.get("model_id"))
+            if provider == "doubao"
+            else (str(models.get(provider) or "") or _TEMPLATE["model_id"])
         ),
         # 这里永远给 ElevenLabs 的缓存清单：Edge 的音色是常量，界面自己按引擎取（EDGE_VOICES）
         # 合成参数也在这份配置里：纯语音和语音互动读同一套，不另开一处

@@ -50,6 +50,11 @@ def _split_for_tts(text: str, limit: int = SEGMENT_CHARS) -> list[str]:
     for sentence in re.split(r"(?<=[。！？；\n])", text):
         if not sentence:
             continue
+        if len(sentence) > limit and buf:
+            # 先把攒好的句子落段，再切这个超长句：反过来的话，pieces 里先冒出的是长句的
+            # 前半截，先前那些正常句子被挤到它后面——念出来就是「后半截先说、前面后说」。
+            pieces.append(buf)
+            buf = ""
         while len(sentence) > limit:
             # 单句本身超长：先找逗号，再找不到就硬切（罕见，只在没有标点的长串里出现）
             cut = max(sentence.rfind(mark, 0, limit) for mark in "，、：, ")

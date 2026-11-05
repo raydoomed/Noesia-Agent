@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 ENV_HOME = "NOESIA_HOME"
@@ -40,4 +41,18 @@ def repo_root() -> Path:
     引擎家目录里找——那儿本来就没有。
     """
     return Path(__file__).resolve().parents[1]
+
+
+def resource_file(name: str) -> Path:
+    """随代码一起发布的数据文件（豆包音色清单、注释译文）。
+
+    源码树里它们就在 `src/` 根；`pip install` 之后由 `pyproject.toml` 的 `data-files`
+    装到 `share/noesia/`（wheel 里没有 `src/` 这一层）。找不到时返回源码树那个，
+    让调用方照原样报「读不到清单」，别拿空表顶。
+    """
+    here = Path(__file__).resolve().parent
+    for candidate in (here / name, Path(sys.prefix) / "share" / "noesia" / name):
+        if candidate.exists():
+            return candidate
+    return here / name
 

@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import threading
 import time
 import math
 import sys
 from pathlib import Path
 
-from paths import project_root
+from paths import project_root, repo_root
 
 from .status_stack import CONFIRM_TTL_MS
 
@@ -37,6 +38,10 @@ def say(message: str) -> None:
         print(message, flush=True)
 
 PROJECT_ROOT = project_root()
+# 代码与素材跟着仓库走，数据跟着 `NOESIA_HOME` 走：两个根不能混用。
+# 设了 NOESIA_HOME 时 project_root() 指向数据家，拿它去挂 vendor 目录会一个都挂不上
+# （ffmpeg 找不到就是这里来的），日志也会跟着写到数据家里去。
+REPO_ROOT = repo_root()
 
 
 def should_clear_on_session_ready(
@@ -244,8 +249,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self.customContextMenuRequested.connect(self._show_menu)
         self.chat_panel: ChatPanel | None = None  # 懒创建：双击或菜单「聊天」才出现
         self._pending_reviews: list[str] = []  # 聊天窗还没开时收到的自我回顾总结，开了再补进去
+        self._pending_notices: list[tuple[str, str]] = []  # 同上：窗还没开时该说的提示，开了补发
         self._greeted = False  # 只问一次「要不要她先开口」，别每次开窗都跑一次推理
-        self._approval_dialog = None  # 审批卡片同时只开一张
+        self._approval_dialog = None  # 最新那张（位置跟随、撤回按它认）
+        self._approval_dialogs: list = []  # 同时开着的全部审批卡：并行工具会一次要好几张授权
+        self._approval_request_id = ""  # 这张卡对应引擎的哪个 request_id（撤回时按它认）
         self._name_dialog = None      # 起名卡片同时只开一张
         self.client = None  # main() 里注入，用来发消息
         # 「新会话」按钮是用户主动要换的：这种回包一定要清屏。引擎自己回来的 `session.create`
@@ -284,6 +292,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._streamer = None          # StreamSpeaker，边合成边出声
         self._pending_speech = ""      # 会话还没就绪时先说一句「正在接通」，就绪后再念
         self._interactive_shown = False  # 互动画面是否正占着那块显示区（待机视频让位）
+        self._hidden = False  # 整扇窗被藏起来（Esc / 托盘）：画面和解码都该停
         # Vidu 按秒计费（1 积分/秒）：说完 5 秒还没下一句就挂断，别在闲置上烧钱
         # 下一句要重建会话（约 2.5 秒），但那个等待由「点输入框就开始建」吃掉
         self._avatar_idle = QtCore.QTimer(self)
@@ -321,13 +330,27 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             timer.setInterval(33)  # 30fps，略高于视频的 24fps，永远画最新的那一帧
             timer.timeout.connect(self._paint_latest_frame)
             timer.start()
+            self._paint_timer = timer  # 藏起来时要能停掉（否则看不见的画面还在 30fps 重画）
             self.idle_player.failed.connect(lambda msg: say(f"[待机视频] {msg}"))
 
     # ---- 尺寸与位置 ----
 
     def _screen_limit(self) -> QtCore.QRect:
+        """当前这块屏的可用区域（居中、限高用）。"""
         screen = self.screen() or QtWidgets.QApplication.primaryScreen()
         return screen.availableGeometry() if screen is not None else QtCore.QRect(0, 0, 1920, 1080)
+
+    @staticmethod
+    def _on_some_screen(rect) -> bool:
+        """这块区域跟**任意一块**屏相交就算在屏幕内。
+
+        只比「当前屏」不行：窗口还没 show 时 `self.screen()` 就是主屏，放在副屏上的位置
+        必然不与主屏相交，于是每次启动都被判成「屏幕外」拉回主屏——顺手再把主屏坐标
+        写回存档，副屏位置永久丢掉。"""
+        screens = QtWidgets.QApplication.screens()
+        if not screens:
+            return True  # 一块屏都问不到（离屏插件刚起）：别当证据，别乱挪
+        return any(screen.availableGeometry().intersects(rect) for screen in screens)
 
     def _max_height(self) -> int:
         """高度上限＝能拖到的最大尺寸的高度（窗口宽度最大就是这个尺寸，按比例算下来也一样）。"""
@@ -366,7 +389,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 )
             )
         saved_pos = self._settings.value("window/pos")
-        if isinstance(saved_pos, QtCore.QPoint) and self._screen_limit().intersects(
+        if isinstance(saved_pos, QtCore.QPoint) and self._on_some_screen(
             QtCore.QRect(saved_pos, self.size())
         ):
             self.move(saved_pos)
@@ -499,18 +522,31 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._send_new_session()
 
     def _new_session_timeout(self) -> None:
-        """掐断这一轮 3 秒还没等到 `turn.done`：宁可不开，也别留一条停不了的影子轮次。
+        """等不到结果就收回「新会话」这件事，别把界面锁在等里。
 
-        不建会话是故意的——引擎那边这一轮还在跑，这会儿建新会话，那一轮就成了
-        「看不见、停不了、还在计费」的东西，比「再点一次」糟得多。
+        两种情况：
+        - 掐断这一轮 3 秒还没等到 `turn.done`：宁可不开，也别留一条停不了的影子轮次
+          （引擎那边这一轮还在跑，这会儿建新会话，那一轮就成了「看不见、停不了、还在计费」的东西，
+          比「再点一次」糟得多）。
+        - `session.create` 发出去 8 秒没有回包（引擎回了 error，或者干脆没回）：**必须**把
+          `_new_session_pending` 放掉——挂着它的话之后每一帧 `turn.done` 都会在
+          `on_turn_settled` 里被当成「新会话的那一帧」吞掉，排队的话永远发不出去，
+          界面也再不会收尾。
         """
         panel = self.chat_panel
+        sent = self._new_session_sent
         self._new_session_pending = False
         self._new_session_queued = 0
         if panel is not None:
             panel.set_activity("")
-            panel.show_notice("session", "这一轮还没停下来，再点一次「新会话」", level="warn")
-        say("[会话] 中断没等到 turn.done，这次换会话作废")
+            if sent:
+                self._new_session_sent = False  # 允许再点一次（不在等里了）
+                panel.show_notice("session", "新会话没建起来，还在原来那一场", level="warn")
+                panel.settle_turn()  # 放闸：排队的下一句照常发，别再被 pending 吃掉
+                say("[会话] 建会话没有回包，这次换会话作废")
+            else:
+                panel.show_notice("session", "这一轮还没停下来，再点一次「新会话」", level="warn")
+                say("[会话] 中断没等到 turn.done，这次换会话作废")
 
     def _send_new_session(self) -> None:
         """真正去建新会话（这一轮已经停了，或者压根没在跑）。"""
@@ -528,6 +564,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             panel.cancel_rewind()
         if self.client is not None:
             self.client.create_session("")
+            # 回包（成功或 error）正常都在一秒内。等不到就把「新会话」这件事收回来，
+            # 否则 pending 会一直挂着，之后每一帧 turn.done 都被它吞掉。
+            self._new_session_timer.start(8000)
 
     def open_model_settings(self) -> None:
         """「设置」：打开真正的设置窗口（填密钥 + 选模型），不是把下拉框弹一下。
@@ -555,13 +594,21 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             panel.show_error(f"打不开设置窗口：{exc}")
             return
 
-        dialog = ModelDialog(
-            rows,
-            parent=None,
-            current=str((self._models or {}).get("current") or ""),
-            engine_save=self.save_model_key,
-            on_key_save=self.save_provider_key,
-        )
+        try:
+            dialog = ModelDialog(
+                rows,
+                parent=None,
+                current=str((self._models or {}).get("current") or ""),
+                engine_save=self.save_model_key,
+                on_key_save=self.save_provider_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - 窗口没建起来：说清哪份文件坏了，不许「点了没反应」
+            # 这些页的约定是「缺键当场抛 ConfigError」，所以手改错一次 speech.json / avatar.json
+            # 就会走到这里。以前异常直接从 __init__ 冒出去，PySide 只往 stderr 打一段 traceback，
+            # 界面上点「设置」什么都不发生。
+            logger.exception("设置窗口建不起来：%s", exc)
+            panel.show_error(f"设置窗口打不开：{exc}")
+            return
         self._model_dialog = dialog
         screen = QtGui.QGuiApplication.screenAt(QtGui.QCursor.pos()) or QtGui.QGuiApplication.primaryScreen()
         if screen is not None:
@@ -677,14 +724,25 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             app.aboutToQuit.connect(avatar.shutdown)
         return avatar
 
+    def show_notice_later(self, key: str, text: str) -> None:
+        """现在就要说的提示，但聊天窗可能还没开：那就攒着，开窗时补发。
+
+        `preload_avatar` 在 `open_chat` 之前跑，直接用 `chat_panel.show_notice` 会静默丢掉，
+        用户要等到第一次说话没声才发现互动档根本没载起来。
+        """
+        if self.chat_panel is not None:
+            self.chat_panel.show_notice(key, text, level="note")
+        else:
+            self._pending_notices.append((key, text))
+
     def preload_avatar(self) -> None:
         """语音互动档的预加载：载 dll + 建引擎，约 105ms、0 积分，不建会话。"""
         avatar = self._ensure_avatar()
         avatar.set_target_size(self.size())  # 启动时 resizeEvent 早于预加载，这里补一次
         why = avatar.preload()
-        if why and self.chat_panel is not None:
+        if why:
             # 黄字：互动这一档暂时开不起来，纯语音照样能用——报红等于说「你装坏了」
-            self.chat_panel.show_notice("avatar", f"互动数字人引擎没载起来：{why}", level="note")
+            self.show_notice_later("avatar", f"互动数字人引擎没载起来：{why}")
 
     def _on_avatar_frame(self, image: QtGui.QImage) -> None:
         """互动画面：接在待机视频同一个显示位上；不是在说话的时候，这些帧直接丢掉。"""
@@ -889,6 +947,17 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             except Exception as exc:  # noqa: BLE001 - 设置页有个旧清单照样能用，别让回包把窗口搞崩
                 logger.exception("[模型] 设置页原地更新失败：%s", exc)
 
+    def on_provider_rows_failed(self, message: str) -> None:
+        """引擎没给出供应商清单：把原因写进设置页那张表里（窗口开着），关着就落一句通知。"""
+        dialog = self._model_dialog
+        if dialog is not None and hasattr(dialog, "show_rows_error"):
+            try:
+                dialog.show_rows_error(message)
+                return
+            except Exception as exc:  # noqa: BLE001 - 提示没显示不该连带别的坏事
+                logger.exception("[模型] 设置页错误提示失败：%s", exc)
+        self.show_notice("model-options", f"拿不到供应商清单：{message}", level="warn")
+
     def save_provider_key(self, slug: str, api_key: str, done=None) -> None:
         """密钥设置里这一家按了「确定」：只写这一家的 Key，引擎落盘后自己把清单重取一遍送回来。
 
@@ -933,12 +1002,15 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             if done is not None:
                 done(True, [])
             return
+        self._save_round = int(getattr(self, "_save_round", 0)) + 1
         self._save_ctx = {
             "done": done,
+            "round": self._save_round,  # 回执按轮次认：迟到的上一轮不能算到这一轮
             "waiting": 0,
             "lines": [],
             "all_ok": True,
             "provider": provider,
+            "slugs": set(keys),  # 这一页真正发出过 save_key 的那几家：回执只认这几家
             "switch_pending": bool(option_id),
             "stamp": time.monotonic(),
         }
@@ -949,14 +1021,14 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 continue
             ctx["waiting"] += 1
             say(f"[模型] 请求保存 {slug} 的密钥")
-            self.client.save_key(slug, text)
+            self.client.save_key(slug, text, token=str(ctx["round"]))
         if typed:
             ctx["waiting"] += 1
             say(f"[模型] 请求保存 {provider} 的密钥并启用 {option_id}")
-            self.client.save_key(provider, typed, option_id)
+            self.client.save_key(provider, typed, option_id, token=str(ctx["round"]))
         elif option_id:
             say(f"[模型] 请求启用 {option_id}（密钥不动）")
-            self.client.set_model(option_id)
+            self.client.set_model(option_id, token=str(ctx["round"]))
         if ctx["waiting"] == 0 and not ctx["switch_pending"]:
             self._finish_save(True)
 
@@ -979,6 +1051,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return  # 已经报过超时的旧回执，不能算到下一次保存头上
         if tag.startswith("model.save_key"):
             slug = tag.split(":", 1)[1] if ":" in tag else str(data.get("slug") or "")
+            # 同一个 tag 也服务「密钥卡片那家的确定」：那份回执不能算到整页保存头上，
+            # 否则一次回执减两条账，窗口提前报「保存成功」关掉，另一家的 Key 还没落盘。
+            if slug not in ctx.get("slugs", ()):
+                return
+            ctx["slugs"].discard(slug)  # 同一家只算一次
             ctx["waiting"] = max(0, int(ctx["waiting"]) - 1)
             if ok:
                 ctx["lines"].append(f"{slug}：已写进 .env")
@@ -987,7 +1064,13 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 ctx["lines"].append(f"{slug}：没存成——{data.get('message') or '引擎没说原因'}")
                 if slug == ctx["provider"]:
                     ctx["switch_pending"] = False  # Key 都没写进去，引擎不会去切模型
-        elif tag == "config.set:model":
+        elif tag.startswith("config.set:model"):
+            # tag 末尾是发起它的那一轮：不是这一轮发出的切换，回执不能算进来。
+            # 上一轮超时后引擎才回话时，这条旧回执会把这一轮的「在切换」记成已完成，
+            # 窗口当场报「保存成功」关掉，而引擎里跑的还是上一轮那个模型。
+            token = tag.rsplit(":", 1)[-1] if tag.count(":") > 1 else ""
+            if token and token != str(ctx.get("round") or ""):
+                return
             ctx["switch_pending"] = False
             if not ok:
                 ctx["all_ok"] = False
@@ -1070,6 +1153,18 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.append_review_summary(text)
         self._pending_reviews.clear()
 
+    def _flush_pending_notices(self) -> None:
+        """开窗前攒下的提示补发（同一 key 只留最后一条：旧的那条已经被新情况取代）。"""
+        if self.chat_panel is None or not self._pending_notices:
+            return
+        pending, self._pending_notices = self._pending_notices, []
+        for key, text in pending:
+            if key == "boot":
+                # 启动失败要红字落在聊天区；黄色提示条读起来像「小毛病」，会被当成没事
+                self.chat_panel.show_error(text)
+                continue
+            self.chat_panel.show_notice(key, text, level="note")
+
     def open_chat(self) -> None:
         """打开（或聚焦）聊天窗；第一次调用才建界面。"""
         if self.chat_panel is None:
@@ -1110,6 +1205,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     list(self._models.get("items") or []), str(self._models.get("current") or "")
                 )
         self._flush_pending_reviews()  # 窗还没开时收到的回顾总结，这会儿补上
+        self._flush_pending_notices()  # 同理：开窗前就说出来的提示（如互动引擎没载起来）
         self.request_history()  # 面板有了就要一次（没连上会等连上后重试）
         self.chat_panel.show_near(self.frameGeometry())
         self._greet_if_needed()
@@ -1175,7 +1271,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """录好的一段交给引擎识别。引擎还没起好就当场说清，别让球卡在「识别中」。"""
         wire = getattr(self, "client", None)
         panel = self.chat_panel
-        if wire is None:
+        if wire is None or not wire.is_running():
             if panel is not None:
                 panel.voice_transcribe_failed("识别引擎还没起好，稍等一下再试", path)
             return
@@ -1272,6 +1368,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         panel = getattr(self, "chat_panel", None)
         if panel is not None:
             panel.show_error(text)
+        else:
+            # 窗还没建（开机就失败是最常见的时机）：先存着，开窗时补发。
+            # 以前这一句直接丢了——用户开窗看到一切正常，其实引擎根本没起来。
+            self._pending_notices.append(("boot", text))
         self.finish_boot()
 
     def finish_boot(self) -> None:
@@ -1348,7 +1448,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         from app.approval_dialog import ApprovalDialog
 
         def answer(choice: str) -> None:
-            self._approval_dialog = None
+            # 只摘自己这一张：并行工具/子 agent 可能各自要授权，一次推来两条 approval。
+            # 以前无条件把 `_approval_dialog` 置 None，第二张从此没人跟踪、退出也没人关。
+            if dialog in self._approval_dialogs:
+                self._approval_dialogs.remove(dialog)
+            self._approval_dialog = self._approval_dialogs[-1] if self._approval_dialogs else None
+            self._approval_request_id = ""
             if self.client is not None:
                 # 回帧用 reply_id（`srq-...`）；request_id 是引擎的业务 id，只能用于显示/去重
                 reply_id = getattr(ask, "reply_id", None) or getattr(ask, "request_id", "")
@@ -1368,8 +1473,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     "approval", f"你选择：{label}", ok=choice != "deny", body=detail
                 )
 
-        self._approval_dialog = ApprovalDialog(ask, answer)
-        self._approval_dialog.show_near(self.geometry())
+        dialog = ApprovalDialog(ask, answer)
+        # 每张卡记住自己那条 request_id：撤回时要一张一张认，不能只认最新那张
+        dialog.request_id = str(getattr(ask, "request_id", "") or "")
+        self._approval_dialogs.append(dialog)
+        self._approval_dialog = dialog
+        dialog.show_near(self.geometry())
 
     def _send_user_text(self, message: str, source: str = "typed") -> None:
         panel = self.chat_panel
@@ -1377,9 +1486,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             # 她在等一个回答（没有选项那种问题）：这句话就是答案，不发出去当新一轮
             if panel.answer_clarify_text(message):
                 return
-        if self.client is None:
+        if self.client is None or not self.client.is_running():
+            # 引擎进程不在（没起来 / 刚崩 / 重连三次都失败）：这句话进不了引擎。
+            # 早点说出来，别先把按钮切成「停止」——那之后没有任何东西会把它切回来。
             if self.chat_panel is not None:
-                self.chat_panel.show_error("引擎还没起来，这句话没发出去")
+                self.chat_panel.show_error("引擎没起来，这句话没发出去")
             return
         # 新一轮开始：先说下一句，别让上一句还在念；按钮同时变「停止」
         if self.chat_panel is None or not self.chat_panel.is_busy():
@@ -1479,8 +1590,13 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self._turn_stopped:
             return  # 刚按过停止：这一帧是上一轮的尾巴
         panel = self.chat_panel
-        if panel is not None and not panel.is_busy():
-            panel.set_busy(True)
+        if panel is not None:
+            # 引擎说「新一轮开始了」：上一轮按停/断线留下的闸到此为止，
+            # 否则这一整轮回答会被拦在门外（重连后第一条回答有字没显示就是这么来的）
+            self._turn_stopped = False  # 这一轮是新的一轮，「按过停止」不能跟着跨轮走
+            panel.open_turn_gate()
+            if not panel.is_busy():
+                panel.set_busy(True)
 
     def on_status_text(self, kind: str, text: str) -> None:
         """引擎的状态句子（`status.update`）：放到输入框上方那行进度的位置。"""
@@ -1684,6 +1800,40 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return
         self.chat_panel.show_clarify(payload)
 
+    def on_request_cancelled(self, kind: str, request_id: str) -> None:
+        """引擎收回一个提问（`request.cancel`）：那张卡当场作废。
+
+        不作废的话 `pending_clarify()` 一直为真，用户下一条消息会被当成旧卡的答案吃掉。
+        `secret`/`sudo` 是模态输入框，引擎撤回时没法从外面关，答了也只会落到一个失效的 reply_id 上。
+        """
+        if self.chat_panel is None or kind != "clarify":
+            return
+        self.chat_panel.expire_clarify(request_id)
+
+    def on_approvals_cancelled(self, request_ids: list) -> None:
+        """引擎自己撤了审批卡（超时 / 那一轮作废）：卡跟着关，别让人对着废卡点头。
+
+        同时可能开着好几张（并行工具各自要授权），所以一张一张按 request_id 认：
+        载荷里的 request_ids 会漏掉「没有 request_id」的那几条，列表为空时照关全部；
+        只有明明列了 id、又不是这张卡的，才留着手上的卡。
+        """
+        wanted = {str(item) for item in (request_ids or [])}
+        closed = 0
+        for dialog in list(self._approval_dialogs):
+            mine = str(getattr(dialog, "request_id", "") or "")
+            if wanted and mine and mine not in wanted:
+                continue
+            if dialog in self._approval_dialogs:
+                self._approval_dialogs.remove(dialog)
+            dialog.dismiss()
+            closed += 1
+        if not closed:
+            return
+        self._approval_dialog = self._approval_dialogs[-1] if self._approval_dialogs else None
+        self._approval_request_id = str(getattr(self._approval_dialog, "request_id", "") or "")
+        if self.chat_panel is not None:
+            self.chat_panel.show_tool("approval", "这张审批卡已失效（引擎撤回了这一轮）", ok=False)
+
     def on_secret_request(self, payload: dict) -> None:
         """引擎要一个密钥 / sudo 密码：问一句，答了按 `{"value": …}` 回；取消 = 空串（跳过）。"""
         if self.client is None:
@@ -1743,6 +1893,13 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """
         if not message:
             return
+        if self._new_session_sent:
+            # 换会话这一帧被拒/没回：当场把「在等新会话」放掉。挂着它的话，之后每一帧
+            # `turn.done` 都会被当成新会话的那一帧吞掉——排队的话永远发不出去。
+            # 8 秒兜底照样留着（引擎也可能连 error 都不回）。
+            self._new_session_pending = False
+            self._new_session_sent = False
+            self._new_session_timer.stop()
         if self.chat_panel is not None:
             self.chat_panel.show_error(message)
             if not self.chat_panel.is_busy():
@@ -1804,8 +1961,15 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             # 这一轮不是这个窗口发起的，界面却必须知道——否则发送键一直写「发送」，
             # 看着它在那儿写却没有东西能叫停。
             panel.set_busy(True)
+        # 新会话就是新的一轮：上一轮按停留下的闸和攒下的正文都不能带过来。
+        # 不带的话，引擎在这儿自己续跑的那一轮（`running`/`auto_continue`）会被
+        # `on_turn_started`/`on_delta` 当成残片拦掉——界面上「她在写但一个字不出现」，
+        # 而且按钮停在「发送」，这一轮没有任何入口能叫停。
+        self._turn_stopped = False
+        self._reply_text = ""
         requested = self._new_session_pending
         self._new_session_pending = False
+        self._new_session_timer.stop()  # 会话到手了：8 秒兜底别再报「没建起来」
         queued, self._new_session_queued = self._new_session_queued, 0
         # 用户点了「新会话」：这一屏就该清掉（不看屏幕里有没有东西）。
         # 引擎自己回来的 `session.create`（开窗、重连）只在屏幕还空着时清——那时工具行
@@ -1960,6 +2124,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             allow_permanent=params.get("allow_permanent", True),
         )
         self._ask_approval(ask)
+        self._approval_request_id = str(params.get("request_id") or "")
 
     def on_setup_beat(self, beat: dict) -> None:
         """引导流程要摆「名字」那张卡：弹输入框，回帧用 reply_id（`srq-...`）。
@@ -2129,6 +2294,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             dialog = getattr(self, attr, None)
             if dialog is not None and dialog.isVisible():
                 dialog.move_near(self.geometry())
+        # 同时开着的其它审批卡也得跟着走：以前只追最新那一张，前一张被拖走人像后留在原地，
+        # 还可能被别的窗口盖住，用户找不到它、也就答不了那个请求。
+        for dialog in list(getattr(self, "_approval_dialogs", ())):
+            if dialog is not getattr(self, "_approval_dialog", None) and dialog.isVisible():
+                dialog.move_near(self.geometry())
 
     def ask_takeover(self, message: str) -> None:
         """数据根被命令行会话占着：贴人物下方问一句，同意后才动手。
@@ -2138,7 +2308,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         （`app/winproc.py`），不会闪黑窗口；每一步都写日志，聊天窗里也留一行说明。
         """
         from app.engine_prompt import EngineProblemDialog
-        from app.engine_takeover import occupied_pid, takeover
+        from app.engine_takeover import occupied_pid
 
         action = "退出会话、结束后台进程并启动"
 
@@ -2168,13 +2338,31 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 tell("报错里没写进程号，没动任何进程", error=True)
                 return
             tell(f"引擎被占：先让占着数据目录的 pid {pid} 退出，再启动")
-            try:
-                ok, note = takeover(wire, True, pid)
-            except Exception as exc:  # noqa: BLE001 - 接管里出错必须留下痕迹，不能悄悄什么都不做
-                logger.exception("接管时出错")
-                tell(f"接管出错：{exc}", error=True)
-                return
-            tell(note, error=not ok)
+            # 请进程退出这一步会按 Ctrl+C、等它收尾、再扫一遍进程表（最多几秒）。
+            # 以前在主线程里同步做，点完确认界面僵住约 4 秒，像卡死；现在丢到后台线程，
+            # 收工后回到主线程重启引擎（QProcess 只能在主线程碰）。
+            from app.engine_takeover import release
+            import threading
+
+            panel = getattr(self, "chat_panel", None)
+            if panel is not None:
+                panel.show_notice("takeover", "正在请占着数据目录的进程退出…", level="busy")
+
+            def work() -> None:
+                try:
+                    ok, note = release(getattr(wire, "_root", None), pid)
+                except Exception as exc:  # noqa: BLE001 - 接管里出错必须留下痕迹，不能悄悄什么都不做
+                    logger.exception("接管时出错")
+                    ok, note = False, f"接管出错：{exc}"
+                QtCore.QMetaObject.invokeMethod(
+                    self,
+                    "_finish_takeover",
+                    QtCore.Qt.ConnectionType.QueuedConnection,
+                    QtCore.Q_ARG(bool, ok),
+                    QtCore.Q_ARG(str, note),
+                )
+
+            threading.Thread(target=work, name="noesia-takeover", daemon=True).start()
 
         # 卡片先弹出来——弹卡片这一步不摸进程表、不做任何可能失败的事。
         # 「谁在挡路」等用户点了同意再查（查错了也只是后面那步报错，卡片本身一定看得见）。
@@ -2185,6 +2373,24 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         except Exception as exc:  # noqa: BLE001 - 卡片弹不出来也得说一声，不能静默
             logger.exception("接管的卡片没能弹出来")
             tell(f"没能弹出接管卡片：{exc}", error=True)
+
+    @QtCore.Slot(bool, str)
+    def _finish_takeover(self, ok: bool, note: str) -> None:
+        """后台线程放行完进程，回到这里重启引擎并回话（QProcess 只能在主线程碰）。"""
+        self._takeover_busy = False
+        panel = getattr(self, "chat_panel", None)
+        if panel is not None:
+            panel.clear_status_notice("takeover")
+        wire = getattr(self, "client", None)
+        if ok and wire is not None:
+            wire.start()
+            note = f"{note}；已重新启动引擎" if note else "已重新启动引擎"
+        say(f"[引擎] {note}")
+        if panel is not None:
+            if ok:
+                panel.show_info(note)
+            else:
+                panel.show_error(note)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() != QtCore.Qt.LeftButton:
@@ -2250,7 +2456,45 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._stop_process_watch()  # 窗口都要没了：那个 5 秒轮询没有意义，别再问引擎
         self._save_geometry()
         self.release_audio()
+        # 开着的审批卡、接管卡都是独立顶层窗：人物窗关掉后它们会留在屏幕上，
+        # 点「允许」还会把答案发给一个正在退出的引擎。一起收掉。
+        for dialog in list(self._approval_dialogs):
+            dialog.dismiss()
+        self._approval_dialogs.clear()
+        self._approval_dialog = None
+        takeover = getattr(self, "_takeover_dialog", None)
+        if takeover is not None and takeover.isVisible():
+            takeover.close()
         super().closeEvent(event)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        """藏起来（Esc / 托盘「隐藏」）就当没在看：解码和 30fps 重画都不该继续。
+
+        以前只 `hide()`，待机视频照旧 24fps 解码 + 整帧抠像、画帧定时器照跑，
+        笔记本上就是「关到托盘之后风扇还不停」。
+        """
+        self._hidden = True
+        player = getattr(self, "idle_player", None)
+        if player is not None:
+            player.pause()
+        timer = getattr(self, "_paint_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._hit_timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """重新露出来：视频、画帧、命中区域都接回去（互动画面正占着显示位时不抢回来）。"""
+        self._hidden = False
+        if not self._interactive_shown:
+            player = getattr(self, "idle_player", None)
+            if player is not None:
+                player.resume()
+        timer = getattr(self, "_paint_timer", None)
+        if timer is not None and not timer.isActive():
+            timer.start()
+        self._hit_timer.start(120)  # 藏起来期间尺寸/箭头状态可能变过，露出来重算一次
+        super().showEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         if event.button() == QtCore.Qt.LeftButton:
@@ -2269,10 +2513,20 @@ def _our_browser_daemon(cmdline: list[str], exe: str, root: str) -> bool:
     """
     if "browser_harness.daemon" not in " ".join(cmdline or []):
         return False
-    root = root.rstrip("\\/").lower()
-    if not root:
+    base = os.path.normcase(os.path.abspath(str(root)))
+    if not base:
         return False
-    return root in " ".join(cmdline or []).lower() or (exe or "").lower().startswith(root)
+    prefix = base + os.sep  # 只有「根目录本身或它下面」才算我们这套：noesia2 / noesia-old 是别人的安装
+    for item in [*list(cmdline or []), exe or ""]:
+        if not item:
+            continue
+        try:
+            path = os.path.normcase(os.path.abspath(str(item)))
+        except Exception:  # noqa: BLE001 - 奇形参数（开关、URL）照旧跳过
+            continue
+        if path == base or path.startswith(prefix):
+            return True
+    return False
 
 
 def _reap_browser_daemons() -> int:
@@ -2462,7 +2716,7 @@ def main() -> int:
     # （语音解 mp3）、以及拉起的引擎子进程都继承这份 PATH —— 用户机器装没装都一样。
     from .engine_wire import prepend_bundled_paths
 
-    prepend_bundled_paths(PROJECT_ROOT)
+    prepend_bundled_paths(REPO_ROOT)  # vendor（git/ffmpeg）在仓库里，不在数据家
     _setup_gui_log(PROJECT_ROOT)  # 先装日志，load_config 里的提示才留得下来
     _install_crash_logging()  # 再把「没人接住的异常 / Qt 的警告」也接到这个日志上
     cfg, resolver = _load_avatar_config()
@@ -2608,10 +2862,13 @@ def main() -> int:
     )
     wire.voice_model.connect(window._on_voice_model)
     wire.approval.connect(window.on_approval_request)
+    wire.request_cancelled.connect(window.on_request_cancelled)
+    wire.approvals_cancelled.connect(window.on_approvals_cancelled)
     wire.setup_beat.connect(window.on_setup_beat)
     wire.key_saved.connect(lambda _slug: window._greet_if_needed(force=True))
     wire.models.connect(window.on_models)
     wire.provider_rows.connect(window.apply_provider_rows)
+    wire.provider_rows_failed.connect(window.on_provider_rows_failed)
     wire.save_result.connect(window.on_save_result)
     wire.config_value.connect(window.on_config_value)
     wire.reasoning_pending.connect(window.on_reasoning_pending)
@@ -2621,9 +2878,31 @@ def main() -> int:
 
     from app.engine_takeover import looks_like_occupied
 
+    def _drop_rewind() -> None:
+        """这次截断重发作废：清了它，陈旧截断点就不会落到之后任何一轮上。
+
+        以前只有引擎回 error 帧才清。断线/没送出去时它一直挂着，重连后第一条无关的
+        delta 一落地就触发 `_apply_pending_rewind`，把聊天窗截到那条旧消息——后半段历史当场消失。
+        """
+        if getattr(window, "_rewind_pending", None) is None:
+            return
+        window._rewind_pending = None
+        panel = getattr(window, "chat_panel", None)
+        if panel is not None:
+            panel.clear_status_notice("resubmit")
+            panel.cancel_rewind()
+
     def _on_failed(message: str) -> None:
         say(f"[引擎] {message}")
         window.boot_failed(message)
+        _drop_rewind()  # 这句请求没进引擎：那次截断重发也没发生
+        panel = getattr(window, "chat_panel", None)
+        if panel is not None and getattr(window, "_boot_done", False):
+            # 这句话没送进引擎（进程没了 / 管道断了）：按钮得从「停止」退回「发送」，
+            # 正在计时的那一轮也要标成没跑完。少了这一步，界面就一直停在"正在跑"，
+            # 用户再点发送也只是把更多话丢进同一条死管道。
+            panel.abandon_turn(message)
+            panel.set_busy(False)
         # 数据根被命令行留下的后台进程占着：等人开口问一句（只问一次），
         # 同意就结束它再重试启动——否则只能干等它空闲超时（默认 600 秒）。
         try:
@@ -2637,9 +2916,11 @@ def main() -> int:
 
     wire.failed.connect(_on_failed)
     wire.closed.connect(lambda: say("[引擎] 通道已关闭"))
-    wire.closed.connect(lambda: window.chat_panel and window.chat_panel.set_busy(False))
-    # 引擎没了要说出来：不然工具行还在计时、按钮还是「发送」，看着像在跑，其实一个字都不会再来
+    wire.closed.connect(_drop_rewind)
+    # 先标「这一轮没跑完」再退按钮：abandon_turn 靠 _busy/_streaming 判断"本来跑没跑"，
+    # 先把按钮退了再喊它，它可能认为什么都没在跑，那句灰字就不写了。
     wire.closed.connect(lambda: window.chat_panel and window.chat_panel.abandon_turn("引擎断开"))
+    wire.closed.connect(lambda: window.chat_panel and window.chat_panel.set_busy(False))
 
     # 引擎进程没了就自己重连（桌面端也是断了就重连，不是在原地等人重开程序）：
     # 1s / 2s / 4s 三次，连上后计数在 _after_ready 里归零；真连不上才让用户重开。
@@ -2718,6 +2999,9 @@ def main() -> int:
     app.aboutToQuit.connect(_shutdown_engine)
     # 退出这条路（右键 → 退出）不经过 closeEvent，麦克风得单独在这儿还回去
     app.aboutToQuit.connect(window.release_audio)
+    # 位置也一样：纯拖动不改大小，`closeEvent` 不走这条路，不在这儿存就丢了。
+    # 和 `closeEvent` 里那一份写的是同样的键，重复写不会出问题。
+    app.aboutToQuit.connect(window._save_geometry)
     if getattr(window, "_avatar", None) is not None:
         app.aboutToQuit.connect(window._avatar.shutdown)
     if window.idle_player is not None:

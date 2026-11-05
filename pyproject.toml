@@ -13,6 +13,14 @@ authors = [{ name = "Ray" }]
 keywords = ["digital-human", "avatar", "lipsync", "tts", "qt", "desktop"]
 dependencies = [
     "PyYAML>=6",
+    # 聊天窗渲染：每条消息都要过 markdown-it（app/markdown_render.py 里没有兜底，
+    # 缺了第一条消息就 ImportError）。以前没声明，只是被 rich 的传递依赖顺手带上。
+    "markdown-it-py>=2",
+    # 代码高亮 / 浏览器守护进程清理：缺了会降级（纯文本、跳过清理），但都在用，如实声明
+    "pygments>=2",
+    "psutil>=5",
+    # 引擎侧（src/engine）用：`make serve`、干净房间体检、跑起来的那条命令行都会 import 它们。
+    # 外壳本身不 import，但这是同一个项目的一份依赖表，删了就装不出能跑的树。
     "pydantic>=2",
     "websockets>=12",
     "httpx>=0.27",
@@ -34,15 +42,16 @@ dependencies = [
 # 少了那份她能聊天，但工具、技能、浏览器都还不能用。
 
 [project.optional-dependencies]
-# dev 要能把仓库跑起来：测试 + 图片处理 + 桌面界面（缺 PySide6 就 `python -m app` 直接 ImportError）
-dev = ["pytest>=8", "PySide6>=6.5"]
-qt = ["PySide6>=6.5"]  # 只想跑界面、不想装 pytest 时用这个
+# dev 要能把仓库跑起来：桌面界面（缺 PySide6 就 `python -m app` 直接 ImportError）。
+# 测试不用 pytest 收集：tests/ 是 17 个独立脚本，统一入口 `scripts/run_tests.py`（make test）。
+dev = ["PySide6>=6.5"]
+qt = ["PySide6>=6.5"]  # 只想跑界面、不装 dev 那组时用这个
 # 口型驱动（Vidu）走云端，本地不需要 torch 之类的推理依赖；
 # 哪天要换本地后端，那层的依赖单独给一组 extras，别在这里写不存在的东西。
 
 [project.scripts]
 noesia = "noesia_entry:main"
-noesia-gui = "app.main:main"
+noesia-gui = "app.__main__:main"  # 走带启动兜底的入口：导入期出错才有人报
 
 [tool.setuptools]
 # src/ 下面直接就是产品代码：包有 app / assets / backends；顶层模块有
@@ -50,12 +59,12 @@ noesia-gui = "app.main:main"
 # 没有中间那层包名；src/engine 是内置引擎，按路径导入，不装成包（依赖见 engine/deps.txt）。
 py-modules = ["cli", "engine_config_view", "noesia_entry", "paths", "settings"]
 
+[tool.setuptools.data-files]
+# 两份数据文件：豆包音色清单、引擎注释的中文译文。它们在 src/ 根目录（不是任何包的子目录），
+# 不声明就进不了 wheel——非 editable 安装时豆包音色报「读不到清单」、配置页注释全退回英文。
+"share/noesia" = ["src/tts_catalog.json", "src/config_comments_zh.json"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["app*", "assets*", "backends*"]
 exclude = ["engine*", "engine.*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
-addopts = "-q"

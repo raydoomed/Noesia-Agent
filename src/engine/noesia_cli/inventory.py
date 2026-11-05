@@ -841,6 +841,13 @@ def _raw_config_has_enabled_moa_preset() -> bool:
 def _apply_picker_hints(rows: list[dict]) -> None:
     """Add ``authenticated``/``auth_type``/``key_env``/``warning`` per row."""
     for row in rows:
+        # 认证类型和变量名对每一行都要给：设置页靠它们决定「Key 框能不能填」。
+        # 以前只给没配过的骨架行，于是配过一次的家回包里既没有 key_env 也没有 auth_type，
+        # 桌面端就把 Key 框和「确定」一起灰掉——表现就是那个密钥再也改不了。
+        auth_type, key_env = _provider_auth_hint(str(row.get("slug") or ""))
+        row.setdefault("auth_type", auth_type)
+        if auth_type == "api_key" and key_env:
+            row.setdefault("key_env", key_env)
         if "authenticated" in row:
             continue
         # Skeleton rows (_append_unconfigured_rows) have empty `models` AND source="canonical".
@@ -848,9 +855,6 @@ def _apply_picker_hints(rows: list[dict]) -> None:
         row["authenticated"] = not is_skeleton
         if not is_skeleton or row.get("is_user_defined"):
             continue
-        auth_type, key_env = _provider_auth_hint(row["slug"])
-        row["auth_type"] = auth_type
-        row["key_env"] = key_env
         row["warning"] = (f"paste {key_env} to activate" if auth_type == "api_key" and key_env
                           else f"run `noesia model` to configure ({auth_type})")
 

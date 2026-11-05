@@ -1,8 +1,7 @@
 """读引擎的 `DEFAULT_CONFIG`（外壳要展示"有哪些参数可调"时用）。
 
-引擎是以 `sys.path` 方式导入的（和 `pipeline.agent_host` 同一套），所以这个动作放在
-`pipeline/` 里做，`app/` 下不出现 `sys.path` 操作——打包护栏（`tests/test_packaging.py`）
-要求前端内部互相导入走包名。
+引擎按 `sys.path` 导入，这件事只在这个模块和 `backends/catalog.py` 里做：`app/` 下的界面代码
+不碰 `sys.path`，拿引擎数据一律经过这两个入口。
 """
 
 from __future__ import annotations
@@ -11,6 +10,8 @@ import copy
 import sys
 from pathlib import Path
 from typing import Any
+
+from paths import resource_file
 
 
 def engine_defaults(core_path: Path | str) -> dict[str, Any]:
@@ -35,7 +36,7 @@ def translated_comments() -> dict[str, str]:
 
     译文是发布时一次性翻好的；引擎升级新增的键没有译文时由调用方回退英文原话。
     """
-    source = Path(__file__).resolve().with_name("config_comments_zh.json")
+    source = resource_file("config_comments_zh.json")
     if not source.exists():
         return {}
     import json  # noqa: PLC0415 - 只有生成配置时才需要

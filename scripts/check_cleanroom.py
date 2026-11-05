@@ -12,8 +12,8 @@
 退出码：0 正常 / 1 有问题（遵循 docs/conventions.md §7）。
 
 注意：
-- 需要一个能用的模型凭据（本机 `.env` 里的 `DEEPSEEK_API_KEY` 之类）：引擎照常从环境变量解析，
-  脚本只把它读进进程环境，不复制文件、不写进任何配置；
+- 需要一个能用的模型凭据：根目录 `.env` 的变量带进进程环境，`data/NoesiaHome/.env` 复制进房间
+  （引擎主要认这一份）；记忆、会话、人设一个字节都不带；
 - 通道就是引擎自己的 stdio JSON-RPC（`python -m tui_gateway.entry`）：没有端口、没有握手包。
 """
 
@@ -22,10 +22,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -89,13 +91,13 @@ class Engine:
         env["PYTHONPATH"] = str(engine)
         env["NOESIA_HOME"] = str(room / "data" / "NoesiaHome")
         # 干净房间查的是「新目录 + 空 data/」能不能跑起来，不是「没有密钥能不能跑」：
-        # 密钥从本机 .env 读进来（只进进程环境，不复制文件），跟新用户自己配 key 的情形一致。
+        # 根目录 .env 里的变量一并带进进程环境（有的键引擎直接从环境读）。
         for key, value in _dotenv(PROJECT_ROOT / ".env").items():
             env.setdefault(key, value)
         self.log_path = room / "engine.log"
         self._log = self.log_path.open("w", encoding="utf-8")
-        # 密钥必须落在房间自己的 <home>/.env 里：引擎只从那儿读，进程环境变量不算数。
-        # 这一步模拟的是「新用户照你的说明把 key 填进 .env」，不是偷偷替他配好。
+        # 引擎主要认 <home>/.env：房间里也放一份，等于「新用户照说明把 key 填进去」，
+        # 不是偷偷替他配好。本机 data/ 里的记忆、会话一个字节都不带过来。
         source_env = PROJECT_ROOT / "data" / "NoesiaHome" / ".env"
         env_file = Path(env["NOESIA_HOME"]) / ".env"
         env_file.parent.mkdir(parents=True, exist_ok=True)
@@ -115,7 +117,17 @@ class Engine:
             errors="replace",
         )
         self._id = 0
+        # 读帧放一条线程：`stdout.readline()` 没有超时，引擎一旦卡住不吐字，主线程就永远停在那儿，
+        # 上面那些 deadline 全都成了摆设。线程只管把行丢进队列，等多久由调用方决定。
+        self._lines: queue.Queue[str] = queue.Queue()
+        threading.Thread(target=self._pump, name="cleanroom-stdout", daemon=True).start()
         print(f"[4] 引擎 pid={self.proc.pid}，日志 {self.log_path}")
+
+    def _pump(self) -> None:
+        assert self.proc.stdout is not None
+        for line in self.proc.stdout:
+            self._lines.put(line)
+        self._lines.put("")  # 读到头（进程关了 stdout）
 
     def send(self, method: str, params: dict | None = None) -> int:
         self._id += 1
@@ -125,11 +137,18 @@ class Engine:
         self.proc.stdin.flush()
         return self._id
 
-    def _next_frame(self) -> dict:
-        assert self.proc.stdout is not None
+    def _next_frame(self, timeout: float) -> dict:
+        """取下一帧；等到 `timeout` 秒还没字就当场报错（不许无限期挂着）。"""
+        deadline = time.monotonic() + timeout
         while True:
-            line = self.proc.stdout.readline()
-            if not line:
+            remaining = deadline - time.monotonic()
+            try:
+                line = self._lines.get(timeout=max(0.0, remaining))
+            except queue.Empty:
+                raise RuntimeError(
+                    f"等了 {timeout:.0f}s 没等到引擎的输出：\n" + self._tail()
+                ) from None
+            if line == "":
                 raise RuntimeError("引擎的输出断了（进程可能已经退出）：\n" + self._tail())
             line = line.strip()
             if line:
@@ -141,7 +160,7 @@ class Engine:
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
                 raise RuntimeError("引擎没起来：\n" + self._tail())
-            frame = self._next_frame()
+            frame = self._next_frame(deadline - time.monotonic())
             if (frame.get("params") or {}).get("type") == "gateway.ready":
                 print("[5] 引擎就绪（gateway.ready）")
                 return
@@ -151,7 +170,7 @@ class Engine:
         """等某一条请求的回复；中间夹着的事件帧直接跳过。"""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            frame = self._next_frame()
+            frame = self._next_frame(deadline - time.monotonic())
             if frame.get("id") == rid:
                 if "error" in frame:
                     raise RuntimeError(f"引擎报错：{frame['error']}")
@@ -189,8 +208,32 @@ class Engine:
         if session_id:
             params["session_id"] = session_id
         result = self.wait_result(self.send("config.set", params))
+        if isinstance(result, dict) and result.get("error"):
+            # 本机 config 里的模型名引擎不认（线上清单改过名/下线，比如 deepseek-flash）：
+            # 照抄它会让体检以「干净房间跑不起来」收场，而代码其实没问题。
+            # 这时按房间自己的清单挑同一家的第一个模型重试一次。
+            alt = self.first_model(provider)
+            if alt and alt != choice:
+                print(f"[6] 本机配置的 {choice} 引擎不认（{result['error'].get('code')}），改用清单里的 {alt}")
+                choice = alt
+                params["value"] = choice
+                result = self.wait_result(self.send("config.set", params))
         print(f"[6] 按本机配置选模型：{choice} → {json.dumps(result, ensure_ascii=False)[:80]}")
         return choice
+
+    def first_model(self, provider: str) -> str:
+        """房间里引擎认的、这一家的第一个模型（`provider:model`）；问不到就回空。"""
+        try:
+            result = self.wait_result(self.send("model.options", {"explicit_only": True}), timeout=60)
+        except Exception:  # noqa: BLE001 - 拿不到清单就按原样继续，别把体检搞崩
+            return ""
+        for row in (result or {}).get("providers") or []:
+            if not isinstance(row, dict) or str(row.get("slug") or "") != provider:
+                continue
+            for name in row.get("models") or []:
+                if isinstance(name, str) and name:
+                    return f"{provider}:{name}"
+        return ""
 
     def talk(self, text: str, timeout: float = 180.0) -> str:
         """开一个会话、发一句话，按 message.delta 拼回复。"""
@@ -200,7 +243,7 @@ class Engine:
         first: float | None = None
         started: float | None = None
         while time.monotonic() < deadline:
-            frame = self._next_frame()
+            frame = self._next_frame(deadline - time.monotonic())
             if "error" in frame:
                 raise RuntimeError(f"引擎报错：{frame['error']}")
             result = frame.get("result")
@@ -259,9 +302,11 @@ def main(argv: list[str] | None = None) -> int:
         engine = Engine(room, args.python)
         engine.wait_ready()
         if not engine.has_key:
+            # 「跳过」不能算「通过」：exit 0 + [PASS] 会让守门人以为整条链路验过了，
+            # 其实最关键的「能对话」一次都没跑。用 2 把「跳过」和「失败(1)」分开。
             print("[SKIP] 本机 data/NoesiaHome/.env 里没有密钥：只验到「引擎起来了」，对话这步跳过")
-            print("[PASS] 引擎可在干净 data/ 上启动")
-            return 0
+            print("[SKIP] 这次不算通过：填好密钥再跑一遍才算验完")
+            return 2
         reply = engine.talk("你好，介绍一下你自己")
         print(f"[7] 回复：{reply.strip()[:120]}")
         if not reply.strip():

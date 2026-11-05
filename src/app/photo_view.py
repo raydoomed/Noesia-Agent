@@ -101,14 +101,20 @@ class PhotoView(QtWidgets.QDialog):
                 )
         self._photo.setMinimumSize(1, 1)  # 占位时靠它撑大小，图来了就不用撑了
         self._photo.setPixmap(shown)
-        if pending:
-            return
+        # `pending` 也要按手上这张图的尺寸摆窗：以前这里直接 return，窗口停在 label 的
+        # 最小尺寸 240×160，缩略图被居中裁掉四周，用户点开看到的是一小块中间
+        # （点开第 7 张图以后必现，因为原图只缓存最近 6 张）。
         self.resize(shown.size())  # 窗口就是这张图，不多留一条边
         if not self._dragged:
-            self._center()  # 原图比缩略图大得多，得重新摆一次；用户自己拖过了就别动他
+            self._center()  # 原图比缩略图大得多，等它回来还会再摆一次；用户自己拖过了就别动他
 
     def set_failed(self, text: str) -> None:
         """原图没取回来：说清楚，缩略图当时什么样就还是什么样。"""
+        pixmap = self._photo.pixmap()
+        if pixmap is not None and not pixmap.isNull():
+            # 图上已经有人脸了：把话放到下面那行小字，别用 setText 把缩略图抹成一行字
+            self._say(text)
+            return
         self._photo.setText(text)
         self._say("")
 

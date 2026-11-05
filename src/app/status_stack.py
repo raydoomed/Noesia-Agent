@@ -324,6 +324,12 @@ class StatusStack(QtWidgets.QFrame):
         self._drop_bg()
         self._sync()
 
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 的命名
+        """宽度变了要重算高度：换行数随宽度变，算一次就冻住的话，
+        窄了文字被切（高度不够）、宽了留一大块空白（高度还是按窄窗口算的）。"""
+        super().resizeEvent(event)
+        self._sync()
+
     def _sync(self) -> None:
         shown = bool(self._rows) or self._activity is not None or self._bg is not None
         self.setVisible(shown)

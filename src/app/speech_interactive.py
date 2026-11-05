@@ -101,6 +101,7 @@ class StreamSpeaker(QtCore.QObject):
         self._total_bytes = 0
         self._fmt: QtMultimedia.QAudioFormat | None = None
         self._carry = b""  # 转发给数字人时攒着的半个 20ms 帧
+        self._write_stalls = 0  # 声卡连续几次一个字节都不收（写不进 = 设备没了，不能一直等）
 
         self._ticker = QtCore.QTimer(self)
         self._ticker.setInterval(20)  # 和 Vidu 的分片节奏一致
@@ -204,9 +205,27 @@ class StreamSpeaker(QtCore.QObject):
             self._carry = self._carry[FRAME_BYTES:]
 
     def _on_pull_done(self, seq: int) -> None:
-        if seq == self._seq:
+        # `_active` 也要看：按下停止之后，工作线程的完成通知还可能晚一步投递过来。
+        # 不看的话会再走一遍收尾，界面先收到 `stopped` 又收到 `finished`
+        # （互动档按秒计费，那一下等于把会话又挂住几秒）。
+        if seq == self._seq and self._active:
             self._pulling = False
             self._pump()
+
+    def _fail_local(self, message: str) -> None:
+        """写完不进去这类本地故障：收干净资源，把原因说出去（不能让调用方一直等）。"""
+        self._ticker.stop()
+        sink, self._sink = self._sink, None
+        self._io = None
+        self._active = False
+        self._pending.clear()
+        if sink is not None:
+            try:
+                sink.stop()
+            except Exception:  # noqa: BLE001 - 设备已经没了，停失败不影响收尾
+                logger.debug("[语音] 关声卡失败", exc_info=True)
+            sink.deleteLater()
+        self.failed.emit(message)
 
     def _on_failed_internal(self, seq: int, message: str) -> None:
         if seq != self._seq:
@@ -227,7 +246,8 @@ class StreamSpeaker(QtCore.QObject):
         return max(0, got - int(TARGET_RATE * 2 * 0.06))
 
     def _pump(self) -> None:
-        if not self._play_local:
+        if not self._active:
+            return  # 已经停止/收尾：晚到的定时器和完成回调都别再往下走（会重复发 finished）
             # 声音由 RTC 出：进度按时间走（远端回传会一路多送静音，不能当进度用），
             # 收尾看"远端还响不响"（她真的念完了才安静）。
             now = time.monotonic()
@@ -276,7 +296,16 @@ class StreamSpeaker(QtCore.QObject):
                 break
             written = self._io.write(self._pending[0])
             if written <= 0:
-                break  # 声卡缓冲满，下次再来
+                # 声卡缓冲满时会返回 0，下次再来是对的；但设备被拔掉/被独占/切到无效设备
+                # 时它会**一直**返回 0 或 -1，那时 `_pending` 永远不空、`played_us` 不前进、
+                # `finished` 也不发：语音条永久停在「正在朗读」。连续 3 秒不进去就当场收尾。
+                self._write_stalls += 1
+                if self._write_stalls >= 150:  # 20ms × 150 = 3 秒
+                    logger.warning("[语音] 声卡写不进去（%s 字节），收尾", written)
+                    self._fail_local("声音送不到扬声器：设备可能被拔掉或被别的程序占了")
+                    return
+                break
+            self._write_stalls = 0
             self._pending[0] = self._pending[0][written:]
             self._fed_bytes += written
             if not self._pending[0]:

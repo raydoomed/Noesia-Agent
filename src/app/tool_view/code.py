@@ -17,7 +17,11 @@ _TOKEN_CACHE: dict[str, object] = {}
 
 
 def _lexer_for(path: str | None):
-    """按文件名挑词法分析器；挑不到就返回 None（调用方回落成纯文本）。"""
+    """按文件名挑词法分析器，挑不到再按语言名挑；都挑不到返回 None（调用方回落成纯文本）。
+
+    聊天里的围栏写的是**语言名**（```python），不是文件名——只按文件名找会一律 ClassNotFound，
+    于是所有带语言标注的代码块都成了单色（用户以为高亮坏了）。
+    """
     if not path:
         return None
     name = Path(path).name
@@ -26,13 +30,16 @@ def _lexer_for(path: str | None):
 
     lexer = None
     try:
-        from pygments.lexers import get_lexer_for_filename
+        from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
         from pygments.util import ClassNotFound
 
         try:
             lexer = get_lexer_for_filename(name, stripnl=False, ensurenl=False)
         except ClassNotFound:
-            lexer = None
+            try:
+                lexer = get_lexer_by_name(name, stripnl=False, ensurenl=False)
+            except ClassNotFound:
+                lexer = None
     except Exception:  # pygments 不在就整层降级，不让界面因为上色挂掉
         lexer = None
 

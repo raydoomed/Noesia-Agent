@@ -57,15 +57,11 @@ MAX_REOPEN_IN_WINDOW = 3
 # 那样计数永远归零，上限等于没有。
 OPEN_STABLE_SECONDS = 5.0
 
-STATE_IDLE = "idle"
-STATE_RECORDING = "recording"
-
 
 class VoiceRecorder(QtCore.QObject):
     """一只麦克风、一条常开流。"""
 
     level = QtCore.Signal(float)          # 0..1，给语音球画起伏
-    state_changed = QtCore.Signal(str)    # idle / recording
     failed = QtCore.Signal(str)           # 人类可读的失败原因
     devices_changed = QtCore.Signal(list)  # [(guid, name, active), ...]
     stream_ready = QtCore.Signal(str)     # 流开好了，带后端名（wasapi / mme）
@@ -89,7 +85,6 @@ class VoiceRecorder(QtCore.QObject):
         self._chosen_guid = ""            # 用户选的；空 = 跟随系统默认
         self._pcm = bytearray()
         self._collecting = False
-        self._state = STATE_IDLE
         self._opening = False
         self._lock = threading.Lock()
 
@@ -185,7 +180,6 @@ class VoiceRecorder(QtCore.QObject):
         if not keep_open_intent:
             self._wanted = False
         self._collecting = False
-        self._set_state(STATE_IDLE)          # 走信号，界面才知道状态变了
         self._pump.stop()
         self._stable_timer.stop()
         capture, self._capture = self._capture, None
@@ -204,7 +198,6 @@ class VoiceRecorder(QtCore.QObject):
         事件又触发一次重开——日志里 5 秒刷 13 次「设备没了」就是这么来的。
         """
         self._collecting = False
-        self._set_state(STATE_IDLE)
         self._pump.stop()
         self._stable_timer.stop()
         capture, self._capture = self._capture, None
@@ -336,13 +329,11 @@ class VoiceRecorder(QtCore.QObject):
         with self._lock:
             self._pcm.clear()
         self._collecting = True
-        self._set_state(STATE_RECORDING)
         return True
 
     def stop(self) -> bytes | None:
         """停止攒数据，返回这次录到的 PCM（16k 单声道 s16le）。"""
         self._collecting = False
-        self._set_state(STATE_IDLE)
         with self._lock:
             data = bytes(self._pcm)
             self._pcm.clear()
@@ -354,7 +345,6 @@ class VoiceRecorder(QtCore.QObject):
 
     def cancel(self) -> None:
         self._collecting = False
-        self._set_state(STATE_IDLE)
         with self._lock:
             self._pcm.clear()
 
@@ -365,6 +355,15 @@ class VoiceRecorder(QtCore.QObject):
             return
         try:
             chunk = capture.read()
+        except audio_capture.CaptureError as exc:
+            # 设备中途失效：原因原样说给界面听。以前这条路一律说「说话太短了」，
+            # 用户明明说了一整句，得到的是「按住多说一会儿」——误导得去怀疑自己。
+            if self._capture is None:
+                return  # 我们自己关流关掉的
+            logger.warning("读麦克风失败：%s", exc)
+            self.close_stream(keep_open_intent=True)  # 用户还想要麦，设备回来要自动接上
+            self.failed.emit(str(exc))
+            return
         except Exception:  # noqa: BLE001 - 读取失败不再让它每 16ms 崩一次
             if self._capture is None:
                 # 是我们自己关流关掉的（close_stream 把引用置空了），不是设备出问题
@@ -380,14 +379,13 @@ class VoiceRecorder(QtCore.QObject):
                 self._pcm.extend(chunk)
                 overflow = len(self._pcm) > int(MAX_SECONDS * self._rate * self._channels * 2)
             if overflow:
+                # 到上限就不再收了，但**必须说出来**：球还在随音量起伏，说的话却全丢，
+                # 用户以为还在录、松手只发出去前 60 秒，没人知道后半句去哪了。
                 self._collecting = False
                 logger.info("[录音] 到 %.0f 秒上限，自动停", MAX_SECONDS)
+                self.failed.emit(f"说到 {int(MAX_SECONDS)} 秒上限了，后面的没录上；松手发送或再按住说一段")
         self.level.emit(_level(chunk))
 
-    def _set_state(self, state: str) -> None:
-        if state != self._state:
-            self._state = state
-            self.state_changed.emit(state)
 
     # ------------------------------------------------------------ 设备变更
 
@@ -454,8 +452,13 @@ class VoiceRecorder(QtCore.QObject):
         alive = {e.guid.lower() for e in endpoints}
 
         if self._endpoint is not None and self._endpoint.guid.lower() not in alive:
+            lost_name = self._endpoint.name
             if self._collecting:
-                self.cancel()
+                # 这里不能 `cancel()`：它把已经录到的 PCM 清空，用户明明说了一整句，
+                # 松手却得到「说话太短了，按住多说一会儿」。保住已录的部分（只停止追加），
+                # 松手照样把前半句发出去。
+                self._collecting = False
+                self.failed.emit(f"「{lost_name}」断开了；已经录到的会照样发出去")
             logger.info("[录音] 设备没了：%s", self._endpoint.name)
 
             # 反复断开时别再自动重开：越重开越乱，还可能把设备拖挂
@@ -466,6 +469,13 @@ class VoiceRecorder(QtCore.QObject):
                 return
 
             replacement = self.current()
+            if not self._wanted:
+                # 已经切回文字模式：拔耳机、切默认设备这类事件照样会来，
+                # 这时的正确动作是「记下来、什么都不开」——别把麦克风重新打开
+                # （否则占着 Windows 的麦克风、蓝牙耳机被钉在采集态、拾音灯常亮），
+                # 也别弹「麦克风断开了」，用户根本没在用麦。
+                self._endpoint = None
+                return
             self.device_lost.emit(replacement.name if replacement else "")
             self.reopen()  # 走串行化那条路：旧流关干净了才开新的
             return

@@ -47,6 +47,16 @@ _ERROR_NOISE = re.compile(r"[A-Za-z]:[\\/][^\s'\"]*|/(?:[\w.\-]+/)+[\w.\-]+|\b[0
 
 MAX_REVIEW_SUMMARIES = 100  # 一场对话里最多逐条贴这么多回顾灰字：超了就不再往文档里堆
 
+# 正文区自己会拿来滚动的键：按下就算「用户自己在翻」，不能当成 Qt 的自动调整。
+_SCROLL_KEYS = frozenset({
+    QtCore.Qt.Key_Up,
+    QtCore.Qt.Key_Down,
+    QtCore.Qt.Key_PageUp,
+    QtCore.Qt.Key_PageDown,
+    QtCore.Qt.Key_Home,
+    QtCore.Qt.Key_End,
+})
+
 
 def _error_key(text: str) -> str:
     """同一条错误 → 同一个指纹：去掉路径、数字、空白的差别再比。"""
@@ -169,13 +179,29 @@ class _JumpPill(QtWidgets.QWidget):
 
 
 # 这些标签 Qt 导入时会自己开新段（再 `insertBlock()` 就凭空多一个空段 = 一整行空白）。
-# `<p>` 不在里面：它会把内容并进当前段，得自己开段。
-_SELF_BLOCK_TAGS = ("<ul", "<ol", "<table", "<h1", "<h2", "<h3", "<h4", "<h5", "<h6", "<blockquote", "<hr")
+# 实测（offscreen）：只有 列表 / 表格 / 分隔线 会开新段；`<h1>`-`<h6>`、`<blockquote>`、
+# `<p>`、`<pre>` 一律并进当前段，连 headingLevel 都不留——所以它们得自己开段、自己画样式。
+_SELF_BLOCK_TAGS = ("<ul", "<ol", "<table", "<hr")
+_HEADING_RE = re.compile(r"^\s*<h([1-6])[^>]*>(.*)</h\1>\s*$", re.S | re.I)
+_HEADING_PX = {1: 20, 2: 18, 3: 16, 4: 15, 5: 14, 6: 14}
+_QUOTE_TAG = "<blockquote"
+_QUOTE_COLOR = "#b9c0cf"  # 引用的字比正文淡一点：Qt 不认 <blockquote>，缩进和颜色得自己给
 
 
 def _starts_own_block(markup: str) -> bool:
     """这段 HTML 是不是「Qt 会自己开段」的块级元素。"""
     return markup.lstrip().lower().startswith(_SELF_BLOCK_TAGS)
+
+
+def _paint_range(cursor: QtGui.QTextCursor, start: int, end: int, char_format: QtGui.QTextCharFormat) -> None:
+    """把字符格式刷到 [start, end) 这段已插入的文字上，刷完把光标放回末尾。"""
+    if end <= start:
+        return
+    cursor.setPosition(start)
+    cursor.setPosition(end, QtGui.QTextCursor.KeepAnchor)
+    cursor.mergeCharFormat(char_format)
+    cursor.clearSelection()
+    cursor.movePosition(QtGui.QTextCursor.End)
 
 
 def _plain_block_format() -> QtGui.QTextBlockFormat:
@@ -1506,12 +1532,21 @@ class ChatPanel(QtWidgets.QWidget):
         # 按位置判就会一直判成「翻着看」，然后彻底不再跟）。用户往上翻才熄，回到底才亮。
         self._follow = True
         self._self_scroll = False  # 自己滚的这会儿，valueChanged 不算用户意图
+        # 用户真在动手滚（滚轮 / 拖条 / 点箭头 / 方向键）：只有这种位置变化才算「往上翻」。
+        # Qt 自己在 show()、排版变高、窗口缩放时也会挪位置，那不是用户的意思，不能拿它熄跟随。
+        self._user_scroll = False
+        self._range_changing = False  # 排版刚变过、滚动条范围跟着变：这期间的位移是 Qt 挪的
         self._restoring = False  # 正在整窗重铺历史：逐条插入不滚、不摆胶囊，铺完一次到位
         self._diff_texts: dict[int, tuple[str | None, str]] = {}  # 折叠段 key → (路径, 整段 diff)
         self._tool_payloads: dict[int, tuple[str, str]] = {}  # 折叠段 key → (复制按钮文案, 待复制的文本)
         self.view.viewport().setMouseTracking(True)
         self.view.viewport().installEventFilter(self)
-        self.view.verticalScrollBar().valueChanged.connect(self._on_scrolled)
+        self.view.installEventFilter(self)  # 方向键 / PageUp 也是用户自己滚的
+        bar = self.view.verticalScrollBar()
+        bar.valueChanged.connect(self._on_scrolled)
+        bar.sliderMoved.connect(self._user_scroll_now)  # 拖着滚动条
+        bar.actionTriggered.connect(self._user_scroll_now)  # 点箭头 / 点条 / 翻页动作
+        bar.rangeChanged.connect(self._range_changed)  # 范围变了 = 刚刚重新排版
         self.view.document().contentsChanged.connect(self._replace_msg_actions)  # 流式还在长，条得跟着尾巴走
 
         # 输入框正上方那一叠状态（桌面端 composer 的 status-stack）：引擎的提示、还在跑的后台
@@ -1901,6 +1936,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._sync_send_button()
         self.speech_bar.dismiss()
         self._hide_hover()
+        # 清屏后文档只剩末尾那一格，旧位置算出来的「跳到最新」胶囊会留在一个不该有它的地方
+        # （它只在滚动事件里翻显隐，清屏本身不触发滚动）。
+        self._hide_jump()
 
     def has_transcript(self) -> bool:
         """屏幕上有没有真东西（正文或工具行）。铺历史前用它判断要不要动这个窗口。"""
@@ -2062,6 +2100,7 @@ class ChatPanel(QtWidgets.QWidget):
             or data.rstrip().endswith("*")  # 标记只到了一半（行尾一个 `*`），等它配对
             or data.count("`") % 2  # 行内代码没闭合，同理
             or _open_link(data)  # 图片/链接的括号还没到齐：先画出来就是那行原始 markdown
+            or markdown_render.is_structural_prefix(data)  # 结构标记只到了一半（`-`、`1.`、`##`）
         )
         if (
             data
@@ -2264,11 +2303,15 @@ class ChatPanel(QtWidgets.QWidget):
                 break
             url = markup[found + len(marker) : closing]
             pieces.append(markup[index : found + len(marker)])
+            # HTML 里的 `src` 是转义过的：markdown-it 会把地址中的 `&` 写成 `&amp;`，
+            # 原样拿去请求时服务端收到的是 `w=300&amp;h=200`，参数名变成 `amp;h`，
+            # 签名/尺寸校验直接失败——带 `&` 的 CDN 图整张取不回来，重试也没用。
+            url = html.unescape(url)
             if url.lower().startswith(("http://", "https://")):
                 pieces.append(self._photo_key(url))
             else:
                 pieces.append(url)
-            pieces.append('"')
+            pieces.append('"')  # 值的收尾引号（marker 里只有开引号）
             index = closing + 1
         return "".join(pieces)
 
@@ -2306,8 +2349,15 @@ class ChatPanel(QtWidgets.QWidget):
         横坐标改用所在行块的左边界（图片在正文里独家占一行、左对齐），纵坐标和高度用光标
         矩形——这两个是准的。
         """
-        pixmap = self._photos.get(self._photo_sources.get(key, ""))
-        if pixmap is None:
+        # 宽度以**文档里真正画着的那张图**为准，不是 `_photos` 缓存：缓存是 24 张的 FIFO，
+        # 长会话里老图被挤掉后，`_photos` 里查不到——以前就在这里返回 None，
+        # 于是那些看得见的图点不开、也没有悬停下载（图还在文档里，文档才是持有者）。
+        pixmap = self.view.document().resource(
+            QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(key)
+        )
+        if not isinstance(pixmap, QtGui.QPixmap) or pixmap.isNull():
+            pixmap = self._photos.get(self._photo_sources.get(key, ""))
+        if pixmap is None or pixmap.isNull():
             return None
         cursor = self.view.cursorForPosition(pos)
         line = self.view.cursorRect(cursor)
@@ -3546,8 +3596,11 @@ class ChatPanel(QtWidgets.QWidget):
 
     def show_error(self, message: str) -> None:
         self._end_reasoning_group()
-        self._streaming = False
-        self._assistant_pending = ""
+        # 注意**不要**动 `_streaming`：回答正在流的时候引擎也会回错误帧（config.get、
+        # process.list 之类），把它清掉，下一段 chunk 就会另起一条「Noesia」——
+        # 一条完整回答被劈成两条，中间夹一行红字，复制/刷新只作用到后半截。
+        if not self._streaming:
+            self._assistant_pending = ""  # 没在流的时候清掉上一轮的残片；正在流就留着，那是这轮没渲染完的半句
         text = (message or "").strip()
         if not text:
             return
@@ -3717,25 +3770,77 @@ class ChatPanel(QtWidgets.QWidget):
         document = self.view.document()
         cursor = QtGui.QTextCursor(document)  # 独立光标：不挪视图，滚动位置就不动
         cursor.movePosition(QtGui.QTextCursor.End)
+        heading = _HEADING_RE.match(markup)
+        if heading:
+            self._insert_heading(cursor, int(heading.group(1)), heading.group(2))
+            return
         first_new = None
+        quote_format = None
         if not document.isEmpty():
             if _starts_own_block(markup):
-                # 列表 / 表格 / 标题：Qt 自己开新段，这里再开一次就是凭空多一个空段
+                # 列表 / 表格 / 分隔线：Qt 自己开新段，这里再开一次就是凭空多一个空段
                 self._drop_trailing_blank_line()
+                # 光标停在列表项里时插新的列表，Qt 会当成同一个列表接着排：
+                # 无序后面跟有序，`二` 和 `甲` 会落进同一个块（实测 text 变成 "二\u2028甲"）。
+                # 先退到一个不属于任何列表的空段，再让 Qt 自己开。
+                if document.lastBlock().textList() is not None:
+                    cursor.insertBlock()
+                    cursor.setBlockFormat(_plain_block_format())
                 first_new = document.blockCount()
             else:
                 cursor.insertBlock()  # 行内片段不会自己断开，得显式开段
                 # 新段不能沿用上一段的格式：上一段是代码块时，底色会跟着过来，整段说明都画成代码
                 cursor.setCharFormat(QtGui.QTextCharFormat())
-                cursor.setBlockFormat(_plain_block_format())
+                quote = markup.lstrip().lower().startswith(_QUOTE_TAG)
+                block_format = _plain_block_format()
+                if quote:
+                    block_format.setLeftMargin(12)  # 引用：缩进一点，跟正文分开
+                cursor.setBlockFormat(block_format)
+                if quote:
+                    quote_format = QtGui.QTextCharFormat()
+                    quote_format.setForeground(QtGui.QColor(_QUOTE_COLOR))
         self._para_break = False
+        start = cursor.position()
         cursor.insertHtml(self._adopt_images(markup))
+        if quote_format is not None:
+            # insertHtml 会把手上的字符格式换成片段自己的，颜色得插完再刷到这段范围上
+            _paint_range(cursor, start, cursor.position(), quote_format)
         if first_new is not None:
             # 段间距只由块格式给（5px），所以 Qt 新开的这几段也要设成普通段落
             block = document.findBlockByNumber(first_new)
             while block.isValid():
-                QtGui.QTextCursor(block).setBlockFormat(_plain_block_format())
+                # 列表项不能重设块格式：Qt 把「属于哪个 QTextList」存在 objectIndex 里，
+                # 重设就把块从列表里摘出来，圆点/序号/缩进全没了。它们的间距由列表样式给。
+                if block.textList() is None:
+                    QtGui.QTextCursor(block).setBlockFormat(_plain_block_format())
                 block = block.next()
+        self._settle_insert()
+
+    def _insert_heading(self, cursor: QtGui.QTextCursor, level: int, inner: str) -> None:
+        """标题：自己开段、自己定字号。
+
+        Qt 的 `insertHtml` 只在**文档第一段**才认 `<h1>`-`<h6>`；别处一律并进当前段，
+        headingLevel 也不保留（实测 blocks 不变、lvl=0），标题就成了接在上一句末尾的普通文字。
+        所以级别得画在字符格式上：字号按级别给，粗体，段前后各留一点空。
+        """
+        document = self.view.document()
+        if not document.isEmpty():
+            self._drop_trailing_blank_line()
+            cursor.insertBlock()
+        block_format = QtGui.QTextBlockFormat()
+        block_format.setTopMargin(12 if level <= 2 else 9)
+        block_format.setBottomMargin(3)
+        cursor.setBlockFormat(block_format)
+        font = QtGui.QFont(self.view.font())
+        font.setPixelSize(_HEADING_PX[level])
+        font.setBold(True)
+        char_format = QtGui.QTextCharFormat()
+        char_format.setFont(font)
+        cursor.setCharFormat(char_format)
+        self._para_break = False
+        start = cursor.position()
+        cursor.insertHtml(self._adopt_images(inner))
+        _paint_range(cursor, start, cursor.position(), char_format)  # insertHtml 会换掉手上的格式
         self._settle_insert()
 
     def _scroll_to_end(self) -> None:
@@ -3828,16 +3933,39 @@ class ChatPanel(QtWidgets.QWidget):
         self._scroll_to_end_later()
         self._hide_jump()
 
+    def _user_scroll_now(self, *_args) -> None:
+        """这一次滚动是用户自己动的（滚轮 / 拖条 / 点箭头 / 方向键）：标上，这一拍过完就撤。"""
+        self._user_scroll = True
+        QtCore.QTimer.singleShot(0, self._end_user_scroll)
+
+    def _end_user_scroll(self) -> None:
+        self._user_scroll = False
+
+    def _range_changed(self, _minimum: int, _maximum: int) -> None:
+        """滚动范围变了：这一拍里跟着来的位移是 Qt 按新排版挪的，不是用户翻的。"""
+        self._range_changing = True
+        QtCore.QTimer.singleShot(0, self._end_range_change)
+
+    def _end_range_change(self) -> None:
+        self._range_changing = False
+
     def _on_scrolled(self, _value: int) -> None:
         """滚动条动了：到没到底既决定胶囊的存亡，也决定还跟不跟随新内容。"""
         self._hide_hover()
         if self._self_scroll:
             return  # 是我自己滚到底的，不算用户的意思
-        self._follow = self._at_end()  # 用户滚到底就继续跟，往上翻就不跟
-        if self._follow:
+        if self._at_end():
+            self._follow = True
             self._hide_jump()
-        else:
-            self._show_jump()
+            return
+        if self._range_changing and not self._user_scroll:
+            # 位置是 Qt 自己挪的（首帧显示、排版变高、窗口缩放），不是用户往上翻：
+            # 跟随状态不变；本来就在跟随的话，把差的那一截补回去。
+            if self._follow and not self._restoring:
+                self._scroll_to_end_later()
+            return
+        self._follow = False  # 用户真的往上翻了
+        self._show_jump()
 
     # ---- 念出来（TTS）开关 ----
 
@@ -4034,6 +4162,15 @@ class ChatPanel(QtWidgets.QWidget):
             # 「在等供应商，2s 后第 1/3 次」同理：只有异常路径清过它，正常/失败收尾之前都不清，
             # 于是上一轮的重试倒计时会一直挂在这轮的错误提示旁边，两句话互相矛盾。
             self.set_provider_wait("")
+
+    def open_turn_gate(self) -> None:
+        """引擎明确开了一轮新回答（`message.start`）：上一轮按停/断线留下的闸到此为止。
+
+        闸是给「按停之后还飘在半路的残片」用的。引擎都亲口说开新一轮了，残片不可能再来；
+        再拦着，这一整轮回答会被原地吞掉——气泡停在用户那句，「思考中…」转完就没有下文，
+        要等到下一轮才恢复（重连之后就是这样）。
+        """
+        self._interrupted = False
 
     def settle_turn(self) -> None:
         """这一轮彻底完了（引擎的 turn.done）：可以重新收字了，排在后面的那句也该发了。
@@ -4232,10 +4369,16 @@ class ChatPanel(QtWidgets.QWidget):
         return dialog
 
     def insert_text(self, text: str) -> None:
-        """往输入框里补一段（@folder: / @url: / 提示词片段都用它）。"""
-        # 用「插到末尾」而不是整篇 setPlainText：整篇替换会吃掉草稿的换行/缩进，还把撤销栈清空
+        """往输入框里补一段（@folder: / @url: / 提示词片段都用它）。
+
+        插入前看住两端：草稿末尾正贴着字的话先补一个换行，`@folder:` 粘在上一句尾巴上
+        就成了「帮我看看@folder:…」，引擎按整串找引用找不到，用户看着还以为是引擎不认。
+        """
         self.input.moveCursor(QtGui.QTextCursor.End)
-        self.input.insertPlainText(text)
+        body = self.input.toPlainText()
+        if body and not body[-1].isspace():
+            text = "\n" + text
+        self.input.insertPlainText(text if text.endswith(("\n", " ")) else text + " ")
         self.input.setFocus()
 
     def _attach_paths(self, paths) -> bool:
@@ -5634,6 +5777,12 @@ class ChatPanel(QtWidgets.QWidget):
         self._md_block = []
         self._md_fence = False
         self._reason_fold = None
+        # 工具行的状态跟着一起抹：秒表还在 tick 一个已经不在文档里的标签，
+        # fold 留着还会让 `has_transcript()` 永远为真，界面就以为这里有工具过程可看。
+        self._tool_started.clear()
+        self._tool_folds.clear()
+        self._tool_clock.stop()
+        self._folds.drop_invalid()
         self._hide_msg_actions()
 
     def stamp_user_row(self, row_id: int) -> None:
@@ -5754,9 +5903,18 @@ class ChatPanel(QtWidgets.QWidget):
                     return super().eventFilter(obj, event)  # 压在悬停按钮上：不算离开正文
                 self._hide_hover()
                 self.view.viewport().unsetCursor()
+                if kind is QtCore.QEvent.Type.Wheel:
+                    self._user_scroll_now()  # 真滚动发生在下面放行之后
             elif kind is QtCore.QEvent.Type.Resize:
                 self._place_jump()  # 正文区尺寸变了（输入框长高、窗口拉宽），胶囊重新贴底
                 self._replace_msg_actions()  # 行重新折过了，悬停条跟着重摆
+                if self._follow and not self._restoring:
+                    self._scroll_to_end_later()  # 窗口变小、正文变高：跟着看的话别停在半空
+            return super().eventFilter(obj, event)
+        if obj is self.view and event.type() is QtCore.QEvent.Type.KeyPress:
+            # 方向键 / PageUp 翻正文：同样算用户自己滚的
+            if event.key() in _SCROLL_KEYS:
+                self._user_scroll_now()
             return super().eventFilter(obj, event)
         if obj is getattr(self, "input", None):
             kind = event.type()

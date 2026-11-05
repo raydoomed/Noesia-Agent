@@ -12,10 +12,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
 
-CATALOG_PATH = Path(__file__).resolve().parents[1] / "tts_catalog.json"
+from paths import resource_file
+
+logger = logging.getLogger(__name__)
+
+# 随包发布的数据文件：源码树里在 `src/` 下，装成 wheel 后在 `share/noesia/`
+# （`paths.resource_file` 两处都找）。写死 `__file__` 旁边那份的话，非 editable 安装读不到。
+CATALOG_PATH = resource_file("tts_catalog.json")
 
 
 @lru_cache(maxsize=1)
@@ -29,8 +36,28 @@ def catalog() -> dict:
         raise RuntimeError(f"语音清单不是合法 JSON（{CATALOG_PATH}）：{exc}") from None
 
 
+def _safe(getter, default):
+    """清单坏了也要让窗口起得来。
+
+    `catalog()` 保持「坏了就抛」（打包错要有人看见），但 `url()`/`resources()` 这些
+    在模块导入期就被算一次的取值不能带着异常冲出去——那等于一个坏 JSON 让整个窗口打不开，
+    用户连「去设置里换回系统音色」都点不到。这里降级成空值 + 一行 ERROR，问题留在设置页显示。
+    """
+    try:
+        return getter()
+    except RuntimeError as exc:
+        global _warned
+        if not _warned:
+            _warned = True
+            logger.error("%s（先用空音色清单顶着，设置页会显示没音色）", exc)
+        return default
+
+
+_warned = False
+
+
 def _doubao() -> dict:
-    return dict(catalog().get("doubao") or {})
+    return dict(_safe(lambda: catalog().get("doubao") or {}, {}))
 
 
 def url() -> str:

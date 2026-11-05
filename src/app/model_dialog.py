@@ -702,6 +702,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         每家的「确定」只负责把这一串交给引擎落盘（引擎随即重取清单）。
         """
         self._key_blocks: dict[str, dict] = {}
+        # 刚存成功、等引擎把 authenticated 补上的那几家：清单重建后仍要显示「已配置」
+        self._key_confirmed: set[str] = set()
 
         hint = QtWidgets.QLabel(
             "填好 Key 点这一家的「确定」；存好的供应商会出现在「模型设置」里。", page
@@ -757,9 +759,22 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             ),
         )
 
+    @staticmethod
+    def _needs_key(row: dict) -> bool:
+        """这家要不要填 Key。
+
+        有变量名要填；引擎没给变量名、但认证类型是 api_key（正常填 Key 的家）也要填——
+        配过一次之后，引擎的旧回包里不再带 `key_env`，照变量名判断会把 Key 框和「确定」
+        一起灰掉，看着就像密钥再也改不了。
+        """
+        if row.get("env_vars"):
+            return True
+        return str(row.get("auth_type") or "api_key") == "api_key"
+
     def _add_key_block(self, rows: QtWidgets.QVBoxLayout, row: dict) -> None:
         slug = str(row["provider"])
         names = list(row.get("env_vars") or [])
+        needs_key = self._needs_key(row)
         block = QtWidgets.QFrame(rows.parentWidget())
         block.setObjectName("text-block")
         box = QtWidgets.QVBoxLayout(block)
@@ -781,14 +796,15 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         key = QtWidgets.QLineEdit(block)
         key.setEchoMode(QtWidgets.QLineEdit.Password)
         key.setPlaceholderText(
-            f"粘贴 {names[0]} 的值" if names else "这家用引擎的登录态，不需要密钥"
+            f"粘贴 {names[0]} 的值" if names
+            else ("粘贴新的 Key（会覆盖已存的那把）" if needs_key else "这家用引擎的登录态，不需要密钥")
         )
-        key.setEnabled(bool(names))
+        key.setEnabled(needs_key)
         key.setFixedHeight(28)
         confirm = QtWidgets.QPushButton("确定", block)
         confirm.setObjectName("secondary")
         confirm.setFixedHeight(28)
-        confirm.setEnabled(bool(names))
+        confirm.setEnabled(needs_key)
         confirm.setToolTip("把这串 Key 存进 .env（存好就会出现「模型设置」里）")
         key_row.addWidget(key, 1)
         key_row.addWidget(confirm)
@@ -822,6 +838,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         """模型设置：只列「密钥设置」里存过 Key 的家，圈一家、选个模型、按底部保存。"""
         self._text_blocks: dict[str, dict] = {}
         self._text_saved: dict = {}
+        self._text_pending: dict = {}  # 交给引擎、还没等到回执的那一份（失败就不能算已生效）
         self._text_dirty = False  # 用户在这一页真的动过手（圈过、选过模型）：清单后到不算动
         self._text_use = ""
         self._text_group = QtWidgets.QButtonGroup(self)
@@ -847,6 +864,16 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         rows.addStretch(1)
 
         self._rebuild_models()
+
+    def show_rows_error(self, message: str) -> None:
+        """拿不到供应商清单时，就地在这张表上说清楚。
+
+        设置页是模态的，聊天区被它整个盖住：那边冒一条红字用户根本看不见，
+        只会看到「设置页是空的」，然后以为是自己没配对。
+        """
+        self._models_empty.setText(f"拿不到供应商清单：{message or '引擎没回话'}")
+        self._models_empty.setStyleSheet("color: #ff8a8a;")  # 红字：dialog-hint 那种灰字看不见
+        self._models_empty.show()
 
     def _rebuild_models(self) -> None:
         """按现在这份清单重铺「模型设置」：只有配好的家建卡，没配的一家都不列。"""
@@ -890,6 +917,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             dot.blockSignals(False)
         for slug in self._text_blocks:
             self._model_refresh(slug)
+        if self._text_blocks:
+            # 表里有货了：把上一次「拿不到清单」的红字收回去，别和真清单混在一起看
+            self._models_empty.setText("还没有可选的模型：先在「密钥设置」里填好 Key 并点确定。")
+            self._models_empty.setStyleSheet("")
         self._models_empty.setVisible(not self._text_blocks)
         if hasattr(self, "_live_text") and self._live_text is not None:
             self._live_text.setText(self._live_text_line())
@@ -1040,26 +1071,27 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._key_refresh(slug)
 
         def done(ok: bool, lines: list[str] | None = None) -> None:
-            block["saving"] = False
+            # 回执可能比引擎推来的新清单晚：那时这块控件已经被 `update_rows` 重建、旧的
+            # `deleteLater` 掉了，写上去等于什么都没显示（成功没有「已保存。」、失败连原因都看不见）。
+            # 所以一律按 slug 现取当前那块。
+            live = self._key_blocks.get(slug) or block
+            live["saving"] = False
             if ok:
-                block["configured"] = True
-                block["row"]["configured"] = True
-                block["key"].clear()
-                block["error"] = ""
+                self._key_confirmed.add(slug)
+                live["configured"] = True
+                live["row"]["configured"] = True
+                live["key"].clear()
+                live["error"] = ""
             else:
-                block["error"] = "\n".join(lines or []) or "引擎没说原因"
+                live["error"] = "\n".join(lines or []) or "引擎没说原因"
             # 先让 _key_refresh 把徽标/按钮画对，再写回执那句话——反过来的话它会把提示清掉
             self._key_refresh(slug)
+            live["note"].setStyleSheet("" if ok else self.FAIL_STYLE)
+            live["note"].setText("已保存。" if ok else live["error"])
+            live["note"].setVisible(True)
             if ok:
-                block["note"].setStyleSheet("")
-                block["note"].setText("已保存。")
-                block["note"].setVisible(True)
                 # 这家已经能用了：模型设置那边补一张卡（清单由引擎随回包送来时再换一遍）
                 self._rebuild_models()
-            else:
-                block["note"].setStyleSheet(self.FAIL_STYLE)
-                block["note"].setText(block["error"])
-                block["note"].setVisible(True)
 
         try:
             self._on_key_save(slug, text, done)
@@ -1083,7 +1115,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         block = self._key_blocks.get(slug)
         if not block:
             return
-        names = list(block["row"].get("env_vars") or [])
+        needs_key = self._needs_key(block["row"])
         if block.get("saving"):
             self._set_badge(block["badge"], "保存中…")
             block["button"].setText("保存中…")
@@ -1093,13 +1125,13 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             block["note"].setText("正在把这串 Key 交给引擎…")
             return
         block["button"].setText("确定")
-        block["button"].setEnabled(bool(names))
-        block["key"].setEnabled(bool(names))
+        block["button"].setEnabled(needs_key)
+        block["key"].setEnabled(needs_key)
         if block["configured"]:
             self._set_badge(block["badge"], "已配置", ok=True)
         else:
-            self._set_badge(block["badge"], "未配置" if names else "用登录态")
-        if not names:
+            self._set_badge(block["badge"], "未配置" if needs_key else "用登录态")
+        if not needs_key:
             block["note"].setText("这家用引擎的登录态，没有要填的密钥。")
         elif not block.get("error"):
             block["note"].setText("" if block["configured"] else "")
@@ -1139,6 +1171,13 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 block = self._key_blocks.get(slug)
                 if block is not None:
                     block["key"].setText(text)
+            # 刚存成功、还等引擎把新清单里的 `authenticated` 补上的那几家：重建后照样显示「已配置」。
+            # 不这样的话，引擎推清单比回执早一点，徽标就退回「未配置」，用户以为没存上。
+            for slug in self._key_confirmed:
+                block = self._key_blocks.get(slug)
+                if block is not None and not block.get("configured"):
+                    block["configured"] = True
+                    block["row"]["configured"] = True
             self._keys_apply_view()
 
         if hasattr(self, "_text_scroller"):
@@ -1646,13 +1685,16 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._load_voices()
 
     def voice_selection(self) -> dict:
-        """「在用」那家现在选的是什么：音色（ElevenLabs 还带档位），Key 有就一起带上。"""
-        if self._voice_saved:
-            return dict(self._voice_saved)
+        """「在用」那家现在选的是什么：音色（ElevenLabs 还带档位），Key 有就一起带上。
+
+        缓存只在**界面答不出来**的时候兜底（清单还没拉到、控件被清空）。以前这里无条件
+        优先缓存，存过一次之后再改音色/改引擎，第二次保存写回去的还是第一次的快照。
+        """
         provider = self._voice_use
         block = self._voice_block(provider)
+        saved = dict(self._voice_saved) if self._voice_saved else {}
         if not block:
-            return {"provider": provider}
+            return saved or {"provider": provider}
         voice_id = str(block["voice"].currentData() or "")
         picked = next((item for item in self._voice_choices(provider) if item["id"] == voice_id), None)
         chosen = {
@@ -1668,7 +1710,13 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             chosen["api_key"] = typed
         for empty_field in ("voice_id", "voice_name"):
             if not chosen[empty_field]:  # 清单还没拉到时是空的，别拿它覆盖已选的音色
-                chosen.pop(empty_field)
+                if saved.get(empty_field):
+                    chosen[empty_field] = saved[empty_field]  # 界面答不出时才用上次存的那份
+                else:
+                    chosen.pop(empty_field)
+        if "model_id" in chosen and not chosen["model_id"] and saved.get("model_id"):
+            # 档位只有 ElevenLabs 有；别家本来就没有这个键，不能凭空补上去
+            chosen["model_id"] = saved["model_id"]
         return chosen
 
     def voice_keys(self) -> dict:
@@ -2251,22 +2299,38 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return "fail"
 
         if not slug:
-            # 没圈就是没圈：不许替他圈。
-            return fail("还没圈「启用」：这次什么都没保存，先圈一家再点保存。")
+            if self._text_dirty:
+                # 这一页他确实动过：没圈就不能算存好（不许替他圈一家）
+                return fail("还没圈「启用」：模型这一页改了但没选一家，先圈一家再点保存。")
+            # 没动过、引擎里也没有在跑的模型（停在「Key 已存、模型未启用」这个中间态）：
+            # 这一页本来就没得写，但它没有理由把别的人设/记忆/工作区一起拦下。
+            self._save_notes.append("模型设置这一页没动：还没圈「启用」，想换模型在那一页圈一家。")
+            return "ok"
         if not data["model"]:
             return fail(f"{row.get('label') or slug} 没有可选模型：换个时间重开设置再取一次。")
         text_prefs.remember_many(data.get("models") or {})  # 每家上次选的模型各自记着
-        self._text_dirty = False
-        self._current_option = f"{slug}:{data['model']}" if slug and data["model"] else self._current_option
-        self._text_saved = dict(data)  # 交出去的那份留底
+        # 「已生效」等到引擎回执再记：引擎可能失败（Key 过期、写 .env 出错、8 秒不回话）。
+        # 先记下来的话，下一轮保存的「没动过」判据会把这个失败当成功放过——窗口照关，
+        # 用户以为换好了，其实引擎里还是老模型。
+        self._text_pending = {"option": f"{slug}:{data['model']}", "data": dict(data)}
         self._mark_saved("text")
         return "ok"
+
+    def _commit_text_save(self) -> None:
+        """引擎回话说成了：这一刻才算这一页真的落地（此后 `selection()` 也照这份答）。"""
+        pending, self._text_pending = self._text_pending, {}
+        if not pending:
+            return
+        self._text_dirty = False
+        self._current_option = str(pending.get("option") or self._current_option)
+        self._text_saved = dict(pending.get("data") or {})
 
     def _on_save(self) -> None:
         """点一次保存就把六页一起存：哪一页没过校验就跳到那一页贴原因，窗口不关。"""
         self._saved_tab = self._tabs.currentIndex()
         self._saved_pages = set()
         self._text_saved = {}  # 新一轮保存：按界面现值重新取一遍（上次的留底只在同一次保存里复用）
+        self._text_pending = {}  # 上一轮的失败没落地：这一轮重新交一次，别拿着旧的那份关窗
         self._pending_steps = []
         steps = (
             (self.TAB_MODELS, self._save_text_page),
@@ -2344,6 +2408,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._save_timer.stop()
             self._save_timer = None
         if ok:
+            self._commit_text_save()
             self.accept()
             return
         self._save_button.setEnabled(True)
@@ -2455,9 +2520,18 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         # 否则窗口一关 voice_id 就永远是空的（踩过：填了 Key 直接保存，音色没得选）
         eleven = self._voice_block("elevenlabs")
         if keys.get("elevenlabs") and not self._voice_choices("elevenlabs"):
-            speech_prefs.write_api_key(keys["elevenlabs"], "elevenlabs")
-            eleven["key"].clear()  # 已经进 .env，框里不用再留
-            eleven["configured"] = True
+            if not speech_prefs.write_api_key(keys["elevenlabs"], "elevenlabs"):
+                # 写不进 .env（键里混了中文/被清成空）时不能假装已配置：以前照样清空输入框、
+                # 打上「已配置」，再去拉清单——清单拉不回来，用户只看到音色列表是空的。
+                if eleven is not None:  # 这张卡没建起来时也要把失败说在能看见的地方
+                    eleven["note"].setStyleSheet(self.FAIL_STYLE)
+                    eleven["note"].setText(
+                        "这把 Key 没存上：里面有中文或别的非英文字符，只粘 sk-… 这一串"
+                    )
+                return "fail"
+            if eleven is not None:
+                eleven["key"].clear()  # 已经进 .env，框里不用再留
+                eleven["configured"] = True
             self._load_voices()
             self._voice_refresh("elevenlabs")
             return "fail"  # 停在语音页：还差一个音色没选
@@ -2465,7 +2539,14 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         for provider, typed in keys.items():
             if provider == self._voice_use:
                 continue
-            speech_prefs.write_api_key(typed, provider)
+            if not speech_prefs.write_api_key(typed, provider):
+                block = self._voice_block(provider)
+                if block:
+                    block["note"].setStyleSheet(self.FAIL_STYLE)
+                    block["note"].setText(
+                        "这把 Key 没存上：里面有中文或别的非英文字符，只粘 sk-… 这一串"
+                    )
+                return "fail"
             block = self._voice_block(provider)
             block["key"].clear()
             block["configured"] = True
@@ -2473,11 +2554,12 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         try:
             speech_prefs.save(**self.voice_selection())
         except ConfigError as exc:
-            # 手改过 speech.json 的人可能把资源 id 写坏：红字说清能填什么，别让保存流程崩掉
-            block = self._voice_block("doubao")
-            if block:
-                block["note"].setStyleSheet(self.FAIL_STYLE)
-                block["note"].setText(str(exc))
+            # 错误是跟着当前这块走的：以前一律写在豆包那块，切到 ElevenLabs 时用户看到
+            # 「豆包」下面冒一行红字，根本不知道是自己刚填的东西出了问题。
+            target = self._voice_block(self._voice_use) or self._voice_block("doubao")
+            if target:
+                target["note"].setStyleSheet(self.FAIL_STYLE)
+                target["note"].setText(str(exc))
             return "fail"
         # 每家选过的音色都记进 voice_history：重开设置时各家的选择都还在
         for provider, pick in self._voice_picks.items():

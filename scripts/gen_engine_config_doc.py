@@ -1,8 +1,7 @@
 """从引擎的 DEFAULT_CONFIG 生成 docs/engine-config.md（完整键表 + 内置默认值）。
 
-改完引擎或升级引擎后跑一次，保持文档与默认值一致：
+改完引擎或升级引擎后跑一次，保持文档与默认值一致（没有自动校验，得手动跑）：
     python scripts/gen_engine_config_doc.py
-测试 `tests/test_engine_config.py` 会检查这份文档是否过期。
 """
 
 from __future__ import annotations

@@ -27,6 +27,7 @@ KEY_EVENT = 0x0001
 LEFT_CTRL_PRESSED = 0x0008
 VK_C = 0x43
 CTRL_C_SCANCODE = 0x2E
+_EPOCH_100NS = 116444736000000000  # 1601-01-01 → 1970-01-01，FILETIME 的 100ns 刻度数
 
 
 def _kernel32():
@@ -108,6 +109,35 @@ def process_alive(pid: int) -> bool:
         return code.value == STILL_ACTIVE
     finally:
         kernel32.CloseHandle(handle)
+
+
+def start_time(pid: int) -> int | None:
+    """进程创建时间的指纹：纪元秒的百分之一；拿不到返回 None。
+
+    与引擎 `gateway.status.get_process_start_time` 同一口径（Windows 上是 `create_time()` × 100），
+    所以引擎写进 `gateway.lock` 的 `start_time` 可以直接和它比。用途只有一个：分辨「同一个 pid
+    还是不是当初那个进程」——Windows 会把 pid 复用给别的程序，只判 pid 活没活会把陌生人当自己人。
+    """
+    if sys.platform != "win32" or pid <= 0:
+        return None
+    kernel32 = _kernel32()
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        created = ctypes.c_ulonglong()
+        spare = ctypes.c_ulonglong()  # exit / kernel / user 时间：拿回来不为用，只管凑够参数
+        if not kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(created),
+            ctypes.byref(spare),
+            ctypes.byref(spare),
+            ctypes.byref(spare),
+        ):
+            return None
+    finally:
+        kernel32.CloseHandle(handle)
+    return round((created.value - _EPOCH_100NS) / 100_000)  # 100ns 刻度 → 厘秒
 
 
 def image_path(pid: int) -> str:

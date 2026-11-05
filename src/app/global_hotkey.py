@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import logging
 import threading
 import time
 
 from PySide6 import QtCore
+
+logger = logging.getLogger(__name__)
 
 WH_KEYBOARD_LL = 13
 HC_ACTION = 0
@@ -207,13 +210,23 @@ class GlobalHotkey(QtCore.QObject):
         self._ready.wait(timeout=1.0)
 
     def stop(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
+        thread = self._thread
+        # 停掉就等于不再「改键」：不改这一位的话，下次 start() 装的新钩子会沿用 capture，
+        # 把所有按键都报上去、一个都不转发——用户按 Shift+空格说不了话，别的快捷键也失灵。
+        self._capture = False
+        if thread is not None and thread.is_alive():
             self._stop.set()
-            ident = self._thread.ident
+            ident = thread.ident
             if ident:
                 # 叫醒阻塞在 GetMessage 的线程；ident 为空时传 0 会发给所有线程，不能发
                 _user32().PostThreadMessageW(ident, 0, 0, 0)
-            self._thread.join(timeout=1.5)
+            thread.join(timeout=1.5)
+            if thread.is_alive():
+                # 线程没退出：钩子还装着，回调还会来（`_stop` 只在消息泵那一圈检查）。
+                # 这里**不能**把引用清掉——清了就再也叫不回来，下一次 start() 会再装一个钩子，
+                # 同一个键一次触发两遍，而且旧钩子谁都摘不掉。留着，下一次 stop() 再试。
+                logger.warning("[热键] 钩子线程 1.5 秒没退出，保留引用，稍后重试")
+                return
         self._thread = None
         self._hook = None
         self._held_mods = 0
