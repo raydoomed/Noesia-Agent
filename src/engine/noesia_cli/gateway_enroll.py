@@ -107,7 +107,6 @@ def _fail(*lines: str) -> None:
 
 def cmd_gateway_enroll(args) -> None:
     """Enroll this gateway with a relay connector; persist the auth creds to .env."""
-    from noesia_cli.auth import AuthError
     from noesia_cli.config import is_managed, save_env_value
 
     # Managed installs get GATEWAY_RELAY_* stamped in by the orchestrator; save_env_value refuses
@@ -138,18 +137,11 @@ def cmd_gateway_enroll(args) -> None:
 
     # Caller-identity token (proves the tenant). ``gateway.relay`` owns the ONE resolver shared with
     # the runtime self-provision path: generic OIDC client-credentials when ``gateway.idp.token_url``
-    # is set (air-gapped / self-hosted IdP), otherwise Noesia Portal.
+    # is set (air-gapped / self-hosted IdP), otherwise an ambient token endpoint.
     try:
         from gateway.relay import _resolve_relay_identity_token
 
         access_token = _resolve_relay_identity_token()
-    except AuthError as exc:
-        if getattr(exc, "relogin_required", False):
-            _fail(
-                "✗ You're not logged into Noesia Portal.",
-                "  Run `noesia setup` (or `noesia auth add noesia`) first, then retry.",
-            )
-        _fail(f"✗ Could not resolve a Noesia Portal access token: {exc}")
     except Exception as exc:
         _fail(f"✗ Could not resolve a caller-identity token: {exc}")
 

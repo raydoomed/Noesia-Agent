@@ -405,18 +405,6 @@ def _auth_gate_status() -> dict[str, Any]:
             "auth_flows": auth_flows}
 
 
-def _noesia_session_validity() -> str:
-    """Noesia bootstrap-session validity for the NAS health sweep: a hosted agent whose Noesia
-    auth dies terminally looks HEALTHY to every liveness probe yet every inference turn
-    fails, and this is the ONLY signal that surfaces it (local auth-store state, no token
-    needed). Best-effort: never let auth classification break the probe."""
-    try:
-        from noesia_cli.auth import get_noesia_session_validity
-        return get_noesia_session_validity()
-    except Exception:
-        return "unknown"
-
-
 async def _component_health(gateway: dict[str, Any]) -> dict[str, Any]:
     """Component-level health rollup: counts and status enums only (public payload — no
     messages, paths or other detail that could carry secrets). The storage probe reuses the
@@ -541,7 +529,7 @@ async def get_status(profile: Optional[str] = None):
             "gateway_drainable": derive_gateway_drainable(
                 gateway_running=gateway_running, gateway_state=gateway_state),
             "restart_drain_timeout": restart_drain_timeout, "active_sessions": active_sessions,
-            **auth, "noesia_session_valid": _noesia_session_validity()}
+            **auth}
 
         # Stable per-install identity (first call may touch disk). Omitted (not null) when
         # unpersistable so older-client behavior and the no-identity fallback stay identical.

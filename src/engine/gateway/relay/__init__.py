@@ -12,7 +12,6 @@ unless the effective relay platform configuration explicitly disables it.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -59,24 +58,6 @@ def _gateway_cfg() -> dict:
     block = _load_cfg().get("gateway")
     return block if isinstance(block, dict) else {}
 
-
-def _launch_profile_scope():
-    """The launch profile's runtime scope once the gateway multiplexes, ``nullcontext`` before.
-
-    Self-provision runs at startup, before any turn binds a profile, and under multiplexing the
-    Noesia Portal and inference routing overrides only resolve inside a profile scope. The scope is
-    built from the profile's files like a turn's (``gateway.run._profile_runtime_scope``), not via
-    ``launch_profile_scope_if_multiplexed``, whose first entry freezes the launch env snapshot
-    before startup has written ``GATEWAY_RELAY_*`` into ``os.environ``.
-    """
-    from agent.secret_scope import is_multiplex_active
-
-    if not is_multiplex_active():
-        return contextlib.nullcontext()
-    from gateway.run import _profile_runtime_scope  # late import to avoid cycle
-    from noesia_constants import get_process_noesia_home
-
-    return _profile_runtime_scope(get_process_noesia_home())
 
 
 def _env_or_cfg(env_var: str, cfg_key: str) -> str:
@@ -429,7 +410,9 @@ def _resolve_relay_identity_token() -> str:
           ``$DOMINO_API_PROXY/access-token``): a plain GET whose body IS the token,
           raw JWT or a JSON envelope with ``access_token``. Possession of the
           (typically loopback) endpoint is the credential.
-      2.  Noesia Portal (default): ``resolve_noesia_access_token()``.
+
+    There is no implicit fallback: without ``token_url`` there is no identity token, and
+    relay self-provision stays off until one is configured.
 
     Raises on failure; callers decide whether that's fatal (enroll CLI) or a graceful
     boot no-op (self-provision).
@@ -445,12 +428,11 @@ def _resolve_relay_identity_token() -> str:
     token_url, client_id, client_secret, scope = (env[k] for k in _IDP_KEYS)
 
     if not token_url:
-        from noesia_cli.auth import resolve_noesia_access_token
-
-        # Only the Noesia refresh is scoped: the gateway config read above and the IdP modes below
-        # keep resolving ``${VAR}`` refs from the launch env, as they always have.
-        with _launch_profile_scope():
-            return resolve_noesia_access_token()
+        raise RuntimeError(
+            "gateway.idp.token_url is not configured, so no caller-identity token can be "
+            "resolved. Set it to an OAuth2 client_credentials endpoint (with client_id and "
+            "client_secret) or to an ambient token endpoint that returns the token on GET."
+        )
 
     if not client_id and not client_secret:
         # Mode 1b — plain GET; the body is the token, raw or JSON-enveloped.

@@ -48,12 +48,7 @@ _LEDGER_LOCK = threading.Lock()
 def install_id(project_root: Optional[Path] = None) -> str:
     """Stable 12-hex identifier for THIS install (derived from its path)."""
     if project_root is None:
-        try:
-            from noesia_constants import PROJECT_ROOT as _root
-
-            project_root = Path(_root)
-        except Exception:
-            project_root = Path(__file__).resolve().parent.parent
+        project_root = Path(__file__).resolve().parent.parent
     try:
         canonical = str(Path(project_root).resolve()).lower()
     except OSError:
