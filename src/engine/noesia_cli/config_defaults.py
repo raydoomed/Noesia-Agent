@@ -2911,8 +2911,6 @@ OPTIONAL_ENV_VARS = {
         "Linear API key", "https://linear.app/settings/account/security"),
     "AIRTABLE_API_KEY": _skill("Airtable personal access token (used by the `airtable` skill)",
         "Airtable API key", "https://airtable.com/create/tokens"),
-    "TENOR_API_KEY": _skill("Tenor API key for GIF search (used by the `gif-search` skill)",
-        "Tenor API key", "https://developers.google.com/tenor/guides/quickstart"),
     # ── Honcho ──
     "HONCHO_API_KEY": _tool("Honcho API key for AI-native persistent memory", "Honcho API key",
         "https://app.honcho.dev", tools=["honcho_context"]),

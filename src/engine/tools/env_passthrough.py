@@ -49,7 +49,7 @@ def _is_noesia_provider_credential(name: str) -> bool:
     (AUXILIARY_*_API_KEY / _BASE_URL, GATEWAY_RELAY_*). Skill-declared
     ``required_environment_variables`` must not override this — that was the
     GHSA-rhgp-j443-p4rf bypass (a skill registered ``OPENAI_API_KEY`` and received it
-    in the ``execute_code`` child); non-Noesia keys (TENOR_API_KEY, …) stay
+    in the ``execute_code`` child); third-party keys stay
     registerable. Fails closed when the blocklist cannot be imported."""
     try:
         from tools.environments.local_env_policy import (

@@ -46,8 +46,6 @@ called from the terminal toolset; they don't appear in `always_load`.
 | `songsee` | Spectrograms, mel/chroma/MFCC of audio files | Music supervisor analyzing tracks; foley-designer designing to a beat; editor visualizing a mix |
 | `spotify` | Spotify control — play, search, queue, manage playlists | Music supervisor sourcing existing tracks; reference research |
 | `youtube-content` | Fetch transcripts + transform to chapters/summaries/posts | Documentary cut, content adaptation, research for explainers |
-| `gif-search` | Find existing GIFs | Editor / concept artist sourcing references |
-| `gifs` | GIF tooling | Masterer producing GIF deliverables |
 
 ### Kanban infrastructure
 
