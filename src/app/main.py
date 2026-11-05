@@ -292,6 +292,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._streamer = None          # StreamSpeaker，边合成边出声
         self._pending_speech = ""      # 会话还没就绪时先说一句「正在接通」，就绪后再念
         self._speech_seq = 0           # 待念那句的代次：15 秒超时只认最新一句，别偷走下一句
+        self._last_user_text = ""      # 用户最新一句原话：互动档拿它发 type=9 驱动动作
         self._interactive_shown = False  # 互动画面是否正占着那块显示区（待机视频让位）
         self._hidden = False  # 整扇窗被藏起来（Esc / 托盘）：画面和解码都该停
         # Vidu 按秒计费（1 积分/秒）：说完 5 秒还没下一句就挂断，别在闲置上烧钱
@@ -963,7 +964,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         from app.speech_speaker import speakable
 
         clean = speakable(text)
-        avatar.say_text(clean)  # type=10：让 Vidu 知道这句话在说什么（不改口型，不上动作匹配）
+        # type=9 先发：动作匹配要的是「用户说了什么」，发在她开口之前，动作才接得上。
+        avatar.say_action(self._last_user_text)
+        avatar.say_text(clean)  # type=10：让 Vidu 知道这句话在说什么（不改口型）
         logger.info("[语音] 走互动链路：%d 字（预计 %d 秒 ≈ %d 积分）",
                     len(clean), max(1, len(clean) // 6), max(1, len(clean) // 6))
         if not self._streamer.speak(clean):
@@ -1536,6 +1539,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         dialog.show_near(self.geometry())
 
     def _send_user_text(self, message: str, source: str = "typed") -> None:
+        self._last_user_text = (message or "").strip()  # 互动档用它发 type=9（驱动动作）
         panel = self.chat_panel
         if panel is not None and getattr(panel, "pending_clarify", None) and panel.pending_clarify():
             # 她在等一个回答（没有选项那种问题）：这句话就是答案，不发出去当新一轮

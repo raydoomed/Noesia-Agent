@@ -420,6 +420,16 @@ class AvatarRtc(QtCore.QObject):
         except Exception as exc:  # noqa: BLE001
             logger.info("[数字人] 回复文本没发出去（不影响这一句的出声和口型）：%s", exc)
 
+    def say_action(self, text: str) -> None:
+        """把「用户刚说的话」交给 Vidu（type=9）：动作匹配拿它去动作库里找相近的动作。"""
+        session = self._session
+        if session is None:
+            return
+        try:
+            session.send_action(text)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("[数字人] 动作文本没发出去（不影响这一句的出声和口型）：%s", exc)
+
     def baseline_reset(self) -> None:
         """说完/被打断：把画面复位到闭口静息态（type=15）。被服务端拒过一次就不再发。"""
         session = self._session

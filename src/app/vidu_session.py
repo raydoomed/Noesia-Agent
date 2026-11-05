@@ -140,6 +140,9 @@ class ViduSession:
             "model": self.model,
             "image_uri": "data:image/jpeg;base64," + base64.b64encode(green.read_bytes()).decode(),
             "managed_rtc": {"enable_recording": False},
+            # 动作匹配：整块省略 = 关。不传这个的话 type=9 发上去没人用，
+            # 数字人只会跟着音频动嘴。library_id "0" = 平台默认库。
+            "action": {"enabled": True, "library_id": "0"},
         }
         resp = requests.post(
             f"{HTTP}/live/s_avatar/component",
@@ -252,6 +255,28 @@ class ViduSession:
         return self._send_signal(
             10,
             {"text_msg": {"msg_id": f"noesia-{now}", "content": text[:4000], "timestamp": now}},
+        )
+
+    def send_action(self, content: str) -> bool:
+        """type=9 input_transcription：驱动数字人动作的文本。
+
+        和 type=10 分工不同：10 是「她这轮要念什么」的语义提示，9 才是拿去动作库里找
+        相近动作的输入（官方示例 content 是「比个心」这种话）。建会话时没带
+        `action.enabled` 的话，这条发上去也没人用。
+        """
+        text = (content or "").strip()
+        if not text:
+            return False
+        now = int(time.time() * 1000)
+        return self._send_signal(
+            9,
+            {
+                "text_msg": {
+                    "msg_id": f"noesia-act-{now}",
+                    "content": text[:4000],
+                    "timestamp": now,
+                }
+            },
         )
 
     def baseline_reset(self) -> bool:
