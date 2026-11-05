@@ -2756,11 +2756,15 @@ def main() -> int:
     # 先只放加载动画：人物窗口等引擎连上、模型清单到手才露面（那之后开聊天窗就是即时的）
     from .boot_splash import BootSplash  # 依赖 PySide6：放进函数里，缺绑定时仍走友好提示
 
-    splash = BootSplash()
+    splash = BootSplash(front)
     splash.set_step("正在准备界面…")
     splash.show()
     window = FloatingAvatar(front, cfg.ui.floating, idle_path if idle_path.is_file() else None)
     window.boot_splash = splash
+    # 点击 / Esc：不再演，立刻把窗口放出来（引擎还在连就靠聊天窗里的提示兜着）
+    splash.skipped.connect(window.finish_boot)
+    # 硬上限：开场最多挡 12 秒，到点无条件露窗口，绝不把人锁在动画里
+    QtCore.QTimer.singleShot(12000, window.finish_boot)
     has_tray = window.setup_tray()
     window.instance_server = start_instance_server(window)  # 挂在窗口上，防被回收
     if window.idle_player is not None:
