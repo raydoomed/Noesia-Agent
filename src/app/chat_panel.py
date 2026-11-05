@@ -4601,6 +4601,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._global_ptt.pressed.connect(self._hold_begin)
         self._global_ptt.released.connect(self._hold_end)
         self._voice_draft_focus = False
+        # 语音模式下把子控件的焦点策略全收走，退出时按原样还回去：
+        # 面板靠 keyPressEvent 接空格，但只要任何一个按钮拿着焦点，空格就先被它吃掉
+        # （「新会话」那颗按钮就是——按一下直接开新会话）。
+        self._voice_focus_backup: dict = {}
         self._audio_released = False
         # 「按住说话的键」：单独一颗键帽外形的按钮，点开在弹窗里改；外形不随键名变
         self._ptt_button = QtWidgets.QToolButton(self._inputbox)
@@ -4651,10 +4655,15 @@ class ChatPanel(QtWidgets.QWidget):
             self._set_inputbox_voice(True)
             self._voice_orb.show()
             self._float_mode_button(True)
-            # 空格要留给「按住说话」：面板自己拿着焦点，右上那颗按钮不许吃空格
-            self._mic_button.setFocusPolicy(QtCore.Qt.NoFocus)
-            # 点聊天记录会把焦点抢走、空格变成翻页：语音模式下让它不吃焦点
-            self.view.setFocusPolicy(QtCore.Qt.NoFocus)
+            # 空格要留给「按住说话」：面板自己拿着焦点，**所有**子控件都不许吃空格。
+            # 只关麦克风按钮和聊天记录区是不够的——头部那排按钮（尤其「新会话」）都是
+            # 默认可聚焦的，鼠标点一下面板恰好点在它上面，之后按空格就是「按下那个按钮」。
+            self._voice_focus_backup = {}
+            for child in self.findChildren(QtWidgets.QWidget):
+                policy = child.focusPolicy()
+                if policy != QtCore.Qt.NoFocus:
+                    self._voice_focus_backup[child] = policy
+                    child.setFocusPolicy(QtCore.Qt.NoFocus)
             self.setFocus()
             self._mic_button.setIcon(_glyph_icon("keyboard", "#ffffff"))
             self._mic_button.setToolTip(
@@ -4685,6 +4694,13 @@ class ChatPanel(QtWidgets.QWidget):
             self._box_row.setContentsMargins(9, 0, 4, 0)
             self._set_inputbox_voice(False)
             self._float_mode_button(False)
+            # 焦点策略按进语音模式时记下的原样还回去，打字模式的 Tab 导航才不受影响
+            for child, policy in self._voice_focus_backup.items():
+                try:
+                    child.setFocusPolicy(policy)
+                except RuntimeError:  # 控件连 C++ 对象一起没了（菜单重建之类）
+                    pass
+            self._voice_focus_backup = {}
             self._mic_button.setFocusPolicy(QtCore.Qt.StrongFocus)
             self.view.setFocusPolicy(QtCore.Qt.StrongFocus)
             self.input.show()
@@ -5464,18 +5480,19 @@ class ChatPanel(QtWidgets.QWidget):
     def _message_at(self, block) -> dict | None:
         """从光标所在块往上找：这条消息是从哪一段开始的。
 
-        往回走的时候只认消息开头那个 `_MsgMark`；碰到代码块（`_CodeMark`）或工具/折叠
-        正文（disclosure `_BodyMark`）就停——那些行不属于消息正文，它们有自己的按钮
-        （复制代码 / 看完整 diff）。不设这个边界的话，工具行、灰字行会一路往上认领整条
-        消息，于是鼠标一压到工具调用那几行，整条消息的按钮条就挂上来了。
+        「这块自己就有按钮」的才不认领：代码块（`_CodeMark`）和折叠段正文（`_BodyMark`）
+        各管各的（复制代码 / 看完整 diff）。往上走的时候遇到它们**只是跳过**：一条回答里
+        夹着工具行、代码块是常态，后面接着写的正文照样属于这条消息。以前遇到就停，于是
+        代码块/工具行**下面**那几段永远认领不到消息——滚到最底下时看见的正是那几段，
+        复制/刷新整条都不出现。
         """
+        if isinstance(block.userData(), (_CodeMark, disclosure._BodyMark)):
+            return None
         probe = block
         while probe.isValid():
             mark = probe.userData()
             if isinstance(mark, _MsgMark):
                 return mark.msg
-            if isinstance(mark, (_CodeMark, disclosure._BodyMark)):
-                return None
             probe = probe.previous()
         return None
 

@@ -89,11 +89,17 @@ class StreamSpeaker(QtCore.QObject):
         self._failed.connect(self._on_failed_internal)
 
         self._pool = QtCore.QThreadPool(self)
-        self._pool.setMaxThreadCount(1)
+        # 串行是为了不几句一起抢额度，但**不能只给一条线程**：停止/换句只是把
+        # seq 推一格，正在跑的那次合成看不到（它可能卡在等第一个字节上），
+        # 新句子就得排队等它。留两条：旧的自动作废，新的立刻开始。
+        # 纯语音那条（speech_speaker.py）早就这么改了，互动这条当时漏了。
+        self._pool.setMaxThreadCount(2)
 
         self._seq = 0
         self._active = False
         self._pulling = False
+        self._announced = False   # 这一句的 started 发过没有：第一片 PCM 到了才算开口
+        self._text = ""           # 这一句原文，started 要带着它一起发
         self._pending: deque[bytes] = deque()
         self._sink: QtMultimedia.QAudioSink | None = None
         self._io = None
@@ -134,7 +140,8 @@ class StreamSpeaker(QtCore.QObject):
             self._fed_bytes = 0
             self._total_bytes = 0
             self._play_start = None
-            self.started.emit(text)
+            self._announced = False
+            self._text = text
             self._ticker.start()
             self._pool.start(_Puller(text, seq, self))
             return True
@@ -159,7 +166,8 @@ class StreamSpeaker(QtCore.QObject):
         self._pending.clear()
         self._fed_bytes = 0
         self._total_bytes = 0
-        self.started.emit(text)
+        self._announced = False
+        self._text = text
         self._ticker.start()
         self._pool.start(_Puller(text, seq, self))
         return True
@@ -180,6 +188,7 @@ class StreamSpeaker(QtCore.QObject):
         self._sink = None
         self._io = None
         self._fed_bytes = 0
+        self._announced = False
         self._carry = b""  # 上一句不足 20ms 的残帧不能拼到下一句开头（口型起点会错位）
         if was_active and not silent:
             self.stopped.emit()
@@ -189,6 +198,11 @@ class StreamSpeaker(QtCore.QObject):
     def _on_chunk_internal(self, seq: int, pcm: bytes) -> None:
         if not self.alive(seq) or not pcm:
             return
+        if not self._announced:
+            # 第一片音频到了才算真的开口，和纯语音那条一致。提前发的话语音条会先亮、
+            # 还会把「语音出错」的提示提前撤掉，中间那段其实一片声音都还没有。
+            self._announced = True
+            self.started.emit(self._text)
         self._pending.append(pcm)
         self._total_bytes += len(pcm)
         if self._on_chunk is not None:

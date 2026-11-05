@@ -291,6 +291,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._avatar = None            # AvatarRtc，画面从云端 RTC 直接拿裸帧
         self._streamer = None          # StreamSpeaker，边合成边出声
         self._pending_speech = ""      # 会话还没就绪时先说一句「正在接通」，就绪后再念
+        self._speech_seq = 0           # 待念那句的代次：15 秒超时只认最新一句，别偷走下一句
         self._interactive_shown = False  # 互动画面是否正占着那块显示区（待机视频让位）
         self._hidden = False  # 整扇窗被藏起来（Esc / 托盘）：画面和解码都该停
         # Vidu 按秒计费（1 积分/秒）：说完 5 秒还没下一句就挂断，别在闲置上烧钱
@@ -670,6 +671,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             # 免得计时器一次没命中就再也没人挂断，会话挂着按秒计费。
             self._avatar_idle.start()
             return
+        if self._pending_speech:
+            # 有一句正在等会话建好（warm 还没回来）：这会儿挂断等于把它作废，那句只能
+            # 等 15 秒超时退回纯语音。再等一轮，让会话建完接着念。
+            # 这条有上界：超时到点会清空 pending，之后这一轮就能正常挂断。
+            self._avatar_idle.start()
+            return
         self._avatar.hangup()
 
     def _stop_voice(self) -> None:
@@ -696,6 +703,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         "没有画面"，所以先等它真的出过几帧，最多等 2 秒。
         """
         avatar = self._avatar
+        if (self._streamer is not None and self._streamer.playing) or self._pending_speech:
+            # 下一句已经开口、或者正在等会话建好：上一句的收尾链到此为止。不拦的话这条
+            # 200ms 重试链会一路重跑到上限，把正在念/正要念的画面收回待机、还补发一次复位。
+            self._finish_waits = 0
+            return
         if avatar is not None and avatar.frames_since_speak < 3 and self._finish_waits < 10:
             self._finish_waits += 1
             QtCore.QTimer.singleShot(200, self._voice_finished)
@@ -841,10 +853,16 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
 
     def _speak_reply(self, text: str) -> None:
         """按输入框那个三档开关决定怎么念；互动档失败就退回纯语音，别这轮没声音。"""
-        if not any(ch.isalnum() for ch in text or ""):
-            logger.info("[语音] 这句只有表情/符号，跳过朗读")
-            return
         from app.chat_panel import _voice_mode
+        from app.speech_speaker import speakable
+
+        # 先洗干净再判断：只交附件的回复（`MEDIA:…`）和纯代码块的回复洗完是空串，
+        # 一个能念的字都没有。放它进互动档的话，画面已经切到数字人、云端却永远
+        # 不会有音频回来，finished/stopped 也就永远不来，会话会一直按秒计费。
+        clean = speakable(text)
+        if not clean or not any(ch.isalnum() for ch in clean):
+            logger.info("[语音] 这句没有能念的内容（只有表情/符号/附件/代码），跳过朗读")
+            return
 
         mode = _voice_mode()
         if mode != "interactive" or self._avatar_blocked():
@@ -852,7 +870,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             if mode == "interactive" and self.chat_panel is not None:
                 # 冷却中：把"为什么没画面"写清楚，别一声不响就纯语音（同一条提示，不会越堆越多）
                 self.chat_panel.show_notice("avatar", self._avatar_block_hint, level="note")
-            self.speaker.speak(text)
+            self.speaker.speak(clean)
             return
         avatar = self._ensure_avatar()
         panel = self.chat_panel
@@ -864,16 +882,22 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             if self._pending_speech:
                 # 上一句还在等会话：它不能被这句话顶掉（那半句就永远没声音了），先交给纯语音念完。
                 self.speaker.speak(self._pending_speech)
-            self._pending_speech = text
+            self._pending_speech = clean
+            self._speech_seq += 1
+            seq = self._speech_seq
             avatar.warm()  # 到这一步才建会话：按秒计费，用户按下发送才开始花
             self._warm_idle.start()  # 建了却没念成（比如服务端不吭声）：20 秒挂断，别空转
-            QtCore.QTimer.singleShot(15_000, self._interactive_timeout)
+            # 定时器认代次：两句连着发时，上一句排的定时器到点只该看见自己那句（早被念掉了），
+            # 不能顺手把现在等着的这句用纯语音念掉——那样这一句就永远没有画面了。
+            QtCore.QTimer.singleShot(15_000, lambda s=seq: self._interactive_timeout(s))
             return
         self._avatar_idle.stop()
-        self._start_interactive(text)
+        self._start_interactive(clean)
 
-    def _interactive_timeout(self) -> None:
+    def _interactive_timeout(self, seq: int = -1) -> None:
         """15 秒还没连上：这句退回纯语音，别让她一直没声音。"""
+        if seq >= 0 and seq != self._speech_seq:
+            return  # 上一句排的定时器：那句已经被念掉了，不许动现在这句
         if not self._pending_speech:
             return
         text, self._pending_speech = self._pending_speech, ""
@@ -884,6 +908,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self.chat_panel is not None:
             # 黄字：已自动用纯语音念了这句话，属于「这一档今天开不了」，不是错误
             self.chat_panel.show_notice("avatar", "互动数字人没连上，这句先用纯语音念。", level="note")
+        # 画面这会儿还停在上一句的最后一帧（嘴型没收）：这句改用纯语音了，直接交还待机。
+        # 不收回的话它会一直定在那里——纯语音念完也不会收（speaker.finished 只管面板那条进度条），
+        # 要等会话挂断才回待机。
+        self._show_avatar(False)
         self.speaker.speak(text)
 
     def _start_interactive(self, text: str) -> None:
@@ -924,13 +952,21 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             )
             # 这句没念成，会话还开着也没用：5 秒后挂断（在念的话到点会重排，不会误断）。
             self._streamer.failed.connect(lambda _msg: self._avatar_idle.start())
+            # 念到一半断了（会话掉线）：画面已经停在最后一帧，立刻交还待机，
+            # 别让她张着嘴定在那儿等挂断那 5 秒。
+            self._streamer.failed.connect(lambda _msg: self._show_avatar(False))
         from app.speech_speaker import speakable
 
         clean = speakable(text)
         avatar.say_text(clean)  # type=10：让 Vidu 知道这句话在说什么（不改口型，不上动作匹配）
         logger.info("[语音] 走互动链路：%d 字（预计 %d 秒 ≈ %d 积分）",
                     len(clean), max(1, len(clean) // 6), max(1, len(clean) // 6))
-        self._streamer.speak(clean)
+        if not self._streamer.speak(clean):
+            # 洗完一个能念的字都没有：云端不会有音频回来，finished/stopped 都不会发，
+            # 挂断计时器一条都没起——当场挂断，别让会话按秒烧下去。
+            logger.warning("[语音] 互动档这句洗完是空的，立刻挂断会话")
+            self._show_avatar(False)
+            avatar.hangup()
 
     def _sync_voice_button(self) -> None:
         """设置里可能改过语音，回到聊天窗把输入框旁那个开关同步过来。"""
