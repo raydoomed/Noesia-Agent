@@ -720,9 +720,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return
         self._finish_waits = 0
         if avatar is not None:
-            logger.info("[数字人] 云端回传音频 %d 帧（%.1f 秒，含静音段），这一句实际结束时长为 %.1f 秒",
-                        avatar.audio_frames, avatar.audio_frames * 0.01,
-                        avatar.audio_seconds)
+            logger.info("[数字人] 云端回传 视频 %d 帧 / 音频 %d 帧（%.1f 秒，含静音段），这一句实际结束时长为 %.1f 秒",
+                        avatar.frames_since_speak, avatar.audio_frames,
+                        avatar.audio_frames * 0.01, avatar.audio_seconds)
             if not self._reset_sent:
                 self._reset_sent = True
                 avatar.baseline_reset()  # 说完这一句：画面复位到闭口静息态，别把姿态留到下一句

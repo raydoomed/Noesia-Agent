@@ -229,7 +229,9 @@ class AvatarRtc(QtCore.QObject):
             session.on_error = self._on_server_error  # 103 错误回执：翻成人话交出去
             # 这一行出现在日志里 = 从这一刻开始按秒计费。只在"按了发送、真要念这句"时才该看到它。
             logger.info("[数字人] 建会话（开始按秒计费）")
-            session.create()
+            live = (session.create() or {}).get("live") or {}
+            # 云端到底给了什么：出问题时这一段是唯一能看见平台侧说法的地方
+            logger.info("[数字人] 建会话回执：%s", str(live)[:300])
             if not self._warm_current(seq):
                 self._discard_warm(session)
                 return
@@ -241,9 +243,11 @@ class AvatarRtc(QtCore.QObject):
                     "`_alirtc.pyd` 是旧版本（缺 subscribe_audio），跑 tools/build_alirtc.py 重编"
                 )
             self._module.subscribe_audio(True)  # 要云端把音频回传回来，当时间轴用
+            logger.info("[数字人] 入会前：视频 %d 帧 / 音频 %d 帧", *self._counts())
             code = self._module.join(
                 rtc["token"], str(rtc["channel_id"]), str(rtc["user_id"]), "noesia"
             )
+            logger.info("[数字人] 入会返回 %d，此刻：视频 %d 帧 / 音频 %d 帧", code, *self._counts())
             if code != 0:
                 raise RuntimeError(f"入会失败，返回 {code}")
             if not self._warm_current(seq):
@@ -299,6 +303,15 @@ class AvatarRtc(QtCore.QObject):
     def frames_since_speak(self) -> int:
         """这一句开始后收到并画出来多少帧。0 = 画面还没出过（短句容易在这里被收早）。"""
         return self._frames_since_speak
+
+    def _counts(self) -> tuple[int, int]:
+        """SDK 侧的累计计数（视频帧, 音频帧）。只给诊断用：出问题时看是哪一边归零。"""
+        if self._module is None:
+            return (0, 0)
+        try:
+            return (int(self._module.frame_count()), int(self._module.audio_count()))
+        except Exception:  # noqa: BLE001
+            return (0, 0)
 
     @property
     def quiet_seconds(self) -> float:
@@ -465,7 +478,7 @@ class AvatarRtc(QtCore.QObject):
         with self._lock:
             self._state = "idle"
         if session is not None:
-            logger.info("[数字人] 挂断会话（停计费）")
+            logger.info("[数字人] 挂断会话（停计费）：视频 %d 帧 / 音频 %d 帧", *self._counts())
             threading.Thread(target=session.hangup, daemon=True, name="avatar-hangup").start()
         if self._module is not None:
             try:
