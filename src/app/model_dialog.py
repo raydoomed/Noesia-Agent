@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -465,6 +467,111 @@ class _SelectDot(QtWidgets.QRadioButton):
             painter.drawEllipse(center, self.RADIUS, self.RADIUS)
 
 
+class _AvatarStatus(QtWidgets.QWidget):
+    """形象更新状态：一个小转圈 + 一行字，没有底色块。
+
+    更新中是一圈带渐隐尾迹的光环在转（跟系统加载指示同一套观感），完成后变成对勾。
+    """
+
+    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._text = ""
+        self._busy = False
+        self._ok = True
+        self._angle = 0.0
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(16)
+        self._timer.timeout.connect(self._tick)
+        self.setMinimumHeight(30)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        self.hide()
+
+    def set_state(self, text: str, busy: bool = False, ok: bool = True) -> None:
+        self._text = text or ""
+        self._busy = bool(busy)
+        self._ok = bool(ok)
+        if not self._text:
+            self._timer.stop()
+            self.hide()
+            return
+        self.show()
+        if self._busy:
+            if not self._timer.isActive():
+                self._timer.start()
+        else:
+            self._timer.stop()
+        self._fit()
+        self.update()
+
+    def _fit(self) -> None:
+        width = max(self.width(), 220) - 32
+        box = self.fontMetrics().boundingRect(
+            QtCore.QRect(0, 0, width, 400), QtCore.Qt.TextWordWrap, self._text
+        )
+        self.setFixedHeight(max(30, box.height() + 12))
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit()
+
+    def _tick(self) -> None:
+        self._angle = (self._angle + 7.0) % 360.0
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        height = self.height()
+        cx, cy = 9.0, height / 2.0
+        ring = QtCore.QRectF(cx - 6.0, cy - 9.0 + 3.0, 12.0, 12.0)
+
+        if self._busy:
+            painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 30), 2))
+            painter.drawEllipse(ring)
+            trace = QtGui.QConicalGradient(cx, cy, -self._angle)
+            trace.setColorAt(0.0, QtGui.QColor(150, 200, 255, 255))
+            trace.setColorAt(0.7, QtGui.QColor(150, 200, 255, 0))
+            trace.setColorAt(1.0, QtGui.QColor(150, 200, 255, 0))
+            pen = QtGui.QPen(QtGui.QBrush(trace), 2)
+            pen.setCapStyle(QtCore.Qt.RoundCap)
+            painter.setPen(pen)
+            painter.drawEllipse(ring)
+        elif self._ok:
+            pen = QtGui.QPen(QtGui.QColor(122, 224, 168), 2)
+            pen.setCapStyle(QtCore.Qt.RoundCap)
+            pen.setJoinStyle(QtCore.Qt.RoundJoin)
+            painter.setPen(pen)
+            tick = QtGui.QPainterPath()
+            tick.moveTo(cx - 4.0, cy)
+            tick.lineTo(cx - 1.0, cy + 3.0)
+            tick.lineTo(cx + 4.5, cy - 3.5)
+            painter.drawPath(tick)
+        else:
+            pen = QtGui.QPen(QtGui.QColor(238, 128, 128), 2)
+            pen.setCapStyle(QtCore.Qt.RoundCap)
+            painter.setPen(pen)
+            painter.drawLine(QtCore.QPointF(cx - 3.5, cy - 3.5), QtCore.QPointF(cx + 3.5, cy + 3.5))
+            painter.drawLine(QtCore.QPointF(cx + 3.5, cy - 3.5), QtCore.QPointF(cx - 3.5, cy + 3.5))
+
+        font = self.font()
+        font.setPixelSize(12)
+        font.setBold(self._busy)
+        painter.setFont(font)
+        if self._busy:
+            colour = QtGui.QColor(234, 240, 252)
+        elif self._ok:
+            colour = QtGui.QColor(198, 207, 222)
+        else:
+            colour = QtGui.QColor(238, 168, 168)
+        painter.setPen(colour)
+        painter.drawText(
+            QtCore.QRectF(24.0, 2.0, self.width() - 28.0, height - 4.0),
+            QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft | QtCore.Qt.TextWordWrap,
+            self._text,
+        )
+        painter.end()
+
+
 class _NarrowCombo(QtWidgets.QComboBox):
     """下拉的最小宽度不跟着最长那条走：一条四十字的模型名就够把整页撑出横向滚动条。"""
 
@@ -501,6 +608,9 @@ class _LazyCombo(_NarrowCombo):
 
 class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
+    # 后台把形象传到云端后回主线程改提示用（跨线程改控件必须走信号，QTimer.singleShot
+    # 在普通 python 线程里没有事件循环，不会触发）
+    avatar_uploaded = QtCore.Signal(str, bool)   # 文案, 是否成功
     # 出错提示一律红字：灰色小字用户根本看不见（人设页、工作目录页、语音页的说明文字都是 dialog-hint）
     FAIL_STYLE = "color: #ff6b6b; font-size: 11px;"
     # 「现在真在跑的」那几行按档上色，一眼能分出是哪一段；缺配提醒黄字，真报错红字
@@ -1775,6 +1885,28 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._avatar_model_box.setCurrentIndex(max(index, 0))
         layout.addWidget(self._avatar_model_box)
 
+        layout.addWidget(QtWidgets.QLabel("形象图片", page))
+        image_row = QtWidgets.QHBoxLayout()
+        image_row.setSpacing(8)
+        self._avatar_thumb = QtWidgets.QLabel(page)
+        self._avatar_thumb.setFixedSize(48, 64)
+        image_row.addWidget(self._avatar_thumb)
+        self._avatar_image_label = QtWidgets.QLabel("", page)
+        self._avatar_image_label.setWordWrap(True)
+        image_row.addWidget(self._avatar_image_label, 1)
+        self._avatar_pick_btn = QtWidgets.QPushButton("选择图片…", page)
+        self._avatar_pick_btn.clicked.connect(self._pick_avatar_image)
+        image_row.addWidget(self._avatar_pick_btn)
+        self._avatar_reset_btn = QtWidgets.QPushButton("还原默认形象", page)
+        self._avatar_reset_btn.clicked.connect(self._reset_avatar_image)
+        image_row.addWidget(self._avatar_reset_btn)
+        layout.addLayout(image_row)
+
+        self._avatar_status = _AvatarStatus(page)
+        layout.addWidget(self._avatar_status)
+        self.avatar_uploaded.connect(self._avatar_uploaded_done)
+        self._refresh_avatar_image()
+
         self._avatar_key_label = QtWidgets.QLabel("凭证", page)
         layout.addWidget(self._avatar_key_label)
         self._avatar_key_edit = QtWidgets.QLineEdit(page)
@@ -1829,6 +1961,117 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._avatar_provider_box.currentIndexChanged.connect(self._on_avatar_provider_changed)
         self._on_avatar_provider_changed()  # 初始按当前厂商摆一遍（顺手校一次已存的凭证）
         return page
+
+    # ---- 形象图片：换成自己的图 / 还原默认 ----
+
+    def _refresh_avatar_image(self) -> None:
+        """缩略图 + 一行说明：现在用的是自己的图，还是内置那张。"""
+        from app import avatar_prefs
+
+        problem = ""
+        try:
+            chosen = avatar_prefs.image_path()
+        except ConfigError as exc:
+            chosen = None
+            problem = str(exc)
+        target = chosen or avatar_prefs.DEFAULT_IMAGE
+        pixmap = QtGui.QPixmap(str(target))
+        if pixmap.isNull():
+            self._avatar_thumb.clear()
+        else:
+            self._avatar_thumb.setPixmap(
+                pixmap.scaled(48, 64, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+            )
+        self._avatar_image_label.setText(
+            f"{target.name}（你自己选的）" if chosen else f"{target.name}（内置）"
+        )
+        if problem:
+            self._set_avatar_note(problem)
+
+    def _set_avatar_note(self, text: str, busy: bool = False, ok: bool = True) -> None:
+        self._avatar_status.set_state(text, busy, ok)
+
+    def _avatar_uploaded_done(self, text: str, ok: bool) -> None:
+        self._avatar_status.set_state(text, False, ok)
+
+    def _pick_avatar_image(self) -> None:
+        from app import avatar_prefs
+
+        picked, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "选形象图片", "", "图片 (*.png *.jpg *.jpeg *.webp)"
+        )
+        if not picked:
+            return
+        try:
+            relative = avatar_prefs.store_image(picked)
+            avatar_prefs.save_image(relative)
+        except (OSError, ValueError) as exc:
+            self._set_avatar_note(f"没换成：{exc}")
+            return
+        self._refresh_avatar_image()
+        warn = self._green_warning(avatar_prefs.RESOLVER.resolve(relative))
+        self._set_avatar_note("正在更新形象…" + (f" {warn}" if warn else ""), busy=True)
+        self._warm_avatar_asset_async("形象更新成功。", "形象更新失败，每句会多花半秒。")
+
+    def _warm_avatar_asset_async(self, done: str, failed: str) -> None:
+        """后台把形象传到云端，并**至少等满 10 秒**再报结果。
+
+        刚传好的形象云端要这段时间才把音频管线建起来；等满了再让用户点「保存并启用」，
+        第一句话就有声音，不用等。
+        """
+        from app import avatar_prefs, avatar_rtc
+
+        image = avatar_prefs.image_path() or avatar_prefs.DEFAULT_IMAGE
+
+        def run() -> None:
+            started = time.monotonic()
+            try:
+                ok = bool(avatar_rtc.warm_avatar_asset(image))
+            except Exception:  # noqa: BLE001 - 传不上去不影响换图本身
+                ok = False
+            rest = 10.0 - (time.monotonic() - started)
+            if rest > 0:
+                time.sleep(rest)
+            self.avatar_uploaded.emit(done if ok else failed, ok)
+
+        threading.Thread(target=run, daemon=True, name="avatar-upload").start()
+
+    def _reset_avatar_image(self) -> None:
+        from app import avatar_prefs
+
+        try:
+            avatar_prefs.clear_image()
+        except OSError as exc:
+            self._set_avatar_note(f"没还原成：{exc}")
+            return
+        self._refresh_avatar_image()
+        self._set_avatar_note("正在还原默认形象…", busy=True)
+        self._warm_avatar_asset_async("已还原默认形象。", "已还原默认形象，云端编号暂时用不了。")
+
+    @staticmethod
+    def _green_warning(path: Path) -> str:
+        """四角既不绿、又不透明：直接说，不然她会上镜带一块方形背景。"""
+        try:
+            import numpy as np
+            from PIL import Image
+
+            with Image.open(path) as img:
+                arr = np.asarray(img.convert("RGBA"))
+        except Exception:  # noqa: BLE001 - 读不出来就别拿它吓人
+            return ""
+        height, width = arr.shape[:2]
+        if width < 4 or height < 4:
+            return ""
+        corners = [arr[y, x] for y in (2, height - 3) for x in (2, width - 3)]
+        if all(int(pixel[3]) < 32 for pixel in corners):
+            return ""   # 透明底：上传前会自动铺绿，不用担心
+        greenish = sum(
+            1 for pixel in corners
+            if int(pixel[1]) > 60 and int(pixel[1]) > max(int(pixel[0]), int(pixel[2])) * 1.15
+        )
+        if greenish >= 3:
+            return ""
+        return "这张图四角不是绿幕背景，数字人会带着一块方形背景（透明底的 png 会自动铺绿，可以放心用）。"
 
     def _avatar_provider_ready(self, provider: str) -> bool:
         """这家有没有接好（能校验、能建会话）。接好之前别让人把凭证填进去还以为能用。"""

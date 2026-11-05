@@ -14,24 +14,68 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import pathlib
 import threading
 import time
 from collections import deque
+from datetime import datetime
 
 import numpy as np
 from PySide6 import QtCore, QtGui
 
+from app import avatar_prefs
 from app.idle_video import key_image
-from app.vidu_session import FRAME_BYTES, SAMPLE_RATE, ViduSession, read_token
+from app.vidu_session import (
+    FRAME_BYTES,
+    SAMPLE_RATE,
+    ViduSession,
+    read_token,
+    upload_avatar_asset,
+)
 
 logger = logging.getLogger(__name__)
+
+# 云端形象编号（avatar_id）的保质期：平台 90 天会清，留 5 天余量提前重传
+ASSET_MAX_DAYS = 85
+# 换图后云端要这么久才把音频管线建好：这期间用编号建会话只有画面、没有声音
+ASSET_SETTLE_SECONDS = 10.0
+# 上传后云端还要生成描述（status=created/processing）：这段时间内别重复 POST，
+# 同一张图重复上传会返回同一个还在处理的资产，纯白花往返
+ASSET_PENDING_SECONDS = 60.0
+
+def warm_avatar_asset(image: pathlib.Path, digest: str = "", wait_seconds: float = 90.0) -> str:
+    """把这张图存成云端资产并写缓存，返回编号；过了等待时间还没好就返回空串。
+
+    不建会话、不计费。云端收图后要几十秒才把状态从 created/processing 变成 success，
+    所以这里**一直轮询到出结果**——只查一次会把「正在处理」当失败，界面上就是
+    「形象更新失败」，其实它马上就好了。
+    """
+    digest = digest or hashlib.sha256(image.read_bytes()).hexdigest()
+    token = read_token()
+    if not token:
+        return ""
+    got = upload_avatar_asset(token, image)
+    deadline = time.monotonic() + wait_seconds
+    while got["status"] != "success" and got["status"] != "failed":
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(5.0)   # 太密会被限流（429）
+        got = upload_avatar_asset(token, image)
+    if got["status"] != "success":
+        logger.info("[数字人] 形象还在云端处理（status=%s），先不拿它建会话", got["status"])
+        return ""
+    avatar_prefs.save_image_asset(
+        {"hash": digest, "id": got["id"], "uploaded_at": datetime.now().isoformat(timespec="seconds")}
+    )
+    logger.info("[数字人] 形象已存成云端资产：id=%s status=%s", got["id"], got["status"])
+    return got["id"]
+
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RTC_DIR = REPO_ROOT / "vendor" / "alirtc"
 RTC_AUDIO_RATE = 48000  # 云端回来的音频固定 48k 单声道 s16（实测 858 帧 / 8.6 秒）
-DEFAULT_IMAGE = REPO_ROOT / "assets" / "greenscreen" / "noesia_greenscreen.png"
 
 
 def _i420_to_rgb(y: bytes, u: bytes, v: bytes, width: int, height: int,
@@ -100,7 +144,7 @@ class AvatarRtc(QtCore.QObject):
         model: str | None = None,
     ) -> None:
         super().__init__(parent)
-        self.image_path = pathlib.Path(image_path or DEFAULT_IMAGE)
+        self.image_path = pathlib.Path(image_path or avatar_prefs.DEFAULT_IMAGE)
         self.model = model            # 空 = 用 avatar.json 里的 model（唯一来源，不在代码里兜）
         self._module = None            # _alirtc 扩展模块
         self._session: ViduSession | None = None
@@ -134,6 +178,8 @@ class AvatarRtc(QtCore.QObject):
         self._rate_warned = False
         self._last_error = ""
         self._reset_off = False       # 复位（type 15）被服务端拒过：别再每句白发一遍
+        self._asset_lock = threading.Lock()  # 预加载和建会话都可能去传形象，串着来
+        self._asset_pending: tuple[str, float] = ("", 0.0)  # (上次上传的图哈希, 允许再传的时刻)
 
     # ---- 第一层：预加载（0 积分） ----
 
@@ -170,6 +216,8 @@ class AvatarRtc(QtCore.QObject):
                 target=self._convert_loop, daemon=True, name="avatar-convert"
             )
             self._converter.start()
+            # 顺手把形象存进云端（不建会话、不计费）：真说话时省掉现传整张图
+            threading.Thread(target=self._warm_asset, daemon=True, name="avatar-asset").start()
             return ""
         except Exception as exc:  # noqa: BLE001
             return f"{exc}"
@@ -177,6 +225,65 @@ class AvatarRtc(QtCore.QObject):
     @property
     def loaded(self) -> bool:
         return self._module is not None
+
+    # ---- 形象图：配置里选的那张 + 它在云端的编号 ----
+
+    def image_now(self) -> pathlib.Path:
+        """当前该用的形象图：`avatar.json` 里选了的优先，没选就用内置那张。"""
+        return avatar_prefs.image_path() or self.image_path
+
+    @staticmethod
+    def _image_hash(image: pathlib.Path) -> str:
+        return hashlib.sha256(image.read_bytes()).hexdigest()
+
+    def _cached_avatar_id(self, image: pathlib.Path, digest: str = "") -> str:
+        """缓存的云端编号还能用就返回它，否则空串（= 这一句现传图）。"""
+        saved = avatar_prefs.image_saved_at()
+        # 刚换的图：云端还没把音频管线建起来，这时候用编号只有画面没有声音
+        if saved is not None and (datetime.now() - saved).total_seconds() < ASSET_SETTLE_SECONDS:
+            return ""
+        asset = avatar_prefs.image_asset()
+        if not asset.get("id") or asset.get("hash") != (digest or self._image_hash(image)):
+            return ""
+        raw = str(asset.get("uploaded_at") or "")
+        if "T" not in raw:
+            # 老格式只存了日期，判断不出「几分钟前刚传的」，当没缓存（重传只慢一句）
+            return ""
+        try:
+            uploaded = datetime.fromisoformat(raw)
+        except ValueError:
+            return ""          # 时间读不出来当过期：重传一次只慢一句，不拿它赌
+        age = datetime.now() - uploaded
+        return "" if age.days >= ASSET_MAX_DAYS else str(asset["id"])
+
+    def _ensure_avatar_asset(self, image: pathlib.Path | None = None) -> str:
+        """确保云端存着这张图：有编号直接用，没有就传一次（不建会话、不计费）。
+
+        **只有 `status=success` 才缓存**：刚创建的资产云端还在生成描述，这时候拿去建会话
+        会被 400 拒掉（`avatar is still processing`）；而且这张图一旦进入处理中，连现传
+        `image_uri` 建会话也会被同一个原因拒——所以处理中那段时间就别再传了。
+        """
+        image = image or self.image_now()
+        digest = self._image_hash(image)
+        with self._asset_lock:
+            cached = self._cached_avatar_id(image, digest)
+            if cached:
+                return cached
+            pending_hash, retry_at = self._asset_pending
+            if pending_hash == digest and time.time() < retry_at:
+                return ""      # 刚传过还在处理：每个字都再 POST 一次纯属白花时间
+            got = warm_avatar_asset(image, digest)
+            if not got:
+                self._asset_pending = (digest, time.time() + ASSET_PENDING_SECONDS)
+            return got
+        return ""
+
+    def _warm_asset(self) -> None:
+        """预加载后台顺手把形象传上去：真说话时就不用现传了。"""
+        try:
+            self._ensure_avatar_asset()
+        except Exception as exc:  # noqa: BLE001 - 传不上去只慢一点，不能因此开不了口
+            logger.info("[数字人] 形象没传上去，这一句照旧现传图：%s", exc)
 
     # ---- 第二层：建会话（按秒计费） ----
 
@@ -224,12 +331,38 @@ class AvatarRtc(QtCore.QObject):
                 why = self.preload()
                 if why:
                     raise RuntimeError(f"引擎没载起来：{why}")
-            session = ViduSession(read_token(), self.image_path, self.model or self._configured_model())
+            image = self.image_now()
+            session = ViduSession(read_token(), image, self.model or self._configured_model())
             session.on_event = lambda msg: logger.info("[数字人] %s", msg)
             session.on_error = self._on_server_error  # 103 错误回执：翻成人话交出去
+            try:
+                avatar_id = self._ensure_avatar_asset(image)
+            except Exception as exc:  # noqa: BLE001 - 拿不到编号就现传图，不影响说话
+                logger.info("[数字人] 形象编号没拿到，这一句现传图：%s", exc)
+                avatar_id = ""
             # 这一行出现在日志里 = 从这一刻开始按秒计费。只在"按了发送、真要念这句"时才该看到它。
             logger.info("[数字人] 建会话（开始按秒计费）")
-            live = (session.create() or {}).get("live") or {}
+            try:
+                live = (session.create(avatar_id=avatar_id) or {}).get("live") or {}
+            except RuntimeError as exc:
+                if "still processing" in str(exc):
+                    # 云端还在给这张图生成描述。这时连现传 image_uri 也会被同一个原因拒，
+                    # 只能等；两秒后再试一次，还不行就明确说清，别让她干等着不出画面。
+                    logger.info("[数字人] 形象还在云端处理，2 秒后再试一次")
+                    time.sleep(2.0)
+                    try:
+                        live = (session.create(avatar_id=avatar_id) or {}).get("live") or {}
+                    except RuntimeError as again:
+                        raise RuntimeError(
+                            "新形象还在云端处理（通常一分钟内），这一句先用纯语音念"
+                        ) from again
+                elif avatar_id:
+                    # 云端编号失效（90 天到期或被提前清）：作废，用整张图再建一次
+                    logger.info("[数字人] 形象编号不可用，改用整张图再建一次")
+                    avatar_prefs.save_image_asset(None)
+                    live = (session.create() or {}).get("live") or {}
+                else:
+                    raise
             # 云端到底给了什么：出问题时这一段是唯一能看见平台侧说法的地方
             logger.info("[数字人] 建会话回执：%s", str(live)[:300])
             if not self._warm_current(seq):
@@ -238,13 +371,16 @@ class AvatarRtc(QtCore.QObject):
             # create 成功就已经在计费：先挂上，之后任何一步失败 `_fail` 才能把它挂断
             self._session = session
             rtc = session.rtc
-            if not hasattr(self._module, "subscribe_audio"):
+            module = self._module
+            if module is None:
+                raise RuntimeError("媒体模块还没建好，先让程序加载一次引擎")
+            if not hasattr(module, "subscribe_audio"):
                 raise RuntimeError(
                     "`_alirtc.pyd` 是旧版本（缺 subscribe_audio），跑 tools/build_alirtc.py 重编"
                 )
-            self._module.subscribe_audio(True)  # 要云端把音频回传回来，当时间轴用
+            module.subscribe_audio(True)  # 要云端把音频回传回来，当时间轴用
             logger.info("[数字人] 入会前：视频 %d 帧 / 音频 %d 帧", *self._counts())
-            code = self._module.join(
+            code = module.join(
                 rtc["token"], str(rtc["channel_id"]), str(rtc["user_id"]), "noesia"
             )
             logger.info("[数字人] 入会返回 %d，此刻：视频 %d 帧 / 音频 %d 帧", code, *self._counts())

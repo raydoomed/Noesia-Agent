@@ -2,7 +2,8 @@
 
 两件事分开存，各在各家：
 
-- **配置**（用哪家）→ `data/settings/avatar.json`，只有 `provider` 一个键，模板显式落地；
+- **配置**（用哪家、用哪张形象图）→ `data/settings/avatar.json`：`provider` / `model` / `image`
+  三个键，模板显式落地；`image_asset` 是程序自己写的云端形象编号，可选键（删掉只是重传一次）；
 - **Key** → `data/NoesiaHome/.env`，由 `env_keys.PROVIDERS` 里属于 `avatar` 的那几行决定
   （Vidu 是 `VIDU_TOKEN`）。读写只有 `env_keys.read/write` 一套，这里不再自己实现。
 
@@ -13,6 +14,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+from datetime import datetime
 from pathlib import Path
 
 from app import env_keys
@@ -29,8 +32,22 @@ MODELS = (
     ("vidu-s1", "vidu-s1（稳定，624×832）"),
 )
 
-_TEMPLATE = {"provider": "vidu", "model": "vidu-s2"}
-_REQUIRED = tuple(_TEMPLATE)
+_TEMPLATE = {"provider": "vidu", "model": "vidu-s2", "image": ""}
+# 形象图不进必需键：老配置没有这一项照样能读，空串 = 用内置那张
+_REQUIRED = ("provider", "model")
+
+# 用户选的图复制到这里再引用：不指向原始位置，用户删掉原图也不会丢形象
+IMAGE_DIR = Path("data/assets")
+
+# 用户没选自己的图时用的那张（唯一来源，别在别处再写一遍路径）
+DEFAULT_IMAGE = RESOLVER.resolve(Path("assets/greenscreen/noesia_greenscreen.png"))
+
+
+def _write(data: dict) -> None:
+    """整份写回：`load()` 已经带上了不认识的键（比如 `image_asset`），这里不许筛。"""
+    target = path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def path() -> Path:
@@ -69,9 +86,91 @@ def save(provider: str | None = None, model: str | None = None) -> dict:
         if model not in {row[0] for row in MODELS}:
             raise ValueError(f"不认识的数字人模型：{model}")
         data["model"] = model
-    target = path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write(data)
+    return data
+
+
+# ---- 形象图：用户换的那张，以及它在云端的编号 ----
+
+
+def image_setting() -> str:
+    """`avatar.json` 里的 `image`；空串 = 用内置那张。"""
+    return str(load().get("image") or "").strip()
+
+
+def image_path() -> Path | None:
+    """生效的形象图；返回 None 表示用内置那张。
+
+    填了路径就必须能找到——静默退回内置的话，用户只会看到「换图没生效」。
+    """
+    raw = image_setting()
+    if not raw:
+        return None
+    target = RESOLVER.resolve(raw)
+    if not target.is_file():
+        raise ConfigError(f"avatar.json 里的 image 指的图片找不到：{target}")
+    return target
+
+
+def save_image(value: str) -> dict:
+    """改 `image`（空串 = 还原默认形象）；顺带把云端编号废掉，下次按新图重传。"""
+    data = load()
+    data["image"] = value
+    data.pop("image_asset", None)
+    data["image_saved_at"] = datetime.now().isoformat(timespec="seconds")
+    _write(data)
+    return data
+
+
+def image_saved_at() -> datetime | None:
+    """这张图是什么时候被选进来的；读不出来返回 None（当老配置处理）。"""
+    try:
+        return datetime.fromisoformat(str(load().get("image_saved_at") or ""))
+    except ValueError:
+        return None
+
+
+def clear_image() -> dict:
+    """还原默认形象：清 `image`、作废云端编号、删掉复制过来的那份图。"""
+    folder = RESOLVER.resolve(IMAGE_DIR)
+    if folder.is_dir():
+        for old in folder.glob("avatar.*"):
+            old.unlink(missing_ok=True)
+    return save_image("")
+
+
+def store_image(source: str | Path) -> str:
+    """把用户选的图复制进 `data/assets/`，返回相对项目根的路径。
+
+    先清掉这个目录里旧的 `avatar.*`：换了扩展名也不留上一份。
+    """
+    src = Path(source)
+    suffix = src.suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise ValueError(f"形象图只认 png / jpg / jpeg / webp，这个是 {suffix or '没扩展名'}")
+    folder = RESOLVER.resolve(IMAGE_DIR)
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.glob("avatar.*"):
+        old.unlink(missing_ok=True)
+    target = folder / f"avatar{suffix}"
+    shutil.copyfile(src, target)
+    return str(target.relative_to(RESOLVER.root)).replace("\\", "/")
+
+
+def image_asset() -> dict:
+    """云端形象编号：`{"hash", "id", "uploaded_at"}`；没有就返回空 dict。"""
+    asset = load().get("image_asset")
+    return dict(asset) if isinstance(asset, dict) else {}
+
+
+def save_image_asset(asset: dict | None) -> dict:
+    """存/清云端形象编号。传 None 表示作废（到期、换图、还原）。"""
+    data = load()
+    if asset:
+        data["image_asset"] = dict(asset)
+    else:
+        data.pop("image_asset", None)
+    _write(data)
     return data
 
 

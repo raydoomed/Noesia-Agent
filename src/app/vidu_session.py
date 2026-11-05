@@ -89,6 +89,33 @@ def build_green_input(image_path: pathlib.Path, out_path: pathlib.Path) -> pathl
     return out_path
 
 
+def upload_avatar_asset(token: str, image_path: pathlib.Path) -> dict:
+    """把形象图存成云端的「数字人设资产」，返回 `{"id", "status"}`。
+
+    这一步不建会话、不计费。之后建会话传 `avatar_id`，云端就不用每次重新收图、
+    重新处理形象。官方原话：「可大幅节省创建数字人的时间」。
+    """
+    green = build_green_input(
+        image_path, pathlib.Path(tempfile.gettempdir()) / "noesia_vidu_asset.jpg"
+    )
+    resp = requests.post(
+        f"{HTTP}/live/v1/avatars",
+        headers={"Authorization": f"Token {token}"},
+        json={
+            "image_uri": "data:image/jpeg;base64," + base64.b64encode(green.read_bytes()).decode()
+        },
+        timeout=60,
+    )
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"Vidu 不认这把 Token（{resp.status_code}）：到「设置 → 语音互动」里重新填一次"
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"上传形象失败 {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    return {"id": str(data["id"]), "status": str(data.get("status", ""))}
+
+
 _ERROR_SOURCES = {
     "baseline_reset": "复位画面（type 15）",
     "switch_avatar": "切换形象（type 16）",
@@ -132,18 +159,24 @@ class ViduSession:
         self.on_event = None         # 服务端消息/断线交给外面记日志，别静默
         self.on_error = None         # type=103 错误回执：(source, code, 人话)，交给外面提示人
 
-    def create(self) -> dict:
-        green = build_green_input(
-            self.image_path, pathlib.Path(tempfile.gettempdir()) / "noesia_vidu_input.jpg"
-        )
+    def create(self, avatar_id: str = "") -> dict:
+        """建会话。`avatar_id` 非空就只传编号，否则现传整张图（两者二选一）。"""
         payload = {
             "model": self.model,
-            "image_uri": "data:image/jpeg;base64," + base64.b64encode(green.read_bytes()).decode(),
             "managed_rtc": {"enable_recording": False},
             # 动作匹配：整块省略 = 关。不传这个的话 type=9 发上去没人用，
             # 数字人只会跟着音频动嘴。library_id "0" = 平台默认库。
             "action": {"enabled": True, "library_id": "0"},
         }
+        if avatar_id:
+            payload["avatar_id"] = avatar_id
+        else:
+            green = build_green_input(
+                self.image_path, pathlib.Path(tempfile.gettempdir()) / "noesia_vidu_input.jpg"
+            )
+            payload["image_uri"] = (
+                "data:image/jpeg;base64," + base64.b64encode(green.read_bytes()).decode()
+            )
         resp = requests.post(
             f"{HTTP}/live/s_avatar/component",
             headers={"Authorization": f"Token {self.token}"},
