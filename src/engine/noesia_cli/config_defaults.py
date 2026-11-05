@@ -676,13 +676,6 @@ DEFAULT_CONFIG = {
         # instead of dropping the middle with a "summary unavailable" placeholder; the session
         # freezes at its size until /compress (bypasses the cooldown) or /new.
         "abort_on_summary_failure": False,
-        # (Historical key name.) When True, gpt-5.4/5.5/5.6 and gpt-6 Astra (any slug containing
-        # "astra" without "900k") on the ChatGPT Codex OAuth route raise their compaction trigger to
-        # 85%: Codex hard-caps them at a 272K window, so the global 50% would compact at ~136K. False = global `threshold`. Only that route; the same models via
-        # OpenAI direct, OpenRouter or Copilot keep the global value.
-        "codex_gpt55_autoraise": True,
-        # Show the one-time autoraise banner; False keeps the autoraise, hides the notice.
-        "codex_gpt55_autoraise_notice": True,
         # Codex app-server thread compaction mode. The codex agent owns the thread context, so
         # Noesia' summarizer cannot shrink it. native = codex decides; noesia = Noesia' threshold
         # triggers thread/compact/start; off = never auto-trigger.
@@ -701,7 +694,7 @@ DEFAULT_CONFIG = {
         "in_place": True,
         # Per-model threshold overrides: keys substring-match the model name (longest wins), values
         # replace the global `threshold`, e.g. {"glm-5.2": 0.40}. Prefix a key with "<provider>:" to
-        # scope it to one route ({"openai-codex:astra": 0.85} leaves Astra on OpenRouter/Noesia at the
+        # scope it to one route ({"openai-api:astra": 0.85} leaves Astra on OpenRouter/Noesia at the
         # global value). The <512K floor (0.75) still applies raise-only on top.
         "model_thresholds": {},
         # Opt-in idle compaction (0 = off): a session resuming after this many idle seconds compacts
@@ -1446,7 +1439,7 @@ DEFAULT_CONFIG = {
         "presets": {
             "default": {
                 "reference_models": [
-                    {"provider": "openai-codex", "model": "gpt-5.5"},
+                    {"provider": "openai-api", "model": "gpt-5.5"},
                     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
                 ],
                 "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
@@ -1766,21 +1759,6 @@ DEFAULT_CONFIG = {
     # Custom personalities: {"name": "system prompt"} or {"name": {"description", "system_prompt",
     # "tone", "style"}}.
     "personalities": {},
-    "auth": {  # Login policy (credentials themselves live in auth.json / .env).
-        # Borrow and refresh the Codex CLI (~/.codex/auth.json) and Claude Code (~/.claude/.credentials.json)
-        # logins automatically when Noesia has no usable login of its own. Their refresh tokens are single-use
-        # and rotate, so two programs on one login can log each other out; set false to make Noesia use only
-        # its own logins (`noesia auth add <provider>`). `noesia auth add openai-codex` still offers the import
-        # interactively.
-        "adopt_external_logins": True,
-        # How `noesia auth add openai-codex` / `noesia model` sign in to OpenAI Codex.
-        # "device_code" (default): open a URL, enter a code. "browser": authorization-code + PKCE on
-        # the loopback listener http://localhost:1455/auth/callback (the redirect OpenAI registered
-        # for the Codex client) — for organizations that disable the device-code grant. Falls back
-        # to device code when that port is busy. `noesia auth add openai-codex --browser` opts in
-        # for one login without changing this key.
-        "codex_login_flow": "device_code",
-    },
     "security": {  # Security: URL/private-network guards, redaction and approval presentation.
         "allow_private_urls": False,  # allow requests to private/internal IPs (OpenWrt, VPNs)
         # CIDR blocks a local TUN proxy answers DNS with (Mihomo/Clash fake-ip, Surge enhanced).
@@ -2425,7 +2403,7 @@ DEFAULT_CONFIG = {
         "servers": {},
     },
     # X (Twitter) Search via xAI's x_search Responses tool. Registers when xAI creds exist
-    # (SuperGrok OAuth or XAI_API_KEY) AND the toolset is enabled in `noesia tools`.
+    # (XAI_API_KEY) AND the toolset is enabled in `noesia tools`.
     "x_search": {
         # xAI model for the Responses call; any Grok model with x_search access works.
         "model": "grok-4.5",
@@ -2786,9 +2764,6 @@ OPTIONAL_ENV_VARS = {
     "DASHSCOPE_BASE_URL": _prov(
         "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
         "DashScope Base URL", "", password=False),
-    "NOESIA_QWEN_BASE_URL": _prov(
-        "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
-        "Qwen Portal base URL (leave empty for default)", None, password=False),
     "OPENCODE_ZEN_API_KEY": _prov("OpenCode Zen API key (pay-as-you-go access to curated models)",
         "OpenCode Zen API key", "https://opencode.ai/auth"),
     "COMMANDCODE_API_KEY": _prov(

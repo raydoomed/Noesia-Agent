@@ -28,11 +28,9 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("moa", "Mixture of Agents", "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ("novita", "NovitaAI", "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ("lmstudio", "LM Studio", "LM Studio (Local desktop app with built-in model server)"),
-    ("anthropic", "Anthropic", "Anthropic (Claude models via API key or Claude Code)"),
-    ("openai-codex", "ChatGPT or Codex Subscription", "ChatGPT or Codex Subscription (Sign in with your ChatGPT account, uses Codex models)"),
+    ("anthropic", "Anthropic", "Anthropic (Claude models via API key)"),
     ("openai-api", "OpenAI API", "OpenAI API (api.openai.com, API key)"),
     ("alibaba", "Qwen Cloud", "Qwen Cloud / DashScope (Qwen + multi-provider)"),
-    ("xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "xAI Grok OAuth (SuperGrok / Premium+ subscription)"),
     ("xiaomi", "Xiaomi MiMo", "Xiaomi MiMo (MiMo-V2.5 and V2 models: pro, omni, flash)"),
     ("tencent-tokenhub", "Tencent TokenHub", "Tencent TokenHub (Hy4 preview via tokenhub.tencentmaas.com)"),
     ("tencent-tokenplan", "Tencent TokenPlan", "Tencent TokenPlan (Hy4 preview via api.lkeap.cloud.tencent.com, Anthropic Messages)"),
@@ -48,7 +46,6 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("kimi-coding-cn", "Kimi / Moonshot (China)", "Kimi / Moonshot China (Domestic direct API)"),
     ("stepfun", "StepFun Step Plan", "StepFun Step Plan (Agent / coding models via Step Plan API)"),
     ("minimax", "MiniMax", "MiniMax (Global direct API)"),
-    ("minimax-oauth", "MiniMax (OAuth)", "MiniMax via OAuth browser login (Coding Plan, minimax.io)"),
     ("minimax-cn", "MiniMax (China)", "MiniMax China (Domestic direct API)"),
     ("ollama-cloud", "Ollama Cloud", "Ollama Cloud (Cloud-hosted open models, ollama.com)"),
     ("arcee", "Arcee AI", "Arcee AI (Trinity models, direct API)"),
@@ -59,18 +56,17 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [ProviderEntry(*row) for row in (
     ("bedrock", "AWS Bedrock", "AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)"),
     ("azure-foundry", "Azure Foundry", "Azure Foundry (OpenAI-style or Anthropic-style endpoint, your Azure AI deployment)"),
     ("ai-gateway", "Vercel AI Gateway", "Vercel AI Gateway (Multi-model aggregator)"),
-    ("qwen-oauth", "Qwen OAuth (Portal)", "Qwen OAuth (Reuses local Qwen CLI login)"),
 )]
 
 
 # Auto-extend CANONICAL_PROVIDERS with providers registered under plugins/model-providers/<name>/
 # so a new provider reaches the picker, /model and every downstream consumer without edits here.
-# Admission is by slug only: every in-tree non-api-key profile (OAuth, external-process, cloud
-# SDK) already owns a hand-written row above, so the old auth_type skip set never excluded an
-# in-tree provider — it only hid out-of-tree plugins. Visibility is gated downstream by
-# credentials, not here: ``models._provider_has_credentials`` / ``_lap_canonical_rows`` route
-# through ``auth.get_auth_status`` (external_process → the binary resolves; OAuth → auth.json /
-# credential-pool entry), so an admitted row reads authenticated=False until the user signs in.
+# Admission is by slug only: every in-tree non-api-key profile (external-process, cloud SDK)
+# already owns a hand-written row above, so the old auth_type skip set never excluded an in-tree
+# provider — it only hid out-of-tree plugins. Visibility is gated downstream by credentials, not
+# here: ``models._provider_has_credentials`` / ``_lap_canonical_rows`` route through
+# ``auth.get_auth_status`` (external_process → the binary resolves), so an admitted row reads
+# authenticated=False until the user supplies credentials.
 _canonical_slugs = {p.slug for p in CANONICAL_PROVIDERS}
 
 
@@ -125,7 +121,7 @@ def listed_canonical_providers() -> list[ProviderEntry]:
 
 
 # ---------------------------------------------------------------------------
-# Provider groups — DISPLAY ONLY. Vendors with several slugs (global API, China API, OAuth plan,
+# Provider groups — DISPLAY ONLY. Vendors with several slugs (global API, China API, coding plan,
 # ...) fold under one top-level row in the INTERACTIVE PICKERS (``noesia model``, setup wizard,
 # Telegram ``/model``). They do NOT change CANONICAL_PROVIDERS, slug identity, ``--provider``,
 # ``/model <provider:model>`` or any typed path — every member slug stays individually addressable.
@@ -135,11 +131,11 @@ def listed_canonical_providers() -> list[ProviderEntry]:
 # ---------------------------------------------------------------------------
 PROVIDER_GROUPS: dict[str, tuple[str, str, list[str]]] = {
     "kimi":     ("Kimi / Moonshot", "Coding Plan, Moonshot global & China endpoints", ["kimi-coding", "kimi-coding-cn"]),
-    "minimax":  ("MiniMax",         "Global, OAuth Coding Plan & China endpoints",     ["minimax", "minimax-oauth", "minimax-cn"]),
-    "xai":      ("xAI Grok",        "Direct API or SuperGrok / Premium+ OAuth",        ["xai", "xai-oauth"]),
+    "minimax":  ("MiniMax",         "Global & China endpoints",                        ["minimax", "minimax-cn"]),
+    "xai":      ("xAI Grok",        "Direct API",                                     ["xai"]),
     "google":   ("Google Gemini",   "Google AI Studio (API key)",                     ["gemini"]),
-    "openai":   ("OpenAI",          "ChatGPT/Codex subscription or direct OpenAI API", ["openai-codex", "openai-api"]),
-    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan & Qwen CLI OAuth", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn", "qwen-oauth"]),
+    "openai":   ("OpenAI",          "Direct OpenAI API",                               ["openai-api"]),
+    "qwen":     ("Qwen",            "Qwen Cloud / DashScope, Coding Plan, Token Plan", ["alibaba", "alibaba-cn", "alibaba-coding-plan", "alibaba-coding-plan-cn", "alibaba-token-plan", "alibaba-token-plan-cn"]),
     "opencode": ("OpenCode",        "Zen pay-as-you-go or Go subscription", ["opencode-zen", "opencode-go"]),
     "copilot":  ("GitHub Copilot",  "GitHub token API or copilot --acp process",       ["copilot", "copilot-acp"]),
     "tencent":  ("Tencent Hy",      "Hy4 / Hy3 via TokenHub & TokenPlan", ["tencent-tokenhub", "tencent-tokenplan"]),
@@ -205,22 +201,21 @@ _PROVIDER_ALIASES = dict((
     ("actualcomputer", "actual"), ("aci", "actual"), ("nebius", "nebius-token-factory"),
     ("nebius-tokenfactory", "nebius-token-factory"), ("nebius-tf", "nebius-token-factory"),
     ("token-factory", "nebius-token-factory"), ("tokenfactory", "nebius-token-factory"),
-    ("minimax-china", "minimax-cn"), ("minimax_cn", "minimax-cn"), ("minimax-portal", "minimax-oauth"),
-    ("minimax-global", "minimax-oauth"), ("minimax_oauth", "minimax-oauth"), ("claude", "anthropic"),
+    ("minimax-china", "minimax-cn"), ("minimax_cn", "minimax-cn"), ("minimax-portal", "minimax"),
+    ("minimax-global", "minimax"), ("claude", "anthropic"),
     ("claude-code", "anthropic"), ("deep-seek", "deepseek"), ("opencode", "opencode-zen"), ("zen", "opencode-zen"),
     ("go", "opencode-go"), ("opencode-go-sub", "opencode-go"), ("aigateway", "ai-gateway"), ("vercel", "ai-gateway"),
     ("vercel-ai-gateway", "ai-gateway"), ("kilo", "kilocode"), ("kilo-code", "kilocode"),
     ("kilo-gateway", "kilocode"), ("dashscope", "alibaba"), ("aliyun", "alibaba"), ("qwen", "alibaba"),
-    ("alibaba-cloud", "alibaba"), ("qwen-portal", "qwen-oauth"), ("hf", "huggingface"),
+    ("alibaba-cloud", "alibaba"), ("qwen-portal", "alibaba"), ("hf", "huggingface"),
     ("hugging-face", "huggingface"), ("huggingface-hub", "huggingface"), ("novita-ai", "novita"),
     ("novitaai", "novita"), ("mimo", "xiaomi"), ("xiaomi-mimo", "xiaomi"), ("tencent", "tencent-tokenhub"),
     ("tokenhub", "tencent-tokenhub"), ("tencent-cloud", "tencent-tokenhub"), ("tencentmaas", "tencent-tokenhub"),
     ("tokenplan", "tencent-tokenplan"), ("tencent-lkeap", "tencent-tokenplan"), ("aws", "bedrock"),
     ("aws-bedrock", "bedrock"), ("amazon-bedrock", "bedrock"), ("amazon", "bedrock"), ("grok", "xai"),
-    ("grok-oauth", "xai-oauth"), ("xai-oauth", "xai-oauth"), ("x-ai-oauth", "xai-oauth"),
-    ("xai-grok-oauth", "xai-oauth"), ("x-ai", "xai"), ("x.ai", "xai"), ("nim", "nvidia"), ("nvidia-nim", "nvidia"),
+    ("x-ai", "xai"), ("x.ai", "xai"), ("nim", "nvidia"), ("nvidia-nim", "nvidia"),
     ("build-nvidia", "nvidia"), ("nemotron", "nvidia"), ("lmstudio", "lmstudio"), ("lm-studio", "lmstudio"),
-    ("lm_studio", "lmstudio"), ("chatgpt", "openai-codex"), ("chatgpt-codex", "openai-codex"),
+    ("lm_studio", "lmstudio"),
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
     # Local OpenAI-compatible servers route through the generic "custom" provider
@@ -236,7 +231,7 @@ _PROVIDER_ALIASES = dict((
 _AGGREGATOR_PROVIDERS = frozenset({"openrouter", "ai-gateway", "copilot", "kilocode"})
 
 
-# Subscription/OAuth providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last
+# Subscription providers whose catalogs RE-EXPOSE other vendors' models; tried only as a last
 # resort for bare short-alias resolution (after every native-vendor catalog) so they never hijack
 # an alias from the model's native vendor. None currently defined.
 _BORROWED_MODEL_PROVIDERS: frozenset[str] = frozenset()
@@ -255,10 +250,6 @@ _LIVE_FIRST_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "openc
 # positives are harmless. Codex-series models are excluded — the Codex Responses API doesn't
 # expose service_tier.
 _OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = ("gpt-", "o1", "o3", "o4")
-# OpenAI Ultrafast (service_tier="ultrafast", 6x Standard): GPT-6 Astra and GPT-6.1 Sol
-# (developers.openai.com/api/docs/guides/ultrafast-mode, 2026-10-08).
-# Exact wire slugs, matched after stripping the vendor prefix and the Noesia-side ``-900k`` alias.
-_OPENAI_ULTRAFAST_MODELS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6.1-sol"})
 
 
 # models.dev 的目录对每一家都生效（上游上新就出现、标 deprecated 就消失），只有 openrouter 例外：

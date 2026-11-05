@@ -258,24 +258,16 @@ def _transcribe_xai(
     from tools.xai_http import resolve_xai_http_credentials
     if prompt:
         _log_prompt_unsupported("STT provider 'xai'")
-    # STT is API-billed: prefer the explicit XAI_API_KEY over the xAI OAuth/Grok-subscription
-    # credential, which may be valid for Grok yet hit spending-limit errors on /v1/stt.
-    direct_api_key = str(get_env_value("XAI_API_KEY") or "").strip()
-    creds = {"provider": "xai", "api_key": direct_api_key,
-             "base_url": str(get_env_value("XAI_BASE_URL") or "https://api.x.ai/v1").strip().rstrip("/")
-             } if direct_api_key else resolve_xai_http_credentials()
+    creds = resolve_xai_http_credentials()
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
-        return _error_result("No xAI credentials found. Configure xAI OAuth in `noesia model` or set XAI_API_KEY")
+        return _error_result("No xAI credentials found. Set XAI_API_KEY")
     stt_config = _load_stt_config()
     xai_config = stt_config.get("xai") or {}
-
-    def _resolve_base_url(resolved_creds: dict[str, str]) -> str:
-        # OAuth bearers are pinned to the resolver-validated origin; overrides apply to API keys only.
-        url = resolved_creds.get("base_url")
-        if resolved_creds.get("provider") != "xai-oauth":
-            url = xai_config.get("base_url") or get_env_value("XAI_STT_BASE_URL") or url
-        return str(url or XAI_STT_BASE_URL).strip().rstrip("/")
+    base_url = str(
+        xai_config.get("base_url") or get_env_value("XAI_STT_BASE_URL")
+        or creds.get("base_url") or XAI_STT_BASE_URL
+    ).strip().rstrip("/")
 
     # Language: hook override > stt.xai.language > stt.language > env.
     language = language or _resolve_stt_language("xai", stt_config) or ""
@@ -298,17 +290,7 @@ def _transcribe_xai(
             headers = {"Authorization": f"Bearer {bearer}", "User-Agent": noesia_xai_user_agent()}
             return _post_audio_multipart(f"{endpoint_base_url}/stt", headers, file_path, data)
 
-        response = _post_transcription(api_key, _resolve_base_url(creds))
-        if response.status_code in {401, 403} and creds.get("provider") == "xai-oauth":
-            logger.info("xAI STT got HTTP %d; refreshing OAuth credentials and retrying once", response.status_code)
-            try:
-                refreshed_creds = resolve_xai_http_credentials(force_refresh=True, api_key_hint=api_key)
-                refreshed_key = str(refreshed_creds.get("api_key") or "").strip()
-                if refreshed_key and refreshed_key != api_key:
-                    response = _post_transcription(refreshed_key, _resolve_base_url(refreshed_creds))
-            except Exception as retry_exc:
-                logger.warning("xAI STT OAuth refresh-and-retry after HTTP %d failed: %s",
-                               response.status_code, retry_exc)
+        response = _post_transcription(api_key, base_url)
         return response
 
     def _log(transcript_text: str, result: dict[str, Any]) -> None:

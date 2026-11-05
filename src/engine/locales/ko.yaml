@@ -187,8 +187,7 @@ gateway:
     choice_normal: "normal — 표준 처리"
     choice_auto: "auto — 매 턴의 처음 몇 초 동안 빠름"
     choice_cold: "cold — 세션의 첫 턴에만 빠름"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast, 가격 6배"
-    ultrafast_not_supported: "⚡ 이 계정 또는 경로에서는 `{model}`에 Ultrafast를 사용할 수 없습니다."
+
   footer:
     status: "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
     usage: "사용법: `/footer [on|off|status]`"
@@ -1606,7 +1605,7 @@ slash:
   reasoning:
     description: "추론 강도와 표시 관리"
   fast:
-    description: "빠른 모드 — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
+    description: "빠른 모드 — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
   skin:
     description: "화면 스킨/테마 표시 또는 변경"
   indicator:
@@ -2680,9 +2679,7 @@ cli:
       feature_generic: "빠른 모드"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) 이 계정 또는 경로에서는 {model}에 Ultrafast를 사용할 수 없습니다."
-      usage: "사용법: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "사용법: /fast [normal|fast|auto|cold|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}을(를) {value}(으)로 설정했어요 {scope}"
     hatch:

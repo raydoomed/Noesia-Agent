@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """X Search tool backed by xAI's built-in ``x_search`` Responses API tool.
 
-Registers when either xAI credential path is available (``XAI_API_KEY`` or ``noesia auth add
-xai-oauth``). At call time an explicit ``XAI_API_KEY`` wins (``prefer_api_key=True``): x_search
-is API-metered and the subscription OAuth bearer answers ``/v1/responses`` without citations.
-Date filters are validated client-side so malformed windows fail fast instead of burning a
-billable call. Results carry ``degraded``: True when a narrowing filter was active AND xAI
-returned no citations in either channel (answer came from model knowledge, not the X index).
+Registers when ``XAI_API_KEY`` is available. Date filters are validated client-side so malformed
+windows fail fast instead of burning a billable call. Results carry ``degraded``: True when a
+narrowing filter was active AND xAI returned no citations in either channel (answer came from model
+knowledge, not the X index).
 """
 
 from __future__ import annotations
@@ -55,25 +53,15 @@ def _get_x_search_int(key: str, default: int, floor: int) -> int:
         return default
 
 
-def _resolve_xai_bearer() -> tuple[str, str, str]:
-    """Return ``(api_key, base_url, source)``; ``source`` is ``"xai-oauth"`` or ``"xai"``. Raises RuntimeError
-    when no credential is usable (expiry between registration and call -> clean tool error, not a 401).
-
-    x_search is API-index access: when a subscription OAuth credential is configured alongside a paid
-    ``XAI_API_KEY``, the OAuth path authorizes but answers ``/v1/responses`` in a degraded Grok explanatory
-    mode with no citations, while the API key returns real posts (#88040). Pass ``prefer_api_key=True`` so
-    the shared resolver checks the explicit API key first — same root cause as the TTS fix for #87045
-    (#87081) — keeping OAuth as the fallback when no API key is configured.
-    """
-    creds = resolve_xai_http_credentials(prefer_api_key=True)
+def _resolve_xai_bearer() -> tuple[str, str]:
+    """Return ``(api_key, base_url)`` for ``XAI_API_KEY``; raise RuntimeError when unset so the tool
+    surfaces a clean error instead of a 401."""
+    creds = resolve_xai_http_credentials()
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
-        raise RuntimeError(
-            "No xAI credentials available. Run `noesia auth add xai-oauth` "
-            "to sign in with your SuperGrok subscription, or set XAI_API_KEY."
-        )
+        raise RuntimeError("No xAI credentials available. Set XAI_API_KEY.")
     base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
-    return api_key, base_url, str(creds.get("provider") or "xai")
+    return api_key, base_url
 
 
 def check_x_search_requirements() -> bool:
@@ -223,7 +211,7 @@ def x_search_tool(
     if not query or not query.strip():
         return tool_error("query is required for x_search")
     try:
-        api_key, base_url, source = _resolve_xai_bearer()
+        api_key, base_url = _resolve_xai_bearer()
     except RuntimeError as exc:
         return tool_error(str(exc))
     try:
@@ -255,7 +243,7 @@ def x_search_tool(
         # filters; with both citation channels empty the answer came from training data.
         degraded = bool(active_filters) and not citations and not inline_citations
         result = {
-            "success": True, "provider": "xai", "credential_source": source, "tool": "x_search",
+            "success": True, "provider": "xai", "tool": "x_search",
             "model": payload["model"], "query": query.strip(), "answer": _extract_response_text(data),
             "citations": citations, "inline_citations": inline_citations, "degraded": degraded,
             "degraded_reason": (
@@ -284,7 +272,7 @@ X_SEARCH_SCHEMA = {
         "pages. Do not use it to post, reply, like, DM, upload media, delete, "
         "or inspect the user's authenticated X account — those require a "
         "separate authenticated X API surface outside this tool. Available "
-        "when xAI credentials are configured (SuperGrok OAuth or XAI_API_KEY)."
+        "when xAI credentials are configured (XAI_API_KEY)."
     ),
     "parameters": {
         "type": "object",

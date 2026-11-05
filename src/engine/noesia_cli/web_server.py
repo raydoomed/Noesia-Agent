@@ -784,7 +784,6 @@ from noesia_cli.web_routers import (
     config_env as _config_env_routes,
     models as _models_routes,
     messaging as _messaging_routes,
-    oauth as _oauth_routes,
     cron as _cron_routes,
     mcp as _mcp_routes,
     ops as _ops_routes,
@@ -813,7 +812,6 @@ app.include_router(_config_env_routes.config_router)
 app.include_router(_models_routes.router)
 app.include_router(_config_env_routes.router)
 app.include_router(_messaging_routes.router)
-app.include_router(_oauth_routes.router)
 app.include_router(_sessions_routes.manage_router)
 app.include_router(_status_routes.logs_router)
 app.include_router(_cron_routes.router)

@@ -6,8 +6,8 @@ silently went missing from the GUI. ``auth_type`` / ``api_key_env_vars`` / ``bas
 come from :data:`noesia_cli.auth.PROVIDER_REGISTRY` (credential truth); ``display_name`` /
 ``description`` / ``signup_url`` from the provider's :class:`providers.base.ProviderProfile`, falling
 back to the ``CANONICAL_PROVIDERS`` entry's ``label`` / ``tui_desc`` and the ``OPTIONAL_ENV_VARS``
-signup URL (many profiles leave these blank, and openai-api, tencent-tokenplan, xai-oauth have no
-profile at all — the fallbacks are load-bearing).
+signup URL (many profiles leave these blank, and openai-api, tencent-tokenplan have no profile at
+all — the fallbacks are load-bearing).
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from dataclasses import dataclass
 # route to the desktop "Accounts" tab, everything else (api_key, and aws_sdk configured via
 # AWS_REGION/AWS_PROFILE) to "API keys". Mirrors the auth_type strings in PROVIDER_REGISTRY and
 # ProviderProfile: external_process = copilot-acp (spawns `copilot --acp --stdio`), copilot = GitHub
-# Copilot token / gh auth.
+# Copilot token / gh auth. oauth_* 只剩第三方插件 provider 会用。
 _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
-    {"oauth_device_code", "oauth_external", "oauth_minimax", "external_process", "copilot"}
+    {"oauth_device_code", "oauth_external", "external_process", "copilot"}
 )
 
 
@@ -28,7 +28,7 @@ _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
 class ProviderDescriptor:
     """One provider, as seen by every surface (CLI picker + both GUI tabs)."""
 
-    slug: str                      # canonical id, e.g. "openai-codex"
+    slug: str                      # canonical id, e.g. "anthropic"
     label: str                     # human display name
     description: str               # one-line description
     auth_type: str                 # api_key | oauth_* | external_process | copilot | aws_sdk

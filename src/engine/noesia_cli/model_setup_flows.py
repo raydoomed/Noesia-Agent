@@ -9,16 +9,15 @@ own ``model_setup_flows_*`` modules.
 from __future__ import annotations
 
 import contextlib
-import argparse
 import os
 
 from noesia_cli.config import clear_model_endpoint_credentials
 from noesia_cli.model_setup_flows_common import (
     _HTTP, _activate_provider_model, _ask, _commit_model_config, _curses_choice,
     _ensure_dict_section, _ensure_flow_api_key, _finish_model,
-    _load_config_model_section, _models_dev_merged, _oauth_gate, _persist_model, _pick_model_or_prompt,
+    _load_config_model_section, _models_dev_merged, _persist_model, _pick_model_or_prompt,
     _print_numbered, _prompt_auth_credentials_choice,
-    _note_setup_failure, _run_login, _say)
+    _note_setup_failure, _say)
 from noesia_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
 from noesia_cli.model_setup_flows_azure import _model_flow_azure_foundry
 from noesia_cli.model_setup_flows_bedrock import _model_flow_bedrock
@@ -163,118 +162,6 @@ def _model_flow_moa(config, current_model=""):
     print(
         f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}  (acting model — runs every step and carries almost all of the cost)"
     )
-
-
-def _model_flow_openai_codex(config, current_model=""):
-    """OpenAI Codex provider: ensure logged in, then pick model."""
-    from noesia_cli.auth import (
-        get_codex_auth_status, _prompt_model_selection, _login_openai_codex, PROVIDER_REGISTRY, DEFAULT_CODEX_BASE_URL,
-    )
-    from noesia_cli.codex_models import get_codex_model_ids
-    if not _oauth_gate(
-        bool(get_codex_auth_status().get("logged_in")), "OpenAI Codex", _login_openai_codex, argparse.Namespace(),
-        PROVIDER_REGISTRY["openai-codex"], recheck=lambda: get_codex_auth_status().get("logged_in")):
-        return
-
-    # Prefer the credential pool (where `noesia auth` stores device_code tokens),
-    # fall back to legacy provider state.
-    # Token and route base travel together (#121486): a pooled gateway key must never be sent to
-    # the chatgpt.com default by the catalog probe.
-    _codex_token = _codex_base = None
-    with contextlib.suppress(Exception):
-        _codex_status = get_codex_auth_status()
-        if _codex_status.get("logged_in"):
-            _codex_token, _codex_base = _codex_status.get("api_key"), _codex_status.get("base_url")
-    if not _codex_token:
-        with contextlib.suppress(Exception):
-            from noesia_cli.auth import resolve_codex_runtime_credentials
-            _creds = resolve_codex_runtime_credentials()
-            _codex_token, _codex_base = _creds.get("api_key"), _creds.get("base_url")
-
-    codex_models = get_codex_model_ids(access_token=_codex_token, base_url=_codex_base)
-    selected = _prompt_model_selection(
-        codex_models, current_model=current_model, confirm_provider="openai-codex",
-        confirm_base_url=_codex_base or DEFAULT_CODEX_BASE_URL, confirm_api_key=_codex_token or "")
-    _activate_provider_model(selected, "openai-codex", DEFAULT_CODEX_BASE_URL,
-                             f"Default model set to: {selected} (via OpenAI Codex)")
-
-
-def _model_flow_xai_oauth(_config, current_model="", *, args=None):
-    """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
-    from noesia_cli.auth import (
-        get_xai_oauth_auth_status, _prompt_model_selection, resolve_xai_oauth_runtime_credentials, _login_xai_oauth,
-        DEFAULT_XAI_OAUTH_BASE_URL, PROVIDER_REGISTRY)
-    from noesia_cli.models import provider_model_ids
-    login_args = argparse.Namespace(no_browser=bool(getattr(args, "no_browser", False)), timeout=getattr(args, "timeout", None))
-    if not _oauth_gate(
-        bool(get_xai_oauth_auth_status().get("logged_in")), "xAI Grok OAuth (SuperGrok / Premium+)", _login_xai_oauth,
-        login_args, PROVIDER_REGISTRY["xai-oauth"], fresh_name="xAI OAuth"):
-        return
-
-    # ``resolve_xai_oauth_runtime_credentials`` only reads the auth.json singleton, but
-    # credentials may live only in the pool (``noesia auth add xai-oauth``) — fall back to
-    # the default base URL so the picker still completes.
-    base_url = DEFAULT_XAI_OAUTH_BASE_URL
-    with contextlib.suppress(Exception):
-        creds = resolve_xai_oauth_runtime_credentials()
-        base_url = (creds.get("base_url") or "").strip().rstrip("/") or base_url
-
-    models = provider_model_ids("xai-oauth")
-    selected = _prompt_model_selection(models, current_model=current_model or (models[0] if models else "grok-4.6"))
-    _activate_provider_model(selected, "xai-oauth", base_url,
-                             f"Default model set to: {selected} (via xAI Grok OAuth — SuperGrok / Premium+)")
-
-
-def _model_flow_qwen_oauth(_config, current_model=""):
-    """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
-    from noesia_cli.auth import (
-        get_qwen_auth_status, resolve_qwen_runtime_credentials, _prompt_model_selection, DEFAULT_QWEN_BASE_URL)
-    from noesia_cli.models import fetch_api_models
-    status = get_qwen_auth_status()
-    if not status.get("logged_in"):
-        _say("Not logged into Qwen CLI OAuth.", "Run: qwen auth qwen-oauth",
-             *([f"Expected credentials file: {status.get('auth_file')}"] if status.get("auth_file") else []),
-             *([f"Error: {status.get('error')}"] if status.get("error") else []))
-        return
-
-    # 只问线上：取不到就让用户手填，没有随包名单可退。
-    models = None
-    with contextlib.suppress(Exception):
-        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
-        models = fetch_api_models(creds["api_key"], creds["base_url"])
-    models = models or []
-
-    default = current_model or (models[0] if models else "")
-    selected = _prompt_model_selection(models, current_model=default, confirm_provider="qwen-oauth", confirm_base_url=DEFAULT_QWEN_BASE_URL)
-    _activate_provider_model(selected, "qwen-oauth", DEFAULT_QWEN_BASE_URL, f"Default model set to: {selected} (via Qwen OAuth)")
-
-
-def _model_flow_minimax_oauth(config, current_model="", args=None):
-    """MiniMax OAuth provider: ensure logged in, then pick model."""
-    from noesia_cli.auth import (
-        get_provider_auth_state, _prompt_model_selection, resolve_minimax_oauth_runtime_credentials, AuthError,
-        format_auth_error, _login_minimax_oauth, PROVIDER_REGISTRY)
-
-    state = get_provider_auth_state("minimax-oauth")
-    if not state or not state.get("access_token"):
-        _say("Not logged into MiniMax. Starting OAuth login...", "")
-        mock_args = argparse.Namespace(
-            region=getattr(args, "region", None) or "global", no_browser=bool(getattr(args, "no_browser", False)),
-            timeout=getattr(args, "timeout", None) or 15.0)
-        if not _run_login(_login_minimax_oauth, mock_args, PROVIDER_REGISTRY["minimax-oauth"]):
-            return
-
-    try:
-        creds = resolve_minimax_oauth_runtime_credentials()
-    except AuthError as exc:
-        print(format_auth_error(exc))
-        _note_setup_failure("auth")
-        return
-
-    from noesia_cli.models import provider_model_ids
-    model_ids = provider_model_ids("minimax-oauth")  # 只问线上要，没有随包名单
-    selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
-    _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
 
 
 def _copilot_model_list(live_ids) -> list:
@@ -775,66 +662,41 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
 
 def _anthropic_authenticate() -> bool:
-    """Interactive Anthropic auth (OAuth subscription or API key). False = flow must stop."""
-    from noesia_cli.main_provider_setup import _run_anthropic_oauth_flow
+    """Interactive Anthropic auth (API key). False = flow must stop."""
     from noesia_cli.config import save_env_value, save_anthropic_api_key
-    _say("", "  Choose authentication method:", "", "    1. Claude Pro/Max subscription (OAuth login)",
-         "    2. Anthropic API key (pay-per-token)", "    3. Cancel", "")
-    choice = _ask("  Choice [1/2/3]: ", raw=True, cancel_msg="")
-    if choice is None:
+    _say("", "  Anthropic authenticates with an API key (pay-per-token).", "",
+         "  Get an API key at: https://platform.claude.com/settings/keys", "")
+    api_key = _ask("  API key (sk-ant-...): ", secret=True, cancel_msg="")
+    if api_key is None:
         return False
-    if choice == "1":
-        return _run_anthropic_oauth_flow(save_env_value)
-    if choice == "2":
-        _say("", "  Get an API key at: https://platform.claude.com/settings/keys", "")
-        api_key = _ask("  API key (sk-ant-...): ", secret=True, cancel_msg="")
-        if api_key is None:
-            return False
-        if not api_key:
-            print("  Cancelled.")
-            return False
-        save_anthropic_api_key(api_key, save_fn=save_env_value)
-        print("  ✓ API key saved.")
-        return True
-    print("  No change.")
-    return False
+    if not api_key:
+        print("  Cancelled.")
+        return False
+    save_anthropic_api_key(api_key, save_fn=save_env_value)
+    print("  ✓ API key saved.")
+    return True
 
 
 def _model_flow_anthropic(config, current_model=""):
-    """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
+    """Flow for Anthropic provider — API key."""
     from noesia_cli.auth import get_anthropic_key
     from noesia_cli.models import provider_model_ids
 
-    # Check ALL credential sources
     existing_key = get_anthropic_key()
-    cc_available = False
-    with contextlib.suppress(Exception):
-        from agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid, _is_oauth_token
-        cc_creds = read_claude_code_credentials()
-        if cc_creds and is_claude_code_token_valid(cc_creds):
-            cc_available = True
+    needs_auth = not existing_key
 
-    # Stale-OAuth guard: an expired OAuth token with no valid cc_creds fallback is treated
-    # as missing so the re-auth path is offered.
-    existing_is_stale_oauth = bool(existing_key and _is_oauth_token(existing_key) and not cc_available)
-    has_creds = (bool(existing_key) and not existing_is_stale_oauth) or cc_available
-    needs_auth = not has_creds
+    if existing_key:
+        from noesia_cli.env_loader import format_secret_source_suffix
+        from noesia_cli.auth import PROVIDER_REGISTRY
 
-    if has_creds:
-        if existing_key:
-            from noesia_cli.env_loader import format_secret_source_suffix
-            from noesia_cli.auth import PROVIDER_REGISTRY
-
-            # Surface which env var supplied the key so Bitwarden users see "(from Bitwarden)".
-            source_suffix = ""
-            for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
-                if os.getenv(var, "").strip() == existing_key:
-                    source_suffix = format_secret_source_suffix(var)
-                    if source_suffix:
-                        break
-            print(f"  Anthropic credentials: {existing_key[:12]}... ✓{source_suffix}")
-        elif cc_available:
-            print("  Claude Code credentials: ✓ (auto-detected)")
+        # Surface which env var supplied the key so Bitwarden users see "(from Bitwarden)".
+        source_suffix = ""
+        for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
+            if os.getenv(var, "").strip() == existing_key:
+                source_suffix = format_secret_source_suffix(var)
+                if source_suffix:
+                    break
+        print(f"  Anthropic credentials: {existing_key[:12]}... ✓{source_suffix}")
         print()
         choice = _prompt_auth_credentials_choice("Anthropic credentials:")
         if choice == "reauth":

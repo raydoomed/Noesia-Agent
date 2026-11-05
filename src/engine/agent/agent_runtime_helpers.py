@@ -39,8 +39,6 @@ from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 logger = logging.getLogger(__name__)
 
-# Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
-_MAX_AUTH_REFRESH_ATTEMPTS = 2
 _TOOL_CALL_TAG_NAMES = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
 # Optional XML namespace prefix: some models serialize native tool calls as <ns:function_calls>.
 _NS_PREFIX = r"(?:[\w.-]+:)?"
@@ -858,8 +856,8 @@ def strip_think_blocks(agent, content: str) -> str:
 
 
 def sync_credential_pool_entry_id(agent) -> None:
-    """Rebind ``agent._credential_pool_entry_id`` from the current pool + key. OAuth refreshes
-    can replace the token before recovery runs, so the key alone cannot attribute a failure;
+    """Rebind ``agent._credential_pool_entry_id`` from the current pool + key. A rotation can
+    replace the key before recovery runs, so the key alone cannot attribute a failure;
     the stable entry ID can. Cleared when no pool is bound."""
     pool = getattr(agent, "_credential_pool", None)
     try:
@@ -897,26 +895,15 @@ def _failed_credential_identity(agent, pool) -> tuple[Optional[str], Optional[st
 
 
 def _is_entitlement_403(agent, status_code, error_context) -> bool:
-    """Entitlement 403s look like auth failures but refresh cannot fix them. Any xai-oauth 403
-    is entitlement EXCEPT xAI's stale-token signals (``[WKE=unauthenticated:...]``,
-    "could not be validated"), which must stay refreshable."""
+    """Entitlement 403s look like auth failures but retrying cannot fix them."""
     if agent._is_entitlement_failure(error_context, status_code):
         return True
     if status_code != 403:
         return False
     haystack = " ".join(
-        # Subscription/entitlement 403s look like auth failures on the wire but refresh cannot fix them —
-        # the OAuth token is already valid, the account simply lacks the entitlement. Without this guard,
-        # the refresh path keeps minting fresh tokens against the same unsubscribed account and the main
-        # agent loop spins re-issuing the same 403 until the user Ctrl+C's. Defense-in-depth for #26847:
-        # xAI's backend has been seen to 403 standard SuperGrok subscribers with bodies that don't match the
-        # existing entitlement keyword set in ``_is_entitlement_failure``. Any 403 against ``xai-oauth`` is
-        # treated as entitlement here so the refresh loop can't spin in those cases either. Exception
-        # (#29344): xAI's ``[WKE=unauthenticated:...]`` suffix and the ``OAuth2 access token could not be
-        # validated`` phrasing are xAI's authoritative "this is a stale token, not entitlement" signal. When
-        # either fires we must NOT apply the catch-all override — refresh is the recoverable path for these
-        # bodies, and blanket-classifying them as entitlement was the bug that left long-running TUI
-        # sessions stuck on stale tokens until the user exited and reopened.
+        # Subscription/entitlement 403s look like auth failures on the wire but retrying cannot fix
+        # them — the account simply lacks the entitlement. Without this guard the agent loop spins
+        # re-issuing the same 403 until the user Ctrl+C's (#26847).
         str(error_context.get(k) or "").lower()
         for k in ("message", "reason", "code", "error")
         if isinstance(error_context, dict)
@@ -926,11 +913,6 @@ def _is_entitlement_403(agent, status_code, error_context) -> bool:
     provider = agent.provider or ""
     if provider == "anthropic" and getattr(agent, "api_mode", "") == "anthropic_messages":
         return True
-    if provider == "xai-oauth":
-        return not (
-            "[wke=unauthenticated:" in haystack
-            or "oauth2 access token could not be validated" in haystack
-        )
     return False
 
 
@@ -943,35 +925,8 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             agent.provider or "provider",
         )
         return False, has_retried_429
-    # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
-    # burns its single-use refresh token for a failure it never had.
-    refresh_kwargs = {"api_key_hint": api_key_hint}
-    if credential_id:
-        refresh_kwargs["credential_id"] = credential_id
-    refreshed = pool.try_refresh_matching(**refresh_kwargs)
-    if refreshed is None:
-        # Refresh failed; rotate (the failed entry is already marked exhausted).
-        return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
-    # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry
-    # refreshes so a single-entry pool falls through to fallback.
-    refreshed_id = getattr(refreshed, "id", None)
-    if refreshed_id is not None:
-        if getattr(agent, "_auth_pool_refresh_counts", None) is None:
-            agent._auth_pool_refresh_counts = {}
-        refresh_counts = agent._auth_pool_refresh_counts
-        refresh_key = (agent.provider, refreshed_id)
-        refresh_counts[refresh_key] = refresh_counts.get(refresh_key, 0) + 1
-        if refresh_counts[refresh_key] > _MAX_AUTH_REFRESH_ATTEMPTS:
-            _ra().logger.warning(
-                "Credential auth failure persists after %s refreshes for "
-                "pool entry %s — treating as unrecoverable and allowing "
-                "fallback to activate.", refresh_counts[refresh_key] - 1, refreshed_id,
-            )
-            return False, has_retried_429
-    _ra().logger.info("Credential auth failure — refreshed pool entry %s", getattr(refreshed, 'id', '?'))
-    if agent._swap_credential(refreshed) is False:
-        return False, has_retried_429
-    return True, has_retried_429
+    # api_key 池没有可刷新的短期凭据：直接换下一条。
+    return (True, False) if rotate_and_swap(401, "auth failure") else (False, has_retried_429)
 
 
 def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
@@ -1123,8 +1078,8 @@ def recover_with_credential_pool(
         )
     if effective_reason == FailoverReason.model_entitlement:
         # The pool benches (credential, model) only and hands back the next entry that is not
-        # benched for this model; None once every entry rejected it, so the caller falls
-        # through to the single-credential handling in _mark_entitlement_rejected_model (#71970).
+        # benched for this model; None once every entry rejected it, so the caller retries with
+        # the single credential it already has (#71970).
         return _rotate_and_swap(400, "model entitlement"), has_retried_429
     if effective_reason == FailoverReason.auth:
         return _recover_auth_failure(
@@ -1161,7 +1116,6 @@ def _build_anthropic_client_from_runtime(agent, rt: dict[str, Any]) -> None:
         rt["anthropic_api_key"], rt["anthropic_base_url"],
         timeout=get_provider_request_timeout(agent.provider, agent.model),
     )
-    agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
     agent.client = None
 
 
@@ -1341,7 +1295,7 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
     if matches_primary(entry):
         # _swap_credential rebuilds the client and reapplies base-url-scoped headers.
         # ``_swap_credential`` rebuilds the OpenAI/Anthropic client, reapplies base-url-scoped headers, and
-        # carries the accumulated base_url / OAuth-detection fixes (#33163).
+        # carries the accumulated base_url / auth-mode fixes (#33163).
         agent._swap_credential(entry)
         logger.info(
             "Restore re-selected pool entry %s (%s)",
@@ -1383,42 +1337,6 @@ def _revert_credential_rotation(agent) -> None:
     agent._credential_pool_revert_id = None
 
 
-def _primary_quota_reopened_early(agent, primary_provider, primary_model, matches_primary, load_primary_pool) -> bool:
-    """True when a Codex quota window that the primary pool still has benched has reopened.
-
-    A Codex 429 benches the entry, and arms ``_rate_limited_until``, until a ``resets_at`` that can be
-    days out (weekly window). The window can reopen sooner (redeemed reset, top-up, plan change); the
-    pool's throttled usage probe notices, but only on ``select()``, which a session pinned to its
-    fallback never reaches. Fails closed: any doubt leaves both cooldowns in force.
-
-    At most one check per probe interval per agent: the probe caches its verdict and nothing clears
-    it on the next 429, so a "restored" answer the endpoint got wrong would otherwise restore,
-    fail, and fall back again on every turn of the cached window. Checks in between could only
-    replay that cached verdict, so they return before loading the pool.
-    """
-    if primary_provider != "openai-codex":
-        return False
-    from noesia_cli.auth_codex import CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS
-    now = time.monotonic()
-    if now - getattr(agent, "_codex_reopen_checked_at", float("-inf")) < CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS:
-        return False
-    agent._codex_reopen_checked_at = now
-    try:
-        pool = getattr(agent, "_credential_pool", None)
-        if pool is None or not matches_primary(pool):
-            pool = load_primary_pool()
-        if pool is None:
-            return False
-        model = primary_model or None
-        benched_until = pool.next_available_at(model=model)
-        if benched_until is None or benched_until <= time.time():
-            return False
-        return pool.lift_reopened_cooldowns(model=model)
-    except Exception:
-        logger.debug("Early quota-reopen check failed; keeping the cooldown", exc_info=True)
-        return False
-
-
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
@@ -1431,14 +1349,10 @@ def restore_primary_runtime(agent) -> bool:
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
-    from agent.fallback_cooldown import _is_entitlement_rejected
     from noesia_cli.chat_catalog import is_known_non_chat_model
-    if primary_model and (
-        _is_entitlement_rejected(agent, primary_provider, primary_model)
-        or is_known_non_chat_model(primary_model)
-    ):
-        # Unentitled (#106475) or already known non-chat: restoring would announce a recovery
-        # that was never verified and re-fail every turn. Stay on the fallback.
+    if primary_model and is_known_non_chat_model(primary_model):
+        # Already known non-chat: restoring would announce a recovery that was never verified
+        # and re-fail every turn. Stay on the fallback.
         return False
     primary_runtime_base_url = str((rt or {}).get("base_url") or "")
 
@@ -1450,8 +1364,6 @@ def restore_primary_runtime(agent) -> bool:
         from agent.custom_entry_pool import load_runtime_pool
         loaded = load_runtime_pool(primary_provider, primary_runtime_base_url, (rt or {}).get("requested_provider"), rt or {})
         return loaded if loaded is not None and _matches_primary(loaded) else None
-    if _primary_quota_reopened_early(agent, primary_provider, primary_model, _matches_primary, _load_primary_pool):
-        agent._rate_limited_until = 0
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
     blocked, prefetched_pool, prefetched = _primary_reset_gate_blocks(
@@ -2101,13 +2013,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # keeps SDK retries because it is NOT wrapped by the conversation loop.
     client_kwargs.setdefault("max_retries", 0)
     _ensure_copilot_headers(client_kwargs)
-    # All primary construction and recovery paths must identify Noesia to the official Codex
-    # endpoint, including snapshots with custom header overrides.
-    from agent.codex_headers import apply_required_codex_headers
-    apply_required_codex_headers(
-        client_kwargs, access_token=client_kwargs.get("api_key", ""),
-        base_url=str(client_kwargs.get("base_url", "")),
-    )
     # ``process_bootstrap.OpenAI`` is a lazy SDK proxy; resolved at call time so tests can patch it.
     from agent import process_bootstrap
     client = process_bootstrap.OpenAI(**client_kwargs)
@@ -2146,7 +2051,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 # Pool reload is part of the switch and must be reversible on rollback, hence the pool fields.
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
-    "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
+    "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url",
     "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
     "_codex_reasoning_replay_enabled", "_codex_reasoning_replay_rejected",
@@ -2198,7 +2103,6 @@ def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mo
         if isinstance(capabilities, dict)
         else resolve_native_compaction_capabilities(
             model=new_model, base_url=effective_base_url, provider=new_provider,
-            is_codex_backend=new_norm == "openai-codex",
         )
     )
     # Guard against a trailing /v1 on OpenCode base_url reaching the anthropic_messages client
@@ -2230,31 +2134,19 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         return
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        from agent.anthropic_credentials import resolve_anthropic_token
         # Only fall back to ANTHROPIC_TOKEN for native Anthropic; other anthropic_messages providers
         # must never receive Anthropic credentials.
         is_native_anthropic = new_provider == "anthropic"
         effective_key = api_key or agent.api_key or (
             resolve_anthropic_token(model=getattr(agent, "model", None)) if is_native_anthropic else ""
         ) or ""
-        # MiniMax OAuth: per-request callable token provider survives 15-min expiry (rationale in
-        # agent_init.py).
-        if new_provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-            try:
-                from noesia_cli.auth import build_minimax_oauth_token_provider
-                effective_key = build_minimax_oauth_token_provider()
-            except Exception as _mm_exc:
-                logger.warning(
-                    "MiniMax OAuth: failed to install per-request token provider "
-                    "on switch (%s); using static bearer.", _mm_exc,
-                )
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
             timeout=get_provider_request_timeout(agent.provider, agent.model),
         )
-        agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider)
         agent.client = None
         agent._client_kwargs = {}
         return

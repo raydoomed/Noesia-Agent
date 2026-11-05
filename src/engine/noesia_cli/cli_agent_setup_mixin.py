@@ -352,7 +352,7 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
 
-        # Normalize model for the resolved provider (e.g. swap non-Codex models on openai-codex).
+        # Normalize model for the resolved provider (vendor prefix, per-provider id shape).
         # Fixes #651.
         model_changed = self._normalize_model_for_provider(resolved_provider)
 
@@ -535,7 +535,7 @@ class CLIAgentSetupMixin:
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Effective model/runtime config for one turn — always the session's primary
-        provider. With a static `/fast` tier (fast / ultrafast) attach request_overrides;
+        provider. With a static `/fast` tier (fast) attach request_overrides;
         auto/cold tiers are applied per request by agent.fast_mode instead."""
         from agent.fast_mode import STATIC_TIERS
         from noesia_cli.models import resolve_fast_mode_overrides

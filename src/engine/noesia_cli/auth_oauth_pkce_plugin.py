@@ -219,8 +219,8 @@ def _is_usable(access_token: Any, expires_at_ms: Any, now_ms: int) -> bool:
 
 
 def pkce_auth_handler(cfg: OAuthPKCEConfig) -> Callable[[str, Any], bool]:
-    """``ProviderProfile.auth_handler`` owning add/status/logout; ``refresh`` is declined so the
-    credential pool's generic refresh (which calls :func:`pkce_refresh_credential`) handles it."""
+    """``ProviderProfile.auth_handler`` owning add/status/logout; ``refresh`` is declined so
+    ``noesia auth refresh`` drives :func:`pkce_refresh_credential` through the profile hook."""
 
     def handler(action: str, args: Any) -> bool:
         from agent.credential_pool import AUTH_TYPE_OAUTH, PooledCredential, load_pool

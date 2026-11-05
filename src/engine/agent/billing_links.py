@@ -43,7 +43,7 @@ _PROVIDERS: tuple[_Provider, ...] = (
     _Provider("OpenAI", "https://platform.openai.com/settings/organization/billing", ("openai",), ("api.openai.com",)),
     _Provider("Anthropic", "https://console.anthropic.com/settings/billing", ("anthropic",), ("api.anthropic.com",)),
     _Provider("OpenRouter", "https://openrouter.ai/settings/credits", ("openrouter",), ("openrouter.ai",)),
-    _Provider("xAI", "https://console.x.ai/team/default/billing", ("xai", "xai-oauth"), ("api.x.ai",)),
+    _Provider("xAI", "https://console.x.ai/team/default/billing", ("xai",), ("api.x.ai",)),
     _Provider("DeepSeek", "https://platform.deepseek.com/top_up", ("deepseek",), ("api.deepseek.com",)),
     _Provider("Groq", "https://console.groq.com/settings/billing", ("groq",), ("api.groq.com",)),
     _Provider("Mistral", "https://console.mistral.ai/billing", ("mistral",), ("api.mistral.ai",)),

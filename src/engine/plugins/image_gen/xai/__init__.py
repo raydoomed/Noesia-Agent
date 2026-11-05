@@ -225,9 +225,9 @@ class XAIImageGenProvider(StaticImageGenProvider):
         return next(iter(_catalog()), None)
 
     def get_setup_schema(self) -> dict[str, Any]:
-        # Auth goes through the shared ``xai_grok`` post_setup hook (same OAuth-or-key choice everywhere).
+        # Auth goes through the shared ``xai_grok`` post_setup hook (XAI_API_KEY everywhere).
         storage_notice = xai_storage_notice_text("image_gen")
-        tag = "grok-imagine-image - text-to-image & image editing; uses xAI Grok OAuth or XAI_API_KEY"
+        tag = "grok-imagine-image - text-to-image & image editing; uses XAI_API_KEY"
         if storage_notice:
             tag += f". {storage_notice}"
         return {
@@ -251,17 +251,15 @@ class XAIImageGenProvider(StaticImageGenProvider):
         SDK's multipart ``images.edit()``) when source images are supplied."""
         creds = resolve_xai_http_credentials()
         api_key = str(creds.get("api_key") or "").strip()
-        provider_name = str(creds.get("provider") or "xai").strip() or "xai"
         if not api_key:
-            return error_factory(provider_name, aspect_ratio)(
-                "No xAI credentials found. Configure xAI OAuth in `noesia model` or set XAI_API_KEY.",
-                "missing_api_key")
+            return error_factory("xai", aspect_ratio)(
+                "No xAI credentials found. Set XAI_API_KEY.", "missing_api_key")
 
         model_id, _meta = _resolve_model(kwargs.get("model"))
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_res = _resolve_resolution()
         source_images = collect_source_images(image_url, reference_image_urls)
-        edit_fail = error_factory(provider_name, aspect, model=_EDIT_FALLBACK_MODEL, prompt=prompt)
+        edit_fail = error_factory("xai", aspect, model=_EDIT_FALLBACK_MODEL, prompt=prompt)
         err = _check_source_images(source_images, image_url, edit_fail)
         if err:
             return err
@@ -298,7 +296,7 @@ class XAIImageGenProvider(StaticImageGenProvider):
         if storage_options is not None:
             payload["storage_options"] = storage_options
 
-        fail = error_factory(provider_name, aspect, model=model_id, prompt=prompt)
+        fail = error_factory("xai", aspect, model=model_id, prompt=prompt)
         result, failure = post_json(
             endpoint_url, headers=headers, payload=payload, timeout=_REQUEST_TIMEOUT, label="xAI")
         if failure:

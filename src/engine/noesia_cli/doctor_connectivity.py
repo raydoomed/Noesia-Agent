@@ -42,19 +42,6 @@ def _skip(name: str) -> ProbeResult:
     return ProbeResult(name, [], [])
 
 
-def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool:
-    """True when a failed direct API-key probe is non-blocking because the same provider family's OAuth
-    runtime path is already healthy: the failed row is still shown, but not promoted into the summary."""
-    getter = {"minimax": "get_minimax_oauth_auth_status", "xai": "get_xai_oauth_auth_status"}.get((provider_label or "").strip().lower())
-    if not getter:
-        return False
-    try:
-        from noesia_cli import auth
-        return bool((getattr(auth, getter)() or {}).get("logged_in"))
-    except Exception:
-        return False
-
-
 def _build_apikey_providers_list() -> list:
     """Build the API-key provider health-check list once and cache it.
 
@@ -157,18 +144,8 @@ def _probe_anthropic() -> ProbeResult:
         return _skip(name)
     try:
         import httpx
-        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
-        from agent.anthropic_credentials import _is_oauth_token
-        is_oauth = _is_oauth_token(key)
-        headers = {"anthropic-version": "2023-06-01", **({"Authorization": f"Bearer {key}", "anthropic-beta": ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)}
-                                                         if is_oauth else {"x-api-key": key})}
-        url = "https://api.anthropic.com/v1/models"
-        r = httpx.get(url, headers=headers, timeout=10)
-        # OAuth subscriptions without 1M context reject with 400 "long context beta is not yet available";
-        # retry once with that beta stripped so doctor doesn't falsely report Anthropic as unreachable.
-        if is_oauth and r.status_code == 400 and "long context beta" in r.text.lower() and "not yet available" in r.text.lower():
-            headers["anthropic-beta"] = ",".join([b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS))
-            r = httpx.get(url, headers=headers, timeout=10)
+        headers = {"anthropic-version": "2023-06-01", "x-api-key": key}
+        r = httpx.get("https://api.anthropic.com/v1/models", headers=headers, timeout=10)
     except Exception as e:
         return _row(name, "warn", f"({e})")
     return _row(name, *{200: ("ok",), 401: ("fail", "(invalid API key)")}.get(r.status_code, ("warn", "(couldn't verify)")))

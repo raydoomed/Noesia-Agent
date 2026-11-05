@@ -53,21 +53,18 @@ def _default_threshold_tokens_cap():
 
 def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
     """Default compaction threshold when ``compression.threshold`` is unset. Mirrors agent_init: ctor
-    global default, then per-model resolution (Codex autoraise etc.) via the SAME
-    ``_resolve_compression_threshold`` — removing the key restores the model-derived value."""
+    global default, then per-model resolution via the SAME ``_compression_threshold_for_model`` —
+    removing the key restores the model-derived value."""
     try:
         pct = float(_compressor_ctor_default("threshold_percent", 0.50))
     except (TypeError, ValueError):
         pct = 0.50
     try:
-        from agent.agent_init import _resolve_compression_threshold
-        from agent.auxiliary_client import _compression_threshold_for_model, _is_codex_gpt54_or_gpt55, _is_codex_spark
+        from agent.auxiliary_client import _compression_threshold_for_model
         model, provider = getattr(agent, "model", "") or "", getattr(agent, "provider", "") or ""
-        autoraise_enabled = str(compression.get("codex_gpt55_autoraise", True)).lower() in {"true", "1", "yes"}
-        pct, _notice = _resolve_compression_threshold(
-            pct, _compression_threshold_for_model(model, provider, allow_codex_gpt55_autoraise=autoraise_enabled),
-            model=model, is_codex_autoraise=_is_codex_gpt54_or_gpt55(model, provider) or _is_codex_spark(model, provider),
-        )
+        derived = _compression_threshold_for_model(model, provider)
+        if derived is not None:
+            pct = derived
     except Exception:
         pass
     return pct
@@ -91,7 +88,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     Every adopted key has UNSET semantics (#94724 review finding on the merged #95980): removing a key from
     config.yaml restores the normalized default — or the model-derived value — on the next turn, through the
     same derivation the construction path uses (ContextCompressor ctor defaults read off its real signature,
-    the Codex threshold autoraise via ``_resolve_compression_threshold``, context-length re-inference via
+    the per-model threshold via ``_compression_threshold_for_model``, context-length re-inference via
     the deferred ``get_model_context_length`` resolution).
     """
     cfg = cfg if isinstance(cfg, dict) else {}

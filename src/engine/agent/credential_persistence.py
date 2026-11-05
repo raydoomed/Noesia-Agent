@@ -10,16 +10,9 @@ import re
 from typing import Any, Dict, Mapping
 
 
-# Sources Noesia owns and may persist with secrets.  Any other non-empty,
-# non-manual source is borrowed/reference-only so new external providers fail
-# closed at the disk boundary.
-_PERSISTABLE_PROVIDER_SOURCES = frozenset({
-    ("anthropic", "noesia_pkce"),
-    ("minimax-oauth", "oauth"),
-    ("openai-codex", "device_code"),
-    ("xai-oauth", "device_code"),
-})
-
+# Sources Noesia owns and may persist with secrets: none.  Every non-empty,
+# non-manual source is borrowed/reference-only, so secrets never land in
+# auth.json and each row rehydrates from its env var or config on load.
 # Metadata keys that look secret-ish by suffix but are safe to persist.
 _SAFE_SECRETISH_METADATA_KEYS = frozenset({
     "secret_fingerprint", "secret_source", "token_type", "scope", "client_id",
@@ -52,13 +45,16 @@ def _normalize_key(key: Any) -> str:
     return raw.lower().replace("-", "_").replace(".", "_")
 
 
-def is_borrowed_credential_source(source: Any, provider_id: Any = None) -> bool:
-    """Return True when ``source`` points at a borrowed/reference-only secret."""
+def is_borrowed_credential_source(source: Any) -> bool:
+    """Return True when ``source`` points at a borrowed/reference-only secret.
+
+    Only ``manual`` rows (a key the user pasted into Noesia) carry a value that
+    Noesia stores; everything else rehydrates from a live env var or config.
+    """
     normalized_source = str(source or "").strip().lower()
     if not normalized_source or normalized_source == "manual" or normalized_source.startswith("manual:"):
         return False
-    normalized_provider = str(provider_id or "").strip().lower()
-    return (normalized_provider, normalized_source) not in _PERSISTABLE_PROVIDER_SOURCES
+    return True
 
 
 def _is_secret_payload_key(key: Any) -> bool:
@@ -95,18 +91,15 @@ def _credential_secret_fingerprint(payload: Mapping[str, Any]) -> str | None:
     return None
 
 
-def sanitize_borrowed_credential_payload(
-    payload: Mapping[str, Any],
-    provider_id: Any = None,
-) -> dict[str, Any]:
+def sanitize_borrowed_credential_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Return a disk-safe credential-pool payload.
 
-    Owned sources pass through unchanged.  Borrowed sources keep labels,
+    Manual rows pass through unchanged.  Borrowed sources keep labels,
     source refs, status/cooldown metadata, counters and a fingerprint, but
     every raw secret value field is removed.
     """
     result = dict(payload)
-    if not is_borrowed_credential_source(result.get("source"), provider_id):
+    if not is_borrowed_credential_source(result.get("source")):
         return result
     fingerprint = _credential_secret_fingerprint(result)
     sanitized = {k: v for k, v in result.items() if not _is_secret_payload_key(k)}

@@ -315,7 +315,6 @@ def recover_before_classification(
 
 def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
     """Anthropic 401 that survived a credential refresh: show auth method + fixes."""
-    from agent.anthropic_credentials import _is_oauth_token
     from agent.azure_identity_adapter import is_token_provider
     from noesia_constants import display_noesia_home
     _plines(agent, "🔐 Anthropic 401 — authentication failed.")
@@ -329,20 +328,18 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
             "   `az login` if your developer session expired.",
         )
     else:
-        auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
         _plines(
             agent,
-            f"   Auth method: {auth_method}",
+            "   Auth method: x-api-key (API key)",
             f"   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else "   Token: (empty or short)",
         )
     _dhh = display_noesia_home()
     _plines(
         agent,
         "   Troubleshooting:",
-        f"     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Noesia-managed OAuth/setup tokens",
-        f"     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values",
-        "     • For API keys: verify at https://platform.claude.com/settings/keys",
-        "     • Noesia login (OAuth): run 'noesia auth add anthropic' to sign in again, then retry",
+        f"     • Check ANTHROPIC_API_KEY in {_dhh}/.env for the key Noesia sends",
+        f"     • Check ANTHROPIC_TOKEN in {_dhh}/.env if you paste a token instead of a key",
+        "     • Verify the key at https://platform.claude.com/settings/keys",
         "     • Inspect what Noesia holds: noesia auth list anthropic",
         "     • Legacy cleanup: noesia config set ANTHROPIC_TOKEN \"\"",
         "     • Clear stale keys: noesia config set ANTHROPIC_API_KEY \"\"",
@@ -359,16 +356,6 @@ def _refresh_credentials_after_401(
 
     if status_code != 401:
         return False
-    if (
-        agent.api_mode == "codex_responses"
-        and agent.provider in {"openai-codex", "xai-oauth"}
-        and not _retry.codex_auth_retry_attempted
-    ):
-        _retry.codex_auth_retry_attempted = True
-        if agent._try_refresh_codex_client_credentials(force=True):
-            _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-            agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
-            return True
     if agent.api_mode == "chat_completions" and agent.provider == "vertex" and not _retry.vertex_auth_retry_attempted:
         _retry.vertex_auth_retry_attempted = True
         if agent._try_refresh_vertex_client_credentials():
@@ -517,7 +504,7 @@ def recover_after_classification(
     generic retry path. Order is load-bearing (each branch may ``return`` early):
     credit-limited 402 output-cap clamp → ``reasoning.context`` opt-out →
     Codex stale-reasoning strip on 401 ``token_expired`` → credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
-    strip → Anthropic OAuth 1M-beta disable → per-provider 401 credential refresh →
+    strip → per-provider 401 credential refresh →
     format-recovery strips.
     Returns ``(retry_now, recovered_with_pool)``."""
     # The credit-limited 402 clamp runs before pool rotation, which would bench a credential
@@ -624,27 +611,6 @@ def recover_after_classification(
             return True, recovered_with_pool
         logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
 
-    # Anthropic OAuth subscription rejected the 1M-context beta: disable it for this
-    # session, rebuild the client, retry once. Reactive so capable subscriptions keep 1M.
-    if (
-        # See PR #17680 for the original report (we chose reactive recovery over the proposed unconditional
-        # omit so capable subscriptions don't silently lose the capability).
-        classified.reason == FailoverReason.oauth_long_context_beta_forbidden
-        and agent.api_mode == "anthropic_messages"
-        and agent._is_anthropic_oauth
-        and not _retry.oauth_1m_beta_retry_attempted
-    ):
-        _retry.oauth_1m_beta_retry_attempted = True
-        if not getattr(agent, "_oauth_1m_beta_disabled", False):
-            agent._oauth_1m_beta_disabled = True
-            try:
-                agent._anthropic_client.close()
-            except Exception:
-                pass
-            agent._rebuild_anthropic_client()
-            _vlines(agent, "🔕 OAuth subscription doesn't support the 1M-context beta — disabled for this session and retrying...")
-            return True, recovered_with_pool
-
     if _refresh_credentials_after_401(agent, api_error, _retry, status_code):
         return True, recovered_with_pool
 
@@ -732,29 +698,6 @@ def _print_nonretryable_auth_guidance(
         agent, capability="model access", provider=provider, base_url=str(base_url),
         model=model, unverified=classified.billing_unverified,
     ):
-        return
-    if provider in {"openai-codex", "xai-oauth"} and status_code == 401:
-        if provider == "openai-codex":
-            from agent.turn_failure_copy import oauth_relogin_command
-
-            _vlines(
-                agent,
-                "   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been",
-                "      refreshed by another client (Codex CLI, VS Code) or another Noesia profile.",
-                f"      Sign this profile in again: `{oauth_relogin_command(provider)}`",
-            )
-        else:  # xai-oauth
-            _vlines(
-                agent,
-                "   💡 xAI OAuth token was rejected (HTTP 401). To fix:",
-                "      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `noesia model`.",
-            )
-        return
-    from noesia_cli.auth_plugin_providers import plugin_refresh_hook
-    if status_code == 401 and plugin_refresh_hook(str(provider or "")) is not None:
-        # A plugin OAuth grant the pool could not refresh: the fix is a fresh sign-in, not a key.
-        from agent.turn_failure_copy import oauth_relogin_command
-        _vlines(agent, f"   💡 {provider} sign-in was rejected (HTTP 401). Sign in again: `{oauth_relogin_command(provider)}`")
         return
     _vlines(
         agent,
@@ -887,7 +830,7 @@ def nonretryable_client_error_result(
         prefix_suggestion=_prefix_suggestion,
     )
     # Same verdict fields as the max-retries path: without them the UI descriptor
-    # (agent/error_surface.py) reads a rejected OAuth token as a retryable
+    # (agent/error_surface.py) reads a rejected credential as a retryable
     # "Provider error" and offers Retry instead of a re-login.
     _final_response, _keep_partial = _with_delivered_partial(
         _final_response, _nonretryable_summary, delivered,

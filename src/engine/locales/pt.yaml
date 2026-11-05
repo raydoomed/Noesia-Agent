@@ -187,8 +187,7 @@ gateway:
     choice_normal: "normal — processamento padrão"
     choice_auto: "auto — rápido nos primeiros segundos de cada turno"
     choice_cold: "cold — rápido apenas no primeiro turno de uma sessão"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast, preço 6x"
-    ultrafast_not_supported: "⚡ O Ultrafast não está disponível para `{model}` nesta conta ou rota."
+
   footer:
     status: "📎 Rodapé de execução: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
     usage: "Uso: `/footer [on|off|status]`"
@@ -1606,7 +1605,7 @@ slash:
   reasoning:
     description: "Gerenciar o esforço e a exibição do raciocínio"
   fast:
-    description: "Modo rápido — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
+    description: "Modo rápido — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
   skin:
     description: "Mostrar ou alterar a skin/tema de exibição"
   indicator:
@@ -2680,9 +2679,7 @@ cli:
       feature_generic: "Modo rápido"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) O Ultrafast não está disponível para {model} nesta conta ou rota."
-      usage: "Uso: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "Uso: /fast [normal|fast|auto|cold|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} definido como {value} {scope}"
     hatch:

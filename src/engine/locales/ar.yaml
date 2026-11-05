@@ -187,8 +187,7 @@ gateway:
     choice_normal: "normal — المعالجة القياسية"
     choice_auto: "auto — سريع في الثواني الأولى من كل دور"
     choice_cold: "cold — سريع في الدور الأول من الجلسة فقط"
-    choice_ultrafast: "ultrafast — ‏OpenAI Ultrafast، السعر ×6"
-    ultrafast_not_supported: "⚡ ‏Ultrafast غير متاح لـ `{model}` على هذا الحساب أو المسار."
+
   footer:
     status: "📎 تذييل التشغيل: **{state}**\nالحقول: `{fields}`\nالمنصّة: `{platform}`"
     usage: "الاستخدام: `/footer [on|off|status]`"
@@ -1606,7 +1605,7 @@ slash:
   reasoning:
     description: "إدارة مستوى الاستدلال وطريقة عرضه"
   fast:
-    description: "الوضع السريع — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
+    description: "الوضع السريع — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
   skin:
     description: "عرض سمة العرض أو تغييرها"
   indicator:
@@ -2680,9 +2679,7 @@ cli:
       feature_generic: "الوضع السريع"
       feature_anthropic: "الوضع السريع من Anthropic"
       feature_openai: "المعالجة ذات الأولوية"
-      feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) ‏Ultrafast غير متاح لـ {model} على هذا الحساب أو المسار."
-      usage: "الاستخدام: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "الاستخدام: /fast [normal|fast|auto|cold|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ تم ضبط {feature} على {value} {scope}"
     hatch:

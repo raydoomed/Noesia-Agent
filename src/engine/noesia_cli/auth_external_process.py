@@ -1,8 +1,7 @@
 """Executable lookup for ``external_process`` (ACP) providers.
 
 A GUI/service launch (LaunchAgent, Desktop backend, Desktop over SSH) has a bare PATH, so the
-profile's command resolves through PATH, then the user-local bin, then Claude Code's install
-prefixes."""
+profile's command resolves through PATH, then the user-local bin."""
 
 from __future__ import annotations
 
@@ -23,10 +22,8 @@ def resolve_external_process_command(command: str) -> Optional[str]:
         # under shutil.which; anchor it so the resolver's absolute-only explicit check accepts it.
         lookup = os.path.abspath(os.path.expandvars(os.path.expanduser(command)))
     found = locate_command(lookup, known_dirs=user_local_bin()).command
-    if found:
-        # Known dirs are written with "/" (%USERPROFILE%/.local/bin); normalize so a Windows hit
-        # reads as one native path in status and in the spawned argv.
-        return os.path.normpath(found[0])
-    from agent.anthropic_adapter import find_claude_code_cli
-
-    return find_claude_code_cli(command)
+    if not found:
+        return None
+    # Known dirs are written with "/" (%USERPROFILE%/.local/bin); normalize so a Windows hit
+    # reads as one native path in status and in the spawned argv.
+    return os.path.normpath(found[0])

@@ -67,20 +67,13 @@ def has_account_usage(provider: str) -> bool:
 def _identity_id_for(provider: str, entry: Any) -> str:
     """Stable non-secret account id of one pool entry, for slot keys and wire ``accounts[].id``.
 
-    A trusted decoded identity (Codex JWT principal) wins: several credentials of one account
-    share a slot, so the account is counted once. Without one, the entry's token fingerprint
-    stands in — same token ⇒ same account, and a replaced token never reuses the old quota.
-    A metadata-only row (no token) falls back to the entry id: nothing better is knowable.
+    The entry's token fingerprint stands in: same token ⇒ same account, and a replaced token
+    never reuses the old quota. A metadata-only row (no token) falls back to the entry id:
+    nothing better is knowable.
     """
     token = str(getattr(entry, "runtime_api_key", "") or "").strip()
     if not token:
         return f"entry:{getattr(entry, 'id', '')}"
-    if provider == "openai-codex":
-        from agent.credential_pool import _codex_principal_identity
-
-        principal = _codex_principal_identity(token)
-        if principal:
-            return f"codex:{principal[0]}:{principal[1]}"
     import hashlib
 
     return f"fp:{hashlib.sha256(token.encode('utf-8')).hexdigest()[:16]}"

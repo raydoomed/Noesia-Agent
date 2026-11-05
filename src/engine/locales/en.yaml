@@ -177,8 +177,8 @@ gateway:
     denied_reason_plural: "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
   fast:
     not_supported: "⚡ /fast is only available for OpenAI models that support Priority Processing."
-    status: "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|ultrafast|status>`"
-    unknown_arg: "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, ultrafast, status"
+    status: "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|cold|status>`"
+    unknown_arg: "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, cold, status"
     saved: "⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
     session_only: "⚡ ✓ Priority Processing: **{label}** (this session only)"
     label_fast: "FAST"
@@ -190,8 +190,7 @@ gateway:
     choice_normal: "normal — standard processing"
     choice_auto: "auto — fast for the first seconds of every turn"
     choice_cold: "cold — fast for the first turn of a session only"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast, 6x price"
-    ultrafast_not_supported: "⚡ Ultrafast isn't available for `{model}` on this account or route."
+
   footer:
     status: "📎 Runtime footer: **{state}**\nFields: `{fields}`\nPlatform: `{platform}`"
     usage: "Usage: `/footer [on|off|status]`"
@@ -1677,7 +1676,7 @@ slash:
   reasoning:
     description: "Manage reasoning effort and display"
   fast:
-    description: "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
+    description: "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
   skin:
     description: "Show or change the display skin/theme"
   indicator:
@@ -2780,9 +2779,7 @@ cli:
       feature_generic: "Fast mode"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast isn't available for {model} on this account or route."
-      usage: "Usage: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "Usage: /fast [normal|fast|auto|cold|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} set to {value} {scope}"
     hatch:

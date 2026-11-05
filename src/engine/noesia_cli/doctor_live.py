@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from noesia_cli.browser_runtime import chromium_executable
-from noesia_cli.doctor import _section, check_info
-from noesia_cli.doctor_report import check_fail, check_ok, check_warn
+from noesia_cli.doctor import _section
+from noesia_cli.doctor_report import check_fail, check_info, check_ok, check_warn
 from utils import normalize_proxy_env_vars
 
 DEFAULT_PROBE_TIMEOUT = 10.0

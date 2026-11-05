@@ -607,13 +607,9 @@ class CLIInfoMixin:
         _cprint(_tool_progress_label(self.tool_progress_mode))
 
     def _handle_usage_command(self, cmd_original: str):
-        """Dispatch `/usage [reset [--force]]`: bare `/usage` is the classic display; `reset`
-        redeems one banked Codex rate-limit reset credit (refuses unless exhausted or --force)."""
+        """Dispatch `/usage`: the classic token/account usage display."""
         parts = cmd_original.split()
         args = [p.lower() for p in parts[1:]]
-        if args and args[0] == "reset":
-            self._usage_reset(force="--force" in args[1:])
-            return
         if args:
             print(f"  {t('cli.usage.unknown_subcommand', args=' '.join(parts[1:]))}")
             return
@@ -622,26 +618,6 @@ class CLIInfoMixin:
     def _agent_or_self(self, name: str):
         """Provider-ish attribute from the live agent, falling back to the CLI's own value."""
         return (getattr(self.agent, name, None) if self.agent else None) or getattr(self, name, None)
-
-    def _usage_reset(self, force: bool = False):
-        """`/usage reset [--force]` — redeem one banked Codex reset credit."""
-        if str(self._agent_or_self("provider") or "").strip().lower() != "openai-codex":
-            print(f"  {t('cli.usage.reset_wrong_provider')}")
-            print(f"  {t('cli.usage.reset_switch_hint')}")
-            return
-        from agent.account_usage import redeem_codex_reset_credit
-
-        print(f"  {t('cli.usage.checking_reset_credits')}")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as _pool:
-            try:
-                result = _pool.submit(
-                    redeem_codex_reset_credit, base_url=self._agent_or_self("base_url"),
-                    api_key=self._agent_or_self("api_key"), force=force,
-                ).result(timeout=45.0)
-            except concurrent.futures.TimeoutError:
-                print(f"  {t('cli.usage.codex_timeout')}")
-                return
-        print(f"  {result.message}")
 
     def _show_context_breakdown(self, cmd_original: str = ""):
         """`/context [all]` — 5×20 glyph grid (cell ≈ 1% of the window) plus an estimated
@@ -717,8 +693,8 @@ class CLIInfoMixin:
         from cli import datetime, format_duration_compact
 
         def _credits_or(fallback: str) -> None:
-            # Account limits (e.g. Codex subscription windows) need only the configured provider
-            # plus on-disk credentials, so they render without a live agent too (#42904).
+            # Account limits need only the configured provider plus on-disk credentials, so they
+            # render without a live agent too (#42904).
             shown = self._print_account_limits()
             if self._print_noesia_credits_block():
                 self._print_usage_cta()

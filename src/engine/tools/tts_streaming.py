@@ -427,9 +427,7 @@ class XAIStreamer(StreamingTTSProvider):
     def available() -> bool:
         try:
             from tools.xai_http import resolve_xai_http_credentials
-            # Same ordering as the sync path: the subscription OAuth bearer
-            # authorizes but 403s on metered TTS, so an explicit key wins (#87045).
-            return bool(str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip())
+            return bool(str(resolve_xai_http_credentials().get("api_key") or "").strip())
         except Exception:
             return False
 
@@ -495,7 +493,7 @@ class XAIStreamer(StreamingTTSProvider):
 
         from tools.tts_tool_providers import DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID
         from tools.xai_http import resolve_xai_http_credentials
-        api_key = str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip()
+        api_key = str(resolve_xai_http_credentials().get("api_key") or "").strip()
         if not api_key:
             raise RuntimeError("No xAI credentials for streaming TTS")
         voice = str(self.section.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID

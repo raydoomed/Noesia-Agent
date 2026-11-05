@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
-from urllib.parse import urlparse
 
 from noesia_cli.cli_output import line_input
 from noesia_cli.config import clear_model_endpoint_credentials
@@ -162,67 +161,6 @@ def _pick_model_or_prompt(model_list, prompt: str, **kwargs):
     if model_list:
         return _prompt_model_selection(model_list, **kwargs)
     return _ask(prompt, cancel_msg=None)
-
-
-def _login_retry_context(args) -> tuple[str, str]:
-    """(retry_command, service_host) for a login helper's failure copy, from the ``ProviderConfig``
-    among its positional args: OAuth providers are retried with ``noesia auth add <provider>`` and
-    named by their own portal host. Falls back to ``noesia model`` when no provider config is in play."""
-    pconfig = next((a for a in args if hasattr(a, "id") and hasattr(a, "portal_base_url")), None)
-    if pconfig is None:
-        return "noesia model", "the sign-in service"
-    provider_id = str(getattr(pconfig, "id", "") or "")
-    host = urlparse(str(getattr(pconfig, "portal_base_url", "") or "")).hostname or "the sign-in service"
-    return (f"noesia auth add {provider_id}" if provider_id else "noesia model"), host
-
-
-def _run_login(login_fn, *args, **kwargs) -> bool:
-    """Run an OAuth login helper; print plain failure copy (what happened + retry command) and
-    return False on SystemExit / any exception. The retry command and service host come from the
-    provider config passed to the helper, so a MiniMax failure never names another provider's host
-    or command. Helpers that print their own copy raise ``SystemExit(1)`` with no
-    message, which stays silent; a SystemExit that carries a message (or a non-cancel code from a
-    helper that printed nothing) gets a one-line explanation so the user is never left with no
-    output."""
-    from noesia_cli.auth_error_copy import sign_in_failure_lines
-    retry_command, service_host = _login_retry_context(args)
-    try:
-        login_fn(*args, **kwargs)
-    except SystemExit as exc:
-        if exc.code in (130, None, 0):
-            print("Sign-in was cancelled.")
-        elif isinstance(exc.code, str) and exc.code.strip():
-            print(f"Sign-in did not complete: {exc.code.strip()}")
-            print(f"Run `{retry_command}` to try again.")
-        else:
-            print(f"Sign-in did not complete; run `{retry_command}` to try again.")
-        return False
-    except Exception as exc:
-        for line in sign_in_failure_lines(exc, service_host=service_host, retry_command=retry_command):
-            print(line)
-        return False
-    return True
-
-
-def _oauth_gate(logged_in: bool, name: str, login_fn, *login_args, fresh_name: str = "", recheck=None) -> bool:
-    """Login-or-reuse step for OAuth providers. Not logged in → start a login. Logged in →
-    use / reauthenticate (``force_new_login``; *recheck()* must then report logged in) /
-    cancel. Returns False when the flow must stop."""
-    if not logged_in:
-        _say(f"Not logged into {name}. Starting login...", "")
-        return _run_login(login_fn, *login_args)
-    _say(f"  {name} credentials: ✓", "")
-    choice = _prompt_auth_credentials_choice(f"{name} credentials:")
-    if choice == "cancel":
-        return False
-    if choice == "reauth":
-        _say(f"Starting a fresh {fresh_name or name} login...", "")
-        if not _run_login(login_fn, *login_args, force_new_login=True):
-            return False
-        if recheck is not None and not recheck():
-            print("Login failed.")
-            return False
-    return True
 
 
 def _models_dev_merged(provider_id: str, curated) -> list:

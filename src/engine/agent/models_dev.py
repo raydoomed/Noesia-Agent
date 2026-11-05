@@ -109,20 +109,19 @@ class ModelCapabilities:
 # Noesia provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
-    "openai": "openai", "openai-api": "openai", "openai-codex": "openai", "zai": "zai",
+    "openai": "openai", "openai-api": "openai", "zai": "zai",
     # models.dev 把 Kimi 的编程套餐记成 kimi-code-plan-global / -cn；早先写的
     # "kimi-for-coding" 在它的目录里不存在，等于这几家一辈子拿不到实时目录。
     "kimi": "kimi-code-plan-global", "kimi-coding": "kimi-code-plan-global",
     "moonshot": "moonshotai", "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-code-plan-cn", "minimax": "minimax",
-    "minimax-oauth": "minimax", "minimax-cn": "minimax-cn", "deepseek": "deepseek",
-    "alibaba": "alibaba", "qwen-oauth": "alibaba", "copilot": "github-copilot",
+    "minimax-cn": "minimax-cn", "deepseek": "deepseek",
+    "alibaba": "alibaba", "copilot": "github-copilot",
     "ai-gateway": "vercel", "opencode-zen": "opencode",
     "opencode-go": "opencode-go",
     "kilocode": "kilo", "fireworks": "fireworks-ai",
     "huggingface": "huggingface", "gemini": "google", "google": "google",
     "xai": "xai",
-    "xai-oauth": "xai",  # OAuth is a transport path for the same xAI catalog
     "xiaomi": "xiaomi", "nvidia": "nvidia",
     # Meta Model API (Muse Spark, api.meta.ai): models.dev keys it "meta", the
     # Noesia provider is "meta-ai"; both aliases are needed or muse-spark-*

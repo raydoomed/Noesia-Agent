@@ -7,33 +7,24 @@ from noesia_cli.cli_output import line_input
 import math
 import sys
 import time
-from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Callable
 import uuid
 
 from agent.credential_pool import (
-    AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
-    SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
-    _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
+    AUTH_TYPE_API_KEY, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
+    STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential,
+    _CLEAR_STATUS, _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token,
+    list_custom_pool_providers,
     load_pool)
 from agent.credential_pool_admin import CredentialNotSavedError
 import noesia_cli.auth as auth_mod
 from noesia_cli.auth import PROVIDER_REGISTRY
 from noesia_cli.auth_plugin_providers import (
-    dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
+    dispatch_plugin_auth, plugin_missing_auth_handler_error, plugin_refresh_hook)
 from noesia_constants import OPENROUTER_BASE_URL
 from noesia_cli.secret_prompt import masked_secret_prompt
-
-
-# Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
-# ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
-# ``noesia auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
-_OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
-# Providers whose sibling CLI login Noesia may borrow (``auth.adopt_external_logins``).
-EXTERNAL_LOGIN_PROVIDERS = {"anthropic", "openai-codex"}
 
 
 def _get_custom_provider_entries() -> list[dict]:
@@ -80,9 +71,7 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     return None
 
 
-_PROVIDER_ALIASES = {
-    "or": "openrouter", "open-router": "openrouter", "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth"}
+_PROVIDER_ALIASES = {"or": "openrouter", "open-router": "openrouter"}
 
 
 def _normalize_provider(provider: str) -> str:
@@ -200,100 +189,22 @@ def _format_exhausted_status(entry) -> str:
     return f"{head} ({wait} left)"
 
 
-def _anthropic_oauth_login(args) -> dict:
-    from agent import anthropic_credentials as anthropic_mod
-    creds = anthropic_mod.run_noesia_oauth_login_pure()
-    if not creds:
-        raise SystemExit("Anthropic OAuth login did not return credentials.")
-    return creds
-
-
-def _qwen_oauth_login(args) -> dict:
-    from noesia_cli.auth_qwen import _mark_qwen_oauth_active
-
-    creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
-    _mark_qwen_oauth_active(creds)
-    return creds
-
-
-@dataclass(frozen=True)
-class _OAuthAddSpec:
-    """Per-provider parameters for the generic ``noesia auth add <provider> --type oauth`` path."""
-
-    login: Callable[[Any], dict]
-    token: Callable[[dict], str]
-    # Pool ``source`` string, or a callable deriving it from the login result when one provider
-    # offers several flows (Codex: device code vs browser PKCE).
-    source: str | Callable[[dict], str]
-    fields: Callable[[dict, str], dict]
-    activate_first: bool = False
-    # OpenRouter's PKCE exchange mints a plain API key (no refresh pair), so its pool entry is an
-    # ``api_key`` row that happens to come from a browser login.
-    auth_type: str = AUTH_TYPE_OAUTH
-
-
-def _codex_login(args) -> dict:
-    from noesia_cli.auth_codex_browser import codex_oauth_login
-    return codex_oauth_login(args)
-
-
-def _codex_pool_source(creds: dict) -> str:
-    if creds.get("source") == "loopback_pkce":
-        return f"{SOURCE_MANUAL}:loopback_pkce"
-    return SOURCE_MANUAL_DEVICE_CODE
-
-
-_OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
-    "anthropic": _OAuthAddSpec(
-        login=_anthropic_oauth_login,
-        token=lambda creds: creds["access_token"],
-        source=f"{SOURCE_MANUAL}:noesia_pkce",
-        fields=lambda creds, provider: {
-            "refresh_token": creds.get("refresh_token"),
-            "expires_at_ms": creds.get("expires_at_ms"),
-            "base_url": _provider_base_url(provider)}),
-    "openai-codex": _OAuthAddSpec(
-        login=_codex_login,
-        token=lambda creds: creds["tokens"]["access_token"],
-        source=_codex_pool_source,
-        fields=lambda creds, provider: {
-            "refresh_token": creds["tokens"].get("refresh_token"),
-            "base_url": creds.get("base_url"),
-            "last_refresh": creds.get("last_refresh")},
-        activate_first=True),
-    "xai-oauth": _OAuthAddSpec(
-        login=lambda args: auth_mod._xai_oauth_device_code_login(
-            timeout_seconds=getattr(args, "timeout", None) or 20.0,
-            open_browser=not getattr(args, "no_browser", False)),
-        token=lambda creds: creds["tokens"]["access_token"],
-        source=SOURCE_MANUAL_DEVICE_CODE,
-        fields=lambda creds, provider: {
-            "refresh_token": creds["tokens"].get("refresh_token"),
-            "base_url": creds.get("base_url") or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL,
-            "last_refresh": creds.get("last_refresh")},
-        activate_first=True),
-    "qwen-oauth": _OAuthAddSpec(
-        login=_qwen_oauth_login,
-        token=lambda creds: creds["api_key"],
-        source=f"{SOURCE_MANUAL}:qwen_cli",
-        fields=lambda creds, provider: {"base_url": creds.get("base_url")}),
-    "minimax-oauth": _OAuthAddSpec(
-        login=lambda args: auth_mod._minimax_oauth_login(
-            open_browser=not getattr(args, "no_browser", False),
-            timeout_seconds=getattr(args, "timeout", None) or 15.0),
-        token=lambda creds: creds["access_token"],
-        source=f"{SOURCE_MANUAL}:minimax_oauth",
-        fields=lambda creds, provider: {
-            "refresh_token": creds.get("refresh_token"), "base_url": creds.get("inference_base_url")}),
-    "openrouter": _OAuthAddSpec(
-        login=lambda args: auth_mod._openrouter_pkce_login(
-            open_browser=not getattr(args, "no_browser", False),
-            timeout_seconds=float(getattr(args, "timeout", None) or 300.0)),
-        token=lambda creds: creds["api_key"],
-        source=f"{SOURCE_MANUAL}:openrouter_pkce",
-        fields=lambda creds, provider: {"base_url": _provider_base_url(provider)},
-        auth_type=AUTH_TYPE_API_KEY),
-}
+def _add_openrouter_credential(args, provider: str, pool) -> PooledCredential:
+    """``noesia auth add openrouter --type oauth``：PKCE 登录换回的是普通 API Key，按 api_key 条目入池。"""
+    creds = auth_mod._openrouter_pkce_login(
+        open_browser=not getattr(args, "no_browser", False),
+        timeout_seconds=float(getattr(args, "timeout", None) or 300.0))
+    token = str(creds.get("api_key") or "").strip()
+    if not token:
+        raise SystemExit("OpenRouter PKCE 登录没有返回 API Key。")
+    label = (getattr(args, "label", None) or "").strip() or label_from_token(
+        token, f"{provider}-key-{len(pool.entries()) + 1}")
+    entry = pool.add_entry(PooledCredential(
+        provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=AUTH_TYPE_API_KEY,
+        priority=0, source=f"{SOURCE_MANUAL}:openrouter_pkce", access_token=token,
+        base_url=_provider_base_url(provider)))
+    print(f'Added {provider} API key credential #{len(pool.entries())}: "{entry.label}"')
+    return entry
 
 
 def _ask(prompt: str, reader: Callable[[str], str] | None = None) -> str | None:
@@ -306,8 +217,8 @@ def _ask(prompt: str, reader: Callable[[str], str] | None = None) -> str | None:
 
 def _unsuppress_provider_sources(provider: str) -> None:
     """Clear ALL suppressions for this provider — re-adding a credential is a strong signal the
-    user wants auth re-enabled. Covers env:* (shell-exported vars), gh_cli (copilot), claude_code,
-    qwen-cli, device_code (codex), etc. — one consistent re-engagement pattern."""
+    user wants auth re-enabled. Covers env:* (shell-exported vars), gh_cli (copilot),
+    device_code, etc. — one consistent re-engagement pattern."""
     try:
         suppressed = auth_mod._load_auth_store().get("suppressed_sources", {})
         for src in list(suppressed.get(provider, []) or []):
@@ -351,8 +262,7 @@ def auth_add_command(args) -> None:
     if requested_type == "api-key":
         requested_type = AUTH_TYPE_API_KEY
     elif not requested_type:
-        oauth_default = provider in _OAUTH_DEFAULT_PROVIDERS and not is_custom
-        requested_type = AUTH_TYPE_OAUTH if oauth_default else AUTH_TYPE_API_KEY
+        requested_type = AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
     if not is_custom:
@@ -362,7 +272,6 @@ def auth_add_command(args) -> None:
     try:
         entry = _add_credential(args, provider, pool, requested_type)
     except auth_mod.AuthError as exc:
-        # A denied / mismatched / timed-out OAuth login is a user-facing outcome, not a crash.
         raise SystemExit(f"Login failed: {auth_mod.format_auth_error(exc)}") from exc
     except CredentialNotSavedError as exc:
         raise SystemExit(str(exc)) from exc
@@ -375,50 +284,11 @@ def auth_add_command(args) -> None:
 def _add_credential(args, provider: str, pool, requested_type: str) -> PooledCredential:
     if requested_type == AUTH_TYPE_API_KEY:
         return _add_api_key_credential(args, provider, pool)
-    spec = _OAUTH_ADD_SPECS.get(provider)
-    if spec is None:
-        raise SystemExit(f"`noesia auth add {provider}` is not implemented for auth type {requested_type} yet.")
-
-    creds = spec.login(args)
-    token = spec.token(creds)
-    label = (getattr(args, "label", None) or "").strip() or label_from_token(
-        token, f"{provider}-oauth-{len(pool.entries()) + 1}")
-    # Every account gets a distinct, self-contained pool entry instead of routing through a
-    # singleton save path (which collapsed every added account into the latest login).
-    # ``manual:*`` entries refresh from their own token pair, so they need no singleton shadow.
-    entry = PooledCredential(
-        provider=provider, id=uuid.uuid4().hex[:6], label=label, auth_type=spec.auth_type, priority=0,
-        source=spec.source(creds) if callable(spec.source) else spec.source,
-        access_token=token, **spec.fields(creds, provider))
-    existing = pool.entries()
-    entry = pool.add_entry(entry)
-    # The first Codex/xAI credential becomes the active provider (as the old singleton save path
-    # did implicitly); subsequent adds leave the active provider as-is.
-    if spec.activate_first and not existing:
-        auth_mod.mark_provider_active_if_unset(provider)
-    print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
-    if provider == "openai-codex":
-        _warn_same_codex_account(token, existing)
-    return entry
-
-
-def _warn_same_codex_account(token: str, existing: list[PooledCredential]) -> None:
-    """Tell the user when a fresh Codex login is the same OpenAI account as a pooled credential.
-
-    Two logins of one account share a single token family upstream: the provider revokes the
-    older grant, so the second credential adds no quota and silently kills the first (#47096).
-    Only distinct accounts rotate independently — the pool cannot keep both alive.
-    """
-    identity = _codex_principal_identity(token)
-    if identity is None:
-        return
-    for position, sibling in enumerate(existing, start=1):
-        if _codex_principal_identity(sibling.access_token) == identity:
-            print(f'warning: this login is the same OpenAI account as openai-codex credential #{position} '
-                  f'("{sibling.label}"). Both logins share one token family, so OpenAI will revoke the older one '
-                  "and you gain no extra quota. Log into a different account instead, or keep just one "
-                  f"(`noesia auth remove openai-codex {position}`).", file=sys.stderr)
-            return
+    if provider == "openrouter":
+        return _add_openrouter_credential(args, provider, pool)
+    raise SystemExit(
+        f"`noesia auth add {provider} --type oauth` 已不可用：模型供应商 OAuth 登录已移除，"
+        f"请改用 `--api-key` 或把凭据加入凭据池。")
 
 
 def _report_priority(provider: str, pool, moved, requested: int, verb: str, prep: str) -> None:
@@ -480,17 +350,6 @@ def auth_list_command(args) -> None:
             )
             print(row.rstrip())
         print()
-    if not provider_filter or provider_filter in EXTERNAL_LOGIN_PROVIDERS:
-        _print_external_login_notice()
-
-
-def _print_external_login_notice() -> None:
-    """One line telling the user why no Codex CLI / Claude Code login shows up when adoption is off."""
-    from agent.credential_sources import EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE, adopt_external_logins_enabled
-    if not adopt_external_logins_enabled():
-        print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
-
-
     _print_oauth_heal_notices()
 
 
@@ -547,53 +406,33 @@ def auth_reset_command(args) -> None:
 
 
 def auth_refresh_command(args) -> None:
-    """`noesia auth refresh <provider> [target]`: force one pooled OAuth entry to refresh.
+    """`noesia auth refresh <provider> [target]`: rotate one pooled OAuth grant.
 
-    A successful refresh rotates the stored tokens and clears the entry's local
-    exhaustion block, returning it to rotation before its persisted
-    ``last_error_reset_at`` elapses. It proves the grant is alive, not that the
-    provider's quota is back: if the account is still capped, the next request
-    429s and benches it again. Failure leaves the pool's own verdict in place.
+    Core ships only API-key providers, whose credentials never expire, so a refreshable grant
+    always belongs to a provider plugin: either the plugin's own ``auth`` handler performs the
+    refresh, or its profile ships the ``refresh_credential`` hook that core drives here.
     """
     provider = _normalize_provider(getattr(args, "provider", ""))
     if dispatch_plugin_auth("refresh", args, provider):
         return
-    target = getattr(args, "target", None)
+    hook = plugin_refresh_hook(provider)
+    if hook is None:
+        raise SystemExit(
+            f"{provider} has no refreshable OAuth credential. `noesia auth refresh` only applies to a "
+            f"provider plugin that owns its own OAuth login; core providers use API keys.")
     pool = load_pool(provider)
     entries = pool.entries()
-    if not entries:
-        raise SystemExit(f"No {provider} credentials in the pool.")
-    if target is None or not str(target).strip():
-        if len(entries) != 1:
-            raise SystemExit(
-                f"{provider} has {len(entries)} credentials; pass an index, entry id, or exact "
-                f"label (see `noesia auth list {provider}`).")
-        index, matched = 1, entries[0]
-    else:
-        index, matched, error = pool.resolve_target(target)
-        if matched is None or index is None:
-            raise SystemExit(f"{error} Provider: {provider}.")
-    if (not is_refreshable_oauth_provider(provider) or matched.auth_type != AUTH_TYPE_OAUTH
-            or not matched.refresh_token):
-        raise SystemExit(
-            f"{provider} credential #{index} ({matched.label}) is not a refreshable OAuth "
-            f"credential.")
-    refreshed = pool.try_refresh_matching(credential_id=matched.id)
-    if refreshed is None:
-        after = next((e for e in pool.entries() if e.id == matched.id), None)
-        label = PROVIDER_REGISTRY[provider].name if provider in PROVIDER_REGISTRY else provider
-        state = ("it was removed from the pool" if after is None
-                 else "the saved session is no longer valid")
-        raise SystemExit(
-            f"Could not renew the {label} sign-in for credential #{index} ({matched.label}); {state}. "
-            f"Sign in again with `noesia auth add {provider} --type oauth`.")
-    status = refreshed.last_status or "ok"
-    if status == "ok":
-        print(f"Refreshed {provider} credential #{index} ({refreshed.label}); status: ok")
-    else:
-        # A peer already rotated this grant and the pool adopted it without clearing status.
-        print(f"Adopted current tokens for {provider} credential #{index} ({refreshed.label}); "
-              f"status still: {status}")
+    target = getattr(args, "target", None) or (entries[0].id if len(entries) == 1 else None)
+    index, entry, error = pool.resolve_target(target)
+    if entry is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+    rotated = hook(entry) or {}
+    updates = {k: rotated[k] for k in
+               ("access_token", "refresh_token", "expires_at_ms", "last_refresh") if rotated.get(k) is not None}
+    if not updates:
+        raise SystemExit(f'{provider} credential #{index} ("{entry.label}") returned no new tokens.')
+    pool._adopt(entry, **updates, **_CLEAR_STATUS)
+    print(f"Refreshed {provider} credential #{index} ({entry.label}); cooldown cleared.")
 
 
 def _moved_auth_hint(action: str, provider: str) -> str:
@@ -617,8 +456,6 @@ def auth_status_command(args) -> None:
     if not status.get("logged_in"):
         reason = status.get("error")
         print(f"{provider}: logged out" + (f" ({reason})" if reason else ""))
-        if provider in EXTERNAL_LOGIN_PROVIDERS:
-            _print_external_login_notice()
         return
     print(f"{provider}: logged in")
     for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):
@@ -744,10 +581,10 @@ def _interactive_add() -> None:
         raise error
 
     auth_type = "api_key"
-    if provider in _OAUTH_CAPABLE_PROVIDERS:
-        print(f"\n{provider} supports both API keys and OAuth login.")
+    if provider == "openrouter":
+        print("\nOpenRouter 支持 API Key 与浏览器 PKCE 登录（登录结果同样是 API Key）。")
         print("  1. API key (paste a key from the provider dashboard)")
-        print("  2. OAuth login (authenticate via browser)")
+        print("  2. PKCE login (authenticate via browser, yields an API key)")
         type_choice = _ask("Type [1/2]: ")
         if type_choice is None:
             return

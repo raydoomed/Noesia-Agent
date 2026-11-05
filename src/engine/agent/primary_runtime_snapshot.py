@@ -42,7 +42,6 @@ def _snapshot_primary_runtime(agent):
         agent._primary_runtime.update({
             "anthropic_api_key": agent._anthropic_api_key,
             "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
 
 
@@ -79,6 +78,5 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
         rt.update({
             "anthropic_api_key": agent._anthropic_api_key,
             "anthropic_base_url": agent._anthropic_base_url,
-            "is_anthropic_oauth": agent._is_anthropic_oauth,
         })
     return rt

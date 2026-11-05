@@ -900,7 +900,7 @@ def _configured_provider_matches(
     """``{provider_slug: canonical_model_id}`` for every configured provider whose declared models
     (``models``, ``model``, ``default_model`` — exact, case-insensitive, never fuzzy) contain
     ``model_name``, so a typed name routes to the provider that declares it instead of being
-    soft-accepted by the current provider (openai-codex) as an unknown hidden model.
+    soft-accepted by the current provider as an unknown hidden model.
 
     Used by :func:`switch_model` to route a *typed* model name to the provider that actually declares it in
     user/custom provider config, instead of leaving it on the current provider. See #45006.
@@ -1300,7 +1300,7 @@ def _names_known_provider(name: str, st: _Switch) -> bool:
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:
     """Step d.5: a model declared in user/custom provider config routes there BEFORE
     detect_provider_for_model() guesses from static catalogs and before a soft-accepting current
-    provider (openai-codex) can swallow it as an unknown hidden model. Returns a failure result,
+    provider can swallow it as an unknown hidden model. Returns a failure result,
     ``True`` when routed, else ``False``."""
     cfg_matches = _configured_provider_matches(st.new_model, st.user_providers, st.custom_providers)
     if not cfg_matches:
@@ -1683,8 +1683,7 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     capabilities = get_model_capabilities(st.target_provider, st.new_model, allow_network=True)
     from agent.native_compaction import resolve_native_compaction_capabilities
     runtime_capabilities = resolve_native_compaction_capabilities(
-        model=st.new_model, base_url=st.base_url, provider=st.target_provider,
-        is_codex_backend=st.target_provider.strip().lower() == "openai-codex")
+        model=st.new_model, base_url=st.base_url, provider=st.target_provider)
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
     warnings = [w for w in (st.validation.get("message"),) if w]

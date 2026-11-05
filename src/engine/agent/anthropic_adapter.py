@@ -1,22 +1,18 @@
 """Anthropic Messages API adapter: client construction + the Messages call for Noesia's
-OpenAI-style internals. Auth: Console API keys (``sk-ant-api*``/``-usr*``/``-svc*``/``-admin*``) ->
-x-api-key; OAuth setup-tokens (``sk-ant-oat*``) and Claude Code credentials -> Bearer + beta header.
+OpenAI-style internals. Auth: ``x-api-key`` by default; endpoints that require Bearer
+(MiniMax, Azure Foundry, Bedrock) send ``Authorization: Bearer``.
 Endpoint predicates, payload conversion and credentials live in ``agent/anthropic_{endpoints,
 message_convert,credentials}.py``; import them from there."""
 
 from pm import install_hint
 import logging
 import math
-import os
 import re
-import shutil
-import subprocess
-from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
 from utils import normalize_proxy_env_vars
 
-from agent.anthropic_credentials import _is_oauth_token, anthropic_route_is_oauth, is_native_anthropic_host
+from agent.anthropic_credentials import is_native_anthropic_host
 from agent.anthropic_endpoints import (
     _base_url_needs_context_1m_beta, _is_azure_anthropic_endpoint, _is_kimi_coding_endpoint,
     _is_minimax_anthropic_endpoint, _is_opencode_endpoint,
@@ -234,118 +230,7 @@ _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
 _COMMON_BETAS = ["interleaved-thinking-2025-05-14", _TOOL_STREAMING_BETA]
 _CONTEXT_1M_BETA = "context-1m-2025-08-07"
 _FAST_MODE_BETA = "fast-mode-2026-02-01"
-# Required for OAuth/subscription auth; matches Claude Code / pi-ai / OpenCode.
-_OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
-
-# Claude Code identity — OAuth requests without it intermittently 500. Anthropic rejects OAuth
-# requests whose user-agent version is too far behind the actual release, so the installed
-# version is detected and this fallback kept current.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
-_claude_code_version_cache: Optional[str] = None
-
-# Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
-# LaunchAgents) inherit the bare ``/usr/bin:/bin:/usr/sbin:/sbin``, which carries none of these,
-# so a PATH-only lookup finds nothing there even with the CLI installed — detection then returns
-# the stale fallback and Anthropic 400s with "Claude Code X does not support this model".
-# These are additive: on Windows none resolve to a file and detection falls back to the PATH
-# lookup (which handles PATHEXT), leaving current behaviour there unchanged.
-_CLAUDE_CODE_PREFIXES = (
-    "~/.local/bin", "~/.claude/local", "~/bin", "~/.npm-global/bin", "~/.bun/bin",
-    "~/.volta/bin", "/opt/homebrew/bin", "/usr/local/bin",
-)
-
-
-_CLAUDE_CODE_NAMES = ("claude", "claude-code")
-
-
-def _claude_code_candidates() -> list[str]:
-    """Executable paths to try, deduped and filtered to files that exist.
-
-    Two passes: every PATH hit first (what the user's shell would run), then the
-    well-known install prefixes. A single nested loop would probe a stale prefix
-    ``claude`` before a current PATH ``claude-code``.
-    """
-    seen: dict[str, None] = {}
-    for name in _CLAUDE_CODE_NAMES:
-        hit = shutil.which(name)
-        if hit:
-            seen.setdefault(hit)
-    for prefix in _CLAUDE_CODE_PREFIXES:
-        for name in _CLAUDE_CODE_NAMES:
-            path = os.path.join(os.path.expanduser(prefix), name)
-            if os.path.isfile(path):
-                seen.setdefault(path)
-    return list(seen)
-
-
-def find_claude_code_cli(command: str) -> Optional[str]:
-    """Path of a bare Claude Code command name on PATH, else in an install prefix; None for any other command.
-
-    Core's own presence checks (external-process providers, ``claude setup-token``) ask this so they
-    agree with version detection about whether the CLI is installed under a GUI/service PATH."""
-    if command not in _CLAUDE_CODE_NAMES:
-        return None
-    from noesia_platform.resolver import locate_command
-
-    found = locate_command(command, known_dirs=_CLAUDE_CODE_PREFIXES).command
-    return found[0] if found else None
-
-
-def _detect_claude_code_version() -> str:
-    """Installed Claude Code version (``claude --version``), else the static fallback."""
-    for cmd in _claude_code_candidates():
-        with suppress(Exception):
-            result = subprocess.run(
-                [cmd, "--version"],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
-                check=False,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                version = result.stdout.strip().split()[0]  # "2.1.74 (Claude Code)" or "2.1.74"
-                if version and version[0].isdigit():
-                    return version
-    return _CLAUDE_CODE_VERSION_FALLBACK
-
-
-def _get_claude_code_version() -> str:
-    """Detect lazily (only OAuth headers need it) and cache for the process."""
-    global _claude_code_version_cache
-    if _claude_code_version_cache is None:
-        _claude_code_version_cache = _detect_claude_code_version()
-    return _claude_code_version_cache
-
-
-_CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp__"
-
-# Anthropic's OAuth billing classifier fingerprints certain Noesia tool schemas/prose as a
-# third-party app and reroutes to the metered extra-usage lane (HTTP 400 "You're out of extra
-# usage" on a valid subscription). Live A/B repros isolated two independent triggers — the
-# ``session_search`` tool (schema/name/prose) and the ``memory`` tool (schema/name) — so both are
-# aliased on the OAuth wire only; normalize_response reverses the mapping.
-_OAUTH_TOOL_NAME_ALIASES = {"session_search": "chat_history_lookup", "memory": "context_notes"}
-_OAUTH_TOOL_NAME_REVERSE_ALIASES = {wire_name: name for name, wire_name in _OAUTH_TOOL_NAME_ALIASES.items()}
-
-# Aliases ALSO safe to substitute in free-form prose (system prompt, tool descriptions). "memory"
-# is ordinary English throughout the prompt and inside the memory tool's own parameter docs (an
-# enum the model must emit verbatim), so rewriting it would corrupt guidance; a model that calls
-# bare ``memory`` still dispatches, since normalize_response resolves it through the registry.
-_OAUTH_PROSE_ALIAS_NAMES = frozenset({"session_search"})
-
-# Word-boundary matchers so a longer identifier containing the token (e.g.
-# ``tools/session_search_tool.py`` in AGENTS.md) is left alone; ``\b`` treats ``_`` as a word char.
-_OAUTH_PROSE_ALIAS_PATTERNS = tuple(
-    (re.compile(rf"\b{re.escape(name)}\b"), _OAUTH_TOOL_NAME_ALIASES[name])
-    for name in sorted(_OAUTH_PROSE_ALIAS_NAMES)
-)
-
-
-def _apply_oauth_prose_aliases(text: str) -> str:
-    """Rewrite prose-safe tool-name tokens to their OAuth wire aliases."""
-    for pattern, wire_name in _OAUTH_PROSE_ALIAS_PATTERNS:
-        text = pattern.sub(wire_name, text)
-    return text
-
 
 def _common_betas_for_base_url(base_url: str | None, *, drop_context_1m_beta: bool = False) -> list[str]:
     """Beta headers safe for the configured endpoint. MiniMax (Bearer-auth) rejects both the
@@ -409,25 +294,15 @@ def _build_anthropic_client_with_bearer_hook(
     normalize_proxy_env_vars()
     from agent.azure_identity_adapter import build_bearer_http_client
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
-    # A key_cmd on the native host can print a Console API key, which (as in the static path's
-    # _auth_style) belongs in x-api-key; OAuth tokens and Azure/third-party routes keep Bearer. The
-    # auth header follows each mint, the OAuth identity below the first one: a key_cmd switching
-    # between OAuth and a Console key mid-session needs a client rebuild.
+    # A key_cmd on the native host prints a Console API key, which (as in the static path's
+    # _auth_style) belongs in x-api-key; Azure/third-party routes keep Bearer.
     kwargs["http_client"] = build_bearer_http_client(
         token_provider, timeout=kwargs["timeout"],
-        sends_as_api_key=(lambda token: not _is_oauth_token(token)) if is_native_anthropic_host(base_url) else None,
+        sends_as_api_key=(lambda _token: True) if is_native_anthropic_host(base_url) else None,
     )
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
     betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
-    if anthropic_route_is_oauth(base_url, token_provider):
-        # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
-        # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
-        # static "oauth" style in build_anthropic_client.
-        headers = _beta_header(betas + _OAUTH_ONLY_BETAS)
-        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
-        headers["x-app"] = "cli"
-    else:
-        headers = _beta_header(betas)
+    headers = _beta_header(betas)
     return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
@@ -439,7 +314,7 @@ def _new_sdk_client(sdk, kwargs: dict[str, Any], headers: dict[str, str], route:
     The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
     ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.noesia/.env) and then sends dual
     auth — x-api-key *and* Authorization: Bearer — shipping a foreign credential to Portal / MiniMax
-    / OAuth / Entra / third-party endpoints (#26970, #105774). An ``Omit()`` default header is the
+    / Entra / third-party endpoints (#26970, #105774). An ``Omit()`` default header is the
     SDK-sanctioned way to drop the other header, and unlike an attribute clear it survives
     ``with_options()``, which re-runs the constructor and re-reads the environment."""
     merged = dict(headers)
@@ -472,28 +347,22 @@ def _custom_provider_extra_headers(base_url) -> dict[str, str]:
 def _auth_style(api_key, base_url, normalized_base_url) -> str:
     """Order-sensitive endpoint/key classification for :func:`build_anthropic_client`. ``kimi``:
     Kimi's /coding endpoint 403s without a User-Agent (the Kimi team asked for proper attribution).
-    ``bearer``: MiniMax & co. want Authorization: Bearer — checked before the OAuth shape test
-    because their secrets lack the sk-ant-api prefix and would be misread as OAuth/setup tokens.
-    ``api_key``: third-party proxies use their own x-api-key keys (skip OAuth detection). ``oauth``:
-    Bearer auth + Claude Code identity (Anthropic routes OAuth by user-agent; without it, 500s)."""
+    ``bearer``: MiniMax & co. want a bearer token (checked first: their keys lack the sk-ant prefix).
+    ``api_key``: everything else sends x-api-key (third-party proxies use their own keys)."""
     if _is_kimi_coding_endpoint(base_url):
         return "kimi"
     if _requires_bearer_auth(normalized_base_url):
         return "bearer"
-    if _is_third_party_anthropic_endpoint(base_url):
-        return "api_key"
-    if _is_oauth_token(api_key):
-        return "oauth"
     return "api_key"
 
 
 def build_anthropic_client(api_key, base_url: str | None = None, timeout: float | None = None, *, drop_context_1m_beta: bool = False):
-    """Create an Anthropic client, auto-detecting setup-tokens vs API keys. ``api_key`` is a static
+    """Create an Anthropic client for one credential. ``api_key`` is a static
     ``str`` or a ``Callable[[], str]`` Entra ID bearer provider (routed through
     :func:`_build_anthropic_client_with_bearer_hook`). ``timeout`` overrides the 900s read timeout
     (connect stays 10s). ``drop_context_1m_beta`` strips ``context-1m-2025-08-07`` from the
-    client-level beta header — the reactive OAuth retry in run_agent uses it after a subscription
-    rejects it; fresh clients keep the default so 1M-capable subscriptions keep the capability."""
+    client-level beta header after an endpoint rejects it; fresh clients keep the default so
+    1M-capable endpoints keep the capability."""
     sdk = _require_sdk("the Anthropic provider")
     if callable(api_key) and not isinstance(api_key, str):
         return _build_anthropic_client_with_bearer_hook(
@@ -505,13 +374,10 @@ def build_anthropic_client(api_key, base_url: str | None = None, timeout: float 
         kwargs["base_url"] = normalized_base_url.rstrip("/")
     common_betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
     style = _auth_style(api_key, base_url, normalized_base_url)
-    kwargs["auth_token" if style in ("bearer", "oauth") else "api_key"] = api_key
-    headers = _beta_header(common_betas + _OAUTH_ONLY_BETAS if style == "oauth" else common_betas)
+    kwargs["auth_token" if style == "bearer" else "api_key"] = api_key
+    headers = _beta_header(common_betas)
     if style == "kimi":
         headers = {**_attribution_headers(), **headers}
-    elif style == "oauth":
-        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
-        headers["x-app"] = "cli"
     if _is_opencode_endpoint(base_url):
         # OpenCode identifies clients by request headers (like OpenRouter). The OpenAI-wire paths
         # get these from profile.default_headers, but this route never sees the profile.
@@ -541,76 +407,6 @@ def build_anthropic_bedrock_client(region: str):
         max_retries=0,  # retry belongs to noesia's outer loop (honors Retry-After)
         default_headers={**_beta_header([*_COMMON_BETAS, _CONTEXT_1M_BETA]), **bedrock_guardrail_headers()},
     )
-
-
-def _normalize_to_mcp_wire(name: str) -> str:
-    """OAuth wire form of a tool name (no aliasing): ``mcp__<...>``. Anthropic's OAuth billing
-    classifier treats a single-underscore ``mcp_`` tool name as a third-party-app fingerprint
-    (HTTP 400 "Third-party apps now draw from extra usage"); ``mcp__foo`` is accepted. Both bare
-    Noesia tools (``read_file``) and native MCP tools registered as ``mcp_<server>_<tool>`` must
-    land on the double-underscore form. normalize_response reverses both via registry lookup."""
-    if name.startswith("mcp__"):
-        return name  # already correct, don't double-prefix
-    return _MCP_TOOL_PREFIX + name.removeprefix("mcp_")
-
-
-def _oauth_wire_namer(anthropic_tools: list[dict[str, Any]]):
-    """Return ``name -> OAuth wire name`` for this request's tool set. An alias must never collide
-    with a wire name owned by a non-alias tool: two identical tool names in one request is a hard
-    400, strictly worse than the bug being fixed. Mirrors normalize_response's "registered tool
-    wins" so outbound and inbound agree on who owns a contested name."""
-    claimed = {
-        _normalize_to_mcp_wire(tool["name"])
-        for tool in (anthropic_tools or [])
-        if isinstance(tool.get("name"), str) and tool["name"] not in _OAUTH_TOOL_NAME_ALIASES
-    }
-
-    def to_wire(name: str) -> str:
-        aliased = _OAUTH_TOOL_NAME_ALIASES.get(name)
-        if aliased and _MCP_TOOL_PREFIX + aliased not in claimed:
-            name = aliased
-        return _normalize_to_mcp_wire(name)
-
-    return to_wire
-
-
-_OAUTH_SYSTEM_REPLACEMENTS = (
-    ("Noesia Agent", "Claude Code"), ("Noesia agent", "Claude Code"),
-)
-# The slug is rewritten only as a standalone prose word. Joined to a host, path, repo, mailbox
-# or quoted as an identifier (``noesia.invalid``, ``~/.noesia/noesia-agent/venv``,
-# ``noesia/noesia-agent``, ``skill_view(name='noesia-agent')``) it is an address the model
-# dereferences, and the rewritten form does not exist (#48860). The OPENING quote marks an
-# identifier; a sentence-final ``.`` or a possessive ``'s`` is prose.
-_OAUTH_SLUG_PATTERN = re.compile(r"""(?<![\w./:@'"`-])noesia-agent(?![\w/@-]|\.\w)""")
-
-
-def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire):
-    """OAuth transforms: Claude Code system prefix, product-name sanitizing (avoids server-side
-    content filters), tool/description aliasing, and the same tool renames on replayed tool_use
-    blocks so history matches ``tools[]``. Returns the new ``system``; tools and messages are
-    mutated in place."""
-    cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
-    if isinstance(system, str) and system:
-        system = [{"type": "text", "text": system}]
-    system = [cc_block] + (system if isinstance(system, list) else [])
-    for block in system:
-        if isinstance(block, dict) and block.get("type") == "text":
-            text = block.get("text", "")
-            for old, new in _OAUTH_SYSTEM_REPLACEMENTS:
-                text = text.replace(old, new)
-            text = _OAUTH_SLUG_PATTERN.sub("claude-code", text)
-            block["text"] = _apply_oauth_prose_aliases(text)
-    for tool in anthropic_tools or []:
-        if "name" in tool:
-            tool["name"] = to_wire(tool["name"])
-        if isinstance(tool.get("description"), str):
-            tool["description"] = _apply_oauth_prose_aliases(tool["description"])  # prose-safe aliases only
-    for msg in anthropic_messages:
-        for block in msg.get("content") if isinstance(msg.get("content"), list) else []:
-            if isinstance(block, dict) and block.get("type") == "tool_use" and "name" in block:
-                block["name"] = to_wire(block["name"])  # tool_result pairs by id, not name
-    return system
 
 
 def _thinking_kwargs(reasoning_config: dict[str, Any], model: str, effective_max_tokens: int) -> dict[str, Any]:
@@ -649,7 +445,7 @@ _TOOL_CHOICE_MAP = {None: {"type": "auto"}, "auto": {"type": "auto"}, "required"
 def build_anthropic_kwargs(
     model: str, messages: list[dict], tools: Optional[list[dict]], max_tokens: Optional[int],
     reasoning_config: Optional[dict[str, Any]], tool_choice: Optional[str] = None,
-    is_oauth: bool = False, preserve_dots: bool = False, context_length: Optional[int] = None,
+    preserve_dots: bool = False, context_length: Optional[int] = None,
     base_url: str | None = None, fast_mode: bool = False, drop_context_1m_beta: bool = False,
 ) -> dict[str, Any]:
     """Build kwargs for anthropic.messages.create(). ``max_tokens`` is the OUTPUT cap for one
@@ -657,7 +453,7 @@ def build_anthropic_kwargs(
     model's native output ceiling; if that exceeds ``context_length`` (small local endpoints) it is
     clamped to ``context_length - 1``. The clamp ignores prompt size — callers must catch
     "max_tokens too large given prompt" and retry smaller (parse_available_output_tokens_from_error).
-    ``is_oauth`` applies Claude Code compatibility transforms; ``preserve_dots`` keeps model-name
+    ``preserve_dots`` keeps model-name
     dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
@@ -667,9 +463,6 @@ def build_anthropic_kwargs(
     effective_max_tokens = _resolve_anthropic_messages_max_tokens(max_tokens, model, context_length=context_length)
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
-    to_wire = _oauth_wire_namer(anthropic_tools) if is_oauth else None
-    if to_wire:
-        system = _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_wire)
     kwargs: dict[str, Any] = {"model": model, "messages": anthropic_messages, "max_tokens": effective_max_tokens}
     if system:
         kwargs["system"] = system
@@ -678,11 +471,7 @@ def build_anthropic_kwargs(
         if tool_choice == "none":
             kwargs.pop("tools", None)  # no Anthropic "none" — omit tools to prevent use
         elif tool_choice is None or isinstance(tool_choice, str):
-            # A forced tool name goes through the OAuth normalizer too: every tools[] entry is
-            # mcp__-prefixed/aliased there, so the literal would leak and name a nonexistent tool.
-            kwargs["tool_choice"] = _TOOL_CHOICE_MAP.get(tool_choice) or {
-                "type": "tool", "name": to_wire(tool_choice) if to_wire else tool_choice
-            }
+            kwargs["tool_choice"] = _TOOL_CHOICE_MAP.get(tool_choice) or {"type": "tool", "name": tool_choice}
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat
     # endpoints support thinking (manual mode only, not adaptive). Haiku through 4.5 gets no thinking
@@ -707,7 +496,7 @@ def build_anthropic_kwargs(
     if fast_mode and not _is_third_party_anthropic_endpoint(base_url) and _supports_fast_mode(model):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         betas = _common_betas_for_base_url(base_url, drop_context_1m_beta=drop_context_1m_beta)
-        kwargs["extra_headers"] = _beta_header(betas + (_OAUTH_ONLY_BETAS if is_oauth else []) + [_FAST_MODE_BETA])
+        kwargs["extra_headers"] = _beta_header(betas + [_FAST_MODE_BETA])
     return kwargs
 
 

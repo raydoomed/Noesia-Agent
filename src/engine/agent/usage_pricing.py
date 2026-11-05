@@ -18,8 +18,7 @@ _ONE_MILLION = Decimal(1000000)
 # list price, keyed by billing-route provider -> API domain. A model missing from
 # the snapshot below is priced from models.dev only on HTTPS:443 to that domain
 # (or with no base URL, i.e. the provider default): a proxy, relay or custom
-# endpoint serving the same model id may bill differently, and subscription
-# routes (openai-codex, xai-oauth) keep their own policy.
+# endpoint serving the same model id may bill differently.
 _MODELS_DEV_DIRECT_HOSTS = {
     "openai": "openai.com", "xai": "x.ai", "anthropic": "anthropic.com", "google": "googleapis.com",
     "deepseek": "deepseek.com", "xiaomi": "xiaomimimo.com",
@@ -299,32 +298,6 @@ for _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _writ
     )
 del _slug, _inp, _out, _read, _write, _inp_above, _out_above, _read_above, _write_above
 
-# OpenAI Ultrafast (``service_tier: "ultrafast"``): 6x Standard on every bucket, same 272K
-# whole-request tier. Selected by the tier the response reports it was SERVED at (a request asking
-# for Ultrafast can be served at ``default``, and is then billed at Standard).
-_OPENAI_ULTRAFAST_PRICING: dict[str, PricingEntry] = {
-    "gpt-6-astra": _snap(
-        "60.00", "300.00", "6.00", "75.00",
-        url="https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
-        version="openai-ultrafast-2026-09",
-        tier_threshold_tokens=272_000,
-        input_cost_per_million_above=Decimal("120.00"),
-        output_cost_per_million_above=Decimal("450.00"),
-        cache_read_cost_per_million_above=Decimal("12.00"),
-        cache_write_cost_per_million_above=Decimal("150.00"),
-    ),
-    "gpt-6.1-sol": _snap(
-        "12.00", "60.00", "0.60", "15.00",
-        url="https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
-        version="openai-ultrafast-2026-10-08",
-        tier_threshold_tokens=272_000,
-        input_cost_per_million_above=Decimal("24.00"),
-        output_cost_per_million_above=Decimal("90.00"),
-        cache_read_cost_per_million_above=Decimal("1.20"),
-        cache_write_cost_per_million_above=Decimal("30.00"),
-    ),
-}
-
 # Context-tiered Gemini Pro: above 200k prompt tokens the *_above rates apply to
 # the whole request (see PricingEntry).
 _OFFICIAL_DOCS_PRICING[("google", "gemini-3.1-pro")] = _snap(
@@ -422,8 +395,6 @@ def resolve_billing_route(
     def host(name: str) -> bool:
         return base_url_host_matches(url, name)
 
-    if provider_name == "openai-codex":
-        return BillingRoute(provider="openai-codex", model=model, base_url=url, billing_mode="subscription_included")
     if provider_name == "openrouter" or host("openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=url, billing_mode="official_models_api")
     snapshot_provider = _SNAPSHOT_PROVIDER_ALIASES.get(provider_name)
@@ -491,10 +462,6 @@ def with_served_service_tier(usage: CanonicalUsage, response: Any) -> CanonicalU
     if not isinstance(tier, str) or not tier.strip():
         return usage
     return replace(usage, raw_usage={**(usage.raw_usage or {}), "service_tier": tier.strip().lower()})
-
-
-def _served_openai_tier(usage: CanonicalUsage) -> Optional[str]:
-    return usage.raw_usage.get("service_tier") if isinstance(usage.raw_usage, dict) else None
 
 
 def _served_fast(usage: CanonicalUsage) -> bool:
@@ -701,10 +668,6 @@ def estimate_usage_cost(
         entry = _anthropic_fast_mode_entry(route.model)
         if not entry:
             return _unknown_cost("official_docs_snapshot", "fast-mode pricing unavailable for model")
-    if route.provider == "openai" and _served_openai_tier(usage) == "ultrafast":
-        entry = _OPENAI_ULTRAFAST_PRICING.get(route.model)
-        if not entry:
-            return _unknown_cost("official_docs_snapshot", "ultrafast pricing unavailable for model")
     if not entry:
         return _unknown_cost("none")
 

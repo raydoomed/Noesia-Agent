@@ -18,9 +18,9 @@ logger = logging.getLogger(__name__)
 # Providers that can ground generation on a reference image, in preference order.
 # OpenRouter/Noesia run a quality-first model chain and may fall back depending on
 # account access, so fidelity can vary by configured backend.
-_REF_CAPABLE = ("noesia", "openai", "openai-codex", "openrouter", "krea")
+_REF_CAPABLE = ("noesia", "openai", "openrouter", "krea")
 # Friendly display label per reference-capable provider (desktop pet-gen picker).
-_PROVIDER_LABELS = {"noesia": "Noesia Portal", "openrouter": "OpenRouter", "openai": "OpenAI", "openai-codex": "OpenAI (Codex)", "krea": "Krea"}
+_PROVIDER_LABELS = {"noesia": "Noesia Portal", "openrouter": "OpenRouter", "openai": "OpenAI", "krea": "Krea"}
 
 
 class GenerationError(RuntimeError):

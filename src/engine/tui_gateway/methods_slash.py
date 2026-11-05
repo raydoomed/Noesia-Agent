@@ -436,8 +436,7 @@ def _mirror_personality(sid, session, agent, arg) -> None:
         _apply_personality_to_session(sid, session, new_prompt, pname)
 
 
-_FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold",
-               "ultrafast": "ultrafast", "ultra": "ultrafast"}
+_FAST_TIERS = {"fast": "priority", "on": "priority", "normal": None, "off": None, "auto": "auto", "cold": "cold"}
 
 
 def _mirror_fast(sid, session, agent, arg) -> None:

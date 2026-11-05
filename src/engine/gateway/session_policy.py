@@ -582,7 +582,7 @@ def _apply_launch_overrides(params, config):
     if bad_flag:
         _refuse(bad_flag, 'must be a boolean')
     if 'service_tier' in params:
-        # An explicit speed pick (Desktop Fast / Ultrafast / Normal): normal pins normal over a
+        # An explicit speed pick (Desktop Fast / Normal): normal pins normal over a
         # profile tier; an unknown word is refused, never read as normal.
         from agent.fast_mode import parse_exact_service_tier
         try:

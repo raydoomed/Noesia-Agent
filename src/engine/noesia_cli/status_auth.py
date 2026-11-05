@@ -2,43 +2,8 @@
 Origin helpers (``_row``, ``_first_env_value``, ...) are resolved through the ``noesia_cli.status``
 module object so tests that monkeypatch that module keep working."""
 
-from datetime import datetime, timezone, UTC
-
 from noesia_cli.auth import AuthError
 from noesia_cli import config
-from noesia_time import safe_strftime
-
-
-def _format_iso_timestamp(value) -> str:
-    """Format ISO timestamps for status output, converting to local timezone."""
-    text = value.strip() if isinstance(value, str) else ""
-    if not text:
-        return "(unknown)"
-    try:
-        parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
-    except Exception:
-        return value
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return safe_strftime(parsed.astimezone(), "%Y-%m-%d %H:%M:%S %Z")
-
-
-def _qwen_expiry(expires_at_ms) -> str:
-    return datetime.fromtimestamp(int(expires_at_ms) / 1000, tz=UTC).isoformat()
-
-
-def _oauth_block(name: str, status: dict, hint: str, rows) -> None:
-    """Print an OAuth provider row plus its conditional detail lines.
-
-    ``rows`` are ``(label, status_key, formatter, gate)``: a detail prints when the raw value is
-    truthy and ``gate`` is None or equals the logged-in state (False = only while logged out).
-    """
-    logged_in = bool(status.get("logged_in"))
-    _status._row(name, logged_in, "logged in" if logged_in else f"not logged in (run: {hint})")
-    for label, key, fmt, gate in rows:
-        raw = status.get(key)
-        if raw and (gate is None or gate == logged_in):
-            _status._detail(label, fmt(raw) if fmt else raw)
 
 
 # Values may be a single env var name (str) or a tuple of alternates (first found wins).
@@ -53,24 +18,6 @@ _API_KEYS: dict[str, str | tuple[str, ...]] = {
     "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
     "FAL": "FAL_KEY", "ElevenLabs": "ELEVENLABS_API_KEY", "GitHub": "GITHUB_TOKEN"}
 
-# OAuth detail rows: (label, status key, formatter, gate) — see _oauth_block.
-_FILE_REFRESH_ROWS = (
-    ("Auth file:", "auth_store", None, None),
-    ("Refreshed:", "last_refresh", _format_iso_timestamp, None), ("Error:", "error", None, False))
-
-_OAUTH_BLOCKS = (
-    # (row name, auth getter, login hint, detail rows)
-    ("OpenAI Codex", "get_codex_auth_status", "noesia model", _FILE_REFRESH_ROWS),
-    ("Qwen OAuth", "get_qwen_auth_status", "qwen auth qwen-oauth", (
-        ("Auth file:", "auth_file", None, None),
-        ("Access exp:", "expires_at_ms", _qwen_expiry, None),
-        ("Error:", "error", None, False))),
-    ("MiniMax OAuth", "get_minimax_oauth_auth_status", "noesia auth add minimax-oauth", (
-        ("Region:", "region", None, True),
-        ("Access exp:", "expires_at", None, None),
-        ("Error:", "error", None, False))),
-    ("xAI OAuth", "get_xai_oauth_auth_status", "noesia auth add xai-oauth", _FILE_REFRESH_ROWS))
-
 _APIKEY_PROVIDERS = {
     "Z.AI / GLM": ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "Kimi / Moonshot": ("KIMI_API_KEY",),
     "StepFun Step Plan": ("STEPFUN_API_KEY",), "MiniMax": ("MINIMAX_API_KEY",),
@@ -83,22 +30,6 @@ def _render_api_keys(ctx):
     for name, env_ref in (*_API_KEYS.items(), ("Anthropic", get_anthropic_key)):
         value = env_ref() if callable(env_ref) else _status._first_env_value(env_ref)
         _status._row(name, bool(value), config.redact_key(value))
-
-
-def _render_auth_providers(ctx):
-    _status._section("Auth Providers")
-    from noesia_cli import auth
-    try:
-        statuses = {getter: getattr(auth, getter)() for _, getter, _, _ in _OAUTH_BLOCKS[:3]}
-    except Exception:
-        statuses = {}
-    # xAI OAuth is guarded separately so an import failure there cannot disrupt the other rows.
-    try:
-        statuses["get_xai_oauth_auth_status"] = auth.get_xai_oauth_auth_status() or {}
-    except Exception:
-        statuses["get_xai_oauth_auth_status"] = {}
-    for name, getter, hint, rows in _OAUTH_BLOCKS:
-        _oauth_block(name, statuses.get(getter, {}), hint, rows)
 
 
 def _render_apikey_providers(ctx):

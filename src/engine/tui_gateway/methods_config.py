@@ -235,7 +235,7 @@ def _cfg_get_fast(params):
             else session.get("create_service_tier_override"))
     if tier is None:
         tier = _load_service_tier()
-    return {"value": {"priority": "fast", "ultrafast": "ultrafast"}.get(tier, "normal")}
+    return {"value": {"priority": "fast"}.get(tier, "normal")}
 
 
 def _cfg_get_thinking_mode(params):
@@ -369,8 +369,8 @@ def _readiness_check(rid, params, probe, *, probe_key, wait_seconds):
         home = _profile_home(profile)
     # ``profile_home=None`` is the launch profile: once this process multiplexes its probe must
     # run under its own frozen secret scope too (``_profile_runtime_scope_tokens`` binds nothing in
-    # a single-profile process), or the first profile-scoped read inside the resolver
-    # (``NOESIA_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
+    # a single-profile process), or the first profile-scoped read inside the resolver fails closed
+    # and the UI shows onboarding.
     def run_probe():
         # Applied on the readiness pool thread: ContextVars do not cross threads, and
         # concurrent probes (different profiles) stay isolated exactly as they did when

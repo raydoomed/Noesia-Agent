@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import datetime
-import json
-import os
+import logging
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 MAX_XAI_STORAGE_EXPIRES_AFTER_SECONDS = 30 * 24 * 60 * 60
@@ -19,34 +20,14 @@ def _dict_get(obj: Any, key: str) -> Any:
 
 
 def has_xai_credentials() -> bool:
-    """Cheap probe: True when xAI credentials are *likely* usable.
+    """Cheap probe: True when ``XAI_API_KEY`` resolves to a value.
 
-    Deliberately avoids :func:`resolve_xai_http_credentials` (disk locks, OAuth network
-    refresh) — hot-paint callers and ``WebSearchProvider.is_available()`` must not do network
-    I/O. Checks, fast-to-slow: ``XAI_API_KEY``; ``providers.xai-oauth.tokens.access_token`` in
-    ``auth.json``; any ``credential_pool.xai-oauth`` entry with an ``access_token`` (pool-only
-    multi-account grants never write the providers singleton). Returns False on any exception
-    so a corrupted auth store can't block other availability scans.
+    Hot-paint callers and ``WebSearchProvider.is_available()`` must not do network I/O, so this reads the
+    secret only.
     """
     from agent.secret_scope import get_secret
 
-    if (get_secret("XAI_API_KEY", "") or "").strip():
-        return True
-    try:
-        from noesia_constants import get_noesia_home
-        auth_path = get_noesia_home() / "auth.json"
-        if not auth_path.exists():
-            return False
-        store = json.loads(auth_path.read_text(encoding="utf-8-sig"))
-        tokens = _dict_get(_dict_get(_dict_get(store, "providers"), "xai-oauth"), "tokens")
-        if str(_dict_get(tokens, "access_token") or "").strip():
-            return True
-        entries = _dict_get(_dict_get(store, "credential_pool"), "xai-oauth")
-        return isinstance(entries, list) and any(
-            isinstance(e, dict) and str(e.get("access_token", "") or "").strip() for e in entries
-        )
-    except Exception:
-        return False
+    return bool((get_secret("XAI_API_KEY", "") or "").strip())
 
 
 def noesia_xai_user_agent() -> str:
@@ -174,56 +155,30 @@ def _xai_base_url_override() -> str:
     return str(get_env_value("NOESIA_XAI_BASE_URL") or get_env_value("XAI_BASE_URL") or "").strip().rstrip("/")
 
 
-def resolve_xai_http_credentials(
-    *, force_refresh: bool = False, api_key_hint: Optional[str] = None, prefer_api_key: bool = False,
-) -> dict[str, str]:
-    """Resolve bearer credentials for direct xAI HTTP endpoints.
+def _validated_xai_base_url(candidate: str, fallback: str) -> str:
+    """Keep *candidate* only when it points at an xAI host; otherwise *fallback*."""
+    from urllib.parse import urlparse
 
-    Default order: Noesia-managed xAI OAuth, then ``XAI_API_KEY`` (via ``get_env_value`` so
-    ``~/.noesia/.env`` keys count). ``prefer_api_key=True`` inverts that for API-metered
-    endpoints where the subscription OAuth bearer authorizes but misbehaves (x_search answers
-    without citations, TTS 403s). Both branches honor ``NOESIA_XAI_BASE_URL``/``XAI_BASE_URL``
-    behind the same origin-pinning validation. ``force_refresh=True`` forces an OAuth refresh;
-    pass the rejected bearer as ``api_key_hint`` so a multi-account pool refreshes the issuing
-    entry, not whichever its strategy selects first.
+    value = (candidate or "").strip().rstrip("/")
+    if not value:
+        return fallback
+    host = (urlparse(value).hostname or "").lower()
+    if host == "x.ai" or host.endswith(".x.ai"):
+        return value
+    logger.warning("Ignoring xAI base URL %s (host must be x.ai); using %s", value, fallback)
+    return fallback
 
-    Prefers Noesia-managed xAI OAuth credentials when available, then falls back to ``XAI_API_KEY`` resolved
-    via ``noesia_cli.config.get_env_value`` so keys stored in ``~/.noesia/.env`` (the standard Noesia
-    location) are honored — not just ones already exported into ``os.environ``. This keeps direct xAI
-    endpoints (images, TTS, STT, etc.) aligned with the main runtime auth model and preserves the regression
-    contract from PR #17140 / #17163.
-    The key is read through :func:`tools.tool_backend_helpers.resolve_provider_secret` so profile secret
-    scoping is identical to the fallback branch, and the base URL honors ``NOESIA_XAI_BASE_URL`` /
-    ``XAI_BASE_URL`` behind the same origin-pinning validation as the OAuth branch. See #87045, #88040.
+
+def resolve_xai_http_credentials() -> dict[str, str]:
+    """Resolve bearer credentials for direct xAI HTTP endpoints: ``XAI_API_KEY`` only.
+
+    ``XAI_API_KEY`` is read through :func:`tools.tool_backend_helpers.resolve_provider_secret` so profile
+    secret scoping is identical to the runtime path and keys stored in ``~/.noesia/.env`` count. The base URL
+    honors ``NOESIA_XAI_BASE_URL`` / ``XAI_BASE_URL`` behind the shared origin-pinning validation.
     """
-    import noesia_cli.auth as auth_mod
-    if prefer_api_key and (explicit_key := str(_resolve_explicit_xai_api_key() or "").strip()):
-        # Origin-pinned so a tampered env override can't exfiltrate the bearer; rejection -> default URL.
-        override = _xai_base_url_override()
-        base_url = auth_mod._xai_validate_inference_base_url(override, fallback=DEFAULT_XAI_BASE_URL)
-        return {"provider": "xai", "api_key": explicit_key, "base_url": base_url}
-
-    try:
-        from agent.credential_pool import load_pool
-        pool = load_pool("xai-oauth")
-        entry = pool.try_refresh_matching(api_key_hint) if force_refresh else pool.select()
-        if force_refresh and entry is None:
-            # A rejected refresh may quarantine the issuing entry; continue with
-            # the next healthy account rather than resurrecting the stale row.
-            entry = pool.select()
-        access_token = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-        fallback_base_url = str(
-            getattr(entry, "runtime_base_url", None)
-            or getattr(entry, "base_url", "")
-            or auth_mod.DEFAULT_XAI_OAUTH_BASE_URL
-        ).strip().rstrip("/")
-        base_url = auth_mod._xai_validate_inference_base_url(_xai_base_url_override(), fallback=fallback_base_url)
-        if str(access_token).strip():
-            return {"provider": "xai-oauth", "api_key": str(access_token).strip(), "base_url": base_url}
-    except Exception:
-        pass
-
     from noesia_cli.config import get_env_value
     api_key = _resolve_explicit_xai_api_key()
-    base_url = str(get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
+    override = _xai_base_url_override()
+    base_url = _validated_xai_base_url(
+        override, fallback=str(get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/"))
     return {"provider": "xai", "api_key": api_key, "base_url": base_url}

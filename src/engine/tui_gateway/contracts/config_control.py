@@ -379,7 +379,6 @@ class ModelCapabilities(Result):
     """``noesia_cli/inventory.py::_apply_capabilities``."""
 
     fast: bool
-    ultrafast: bool = False
     reasoning: bool
     can_disable_reasoning: bool | None = None
 

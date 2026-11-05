@@ -1,8 +1,7 @@
 """xAI Grok-Imagine video generation backend.
 
 Text-, image- and reference-to-video through the unified video provider; edit/extend are exposed by
-``tools.xai_video_tools`` via ``run_xai_video_edit`` / ``run_xai_video_extend``. Auth: xAI Grok OAuth tokens
-(preferred — billed to the user's SuperGrok / X Premium+ subscription) or ``XAI_API_KEY``, both via
+``tools.xai_video_tools`` via ``run_xai_video_edit`` / ``run_xai_video_extend``. Auth: ``XAI_API_KEY`` via
 ``tools.xai_http.resolve_xai_http_credentials``. With xAI storage enabled the primary ``video`` / ``public_url``
 fields are the stored files-cdn HTTPS link; pass it as ``video_url`` for edit/extend (sent as ``video.url``).
 """
@@ -38,8 +37,7 @@ MAX_REFERENCE_IMAGES = 7
 _REMOTE_PREFIXES = ("http://", "https://")
 _TERMINAL_POLL_STATUSES = {"done", "failed", "error", "expired", "cancelled"}
 _IMAGE_TO_VIDEO_COMPAT_MODEL_IDS = {"grok-imagine-video-1.5-preview", "grok-imagine-video-1.5-2026-05-30"}
-_AUTH_REQUIRED_MSG = ("No xAI credentials found. Sign in via `noesia auth add xai-oauth` "
-                      "(SuperGrok / Premium+) or set XAI_API_KEY from https://console.x.ai/.")
+_AUTH_REQUIRED_MSG = ("No xAI credentials found. Set XAI_API_KEY from https://console.x.ai/.")
 _PUBLIC_URL_HINT = "(e.g. the `image`/`public_url` from a prior Imagine result)"
 _MODELS: dict[str, dict[str, Any]] = {
     "grok-imagine-video": {
@@ -65,10 +63,10 @@ def _xai_http(helper: str, fallback: Any, *args: Any, log: Optional[str] = None)
 
 
 def _resolve_xai_credentials() -> tuple[str, str]:
-    """``(api_key, base_url)``: runtime xai-oauth pool entry → ``auth.json`` OAuth tokens → ``XAI_API_KEY``
-    (empty key = none; callers check). ``resolve_xai_http_credentials`` already applies the profile
-    secret scope to both fields, so a miss stays a miss: a raw ``os.getenv`` fallback here would hand a
-    multiplexed secondary the default profile's key after the scoped resolver correctly returned none."""
+    """``(api_key, base_url)`` from ``XAI_API_KEY`` (empty key = none; callers check).
+    ``resolve_xai_http_credentials`` applies the profile secret scope, so a miss stays a miss: a raw
+    ``os.getenv`` fallback here would hand a multiplexed secondary the default profile's key after the
+    scoped resolver correctly returned none."""
     creds = _xai_http("resolve_xai_http_credentials", {}, log="xAI credential resolver failed: %s") or {}
     base_url = str(creds.get("base_url") or DEFAULT_XAI_BASE_URL)
     return str(creds.get("api_key") or "").strip(), base_url.strip().rstrip("/")

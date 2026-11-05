@@ -187,8 +187,7 @@ gateway:
     choice_normal: "normal — gnáthphróiseáil"
     choice_auto: "auto — tapa do na chéad soicindí de gach seal"
     choice_cold: "cold — tapa don chéad seal de sheisiún amháin"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast, praghas x6"
-    ultrafast_not_supported: "⚡ Níl Ultrafast ar fáil do `{model}` ar an gcuntas nó ar an mbealach seo."
+
   footer:
     status: "📎 Buntásc rite: **{state}**\nRéimsí: `{fields}`\nArdán: `{platform}`"
     usage: "Úsáid: `/footer [on|off|status]`"
@@ -1606,7 +1605,7 @@ slash:
   reasoning:
     description: "Bainistigh iarracht agus taispeáint na réasúnaíochta"
   fast:
-    description: "Mód tapa — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
+    description: "Mód tapa — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
   skin:
     description: "Taispeáin nó athraigh craiceann/téama na taispeána"
   indicator:
@@ -2680,9 +2679,7 @@ cli:
       feature_generic: "Mód tapa"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Níl Ultrafast ar fáil do {model} ar an gcuntas nó ar an mbealach seo."
-      usage: "Úsáid: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "Úsáid: /fast [normal|fast|auto|cold|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature} socraithe go {value} {scope}"
     hatch:

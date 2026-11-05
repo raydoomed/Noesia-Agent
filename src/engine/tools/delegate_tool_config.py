@@ -345,9 +345,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     host = base_url_hostname(v["base_url"])
     provider = "custom"
     api_mode = _detect_api_mode_for_url(v["base_url"]) or "chat_completions"
-    if host == "chatgpt.com" and "/backend-api/codex" in base_lower:
-        provider, api_mode = "openai-codex", "codex_responses"
-    elif host == "api.anthropic.com":
+    if host == "api.anthropic.com":
         provider, api_mode = "anthropic", "anthropic_messages"
     elif "api.kimi.com/coding" in base_lower:
         api_mode = "anthropic_messages"

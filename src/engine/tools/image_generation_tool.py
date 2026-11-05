@@ -78,7 +78,7 @@ def _submit_fal_request(model: str, arguments: dict[str, Any]):
     _load_fal_client()
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     if not fal_key_is_configured():
-        raise ValueError(_no_backend_message())
+        raise ValueError(_build_no_backend_setup_message())
     return fal_client.submit(model, arguments=arguments, headers=request_headers)
 
 

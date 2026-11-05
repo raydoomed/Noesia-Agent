@@ -545,8 +545,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         _apply_dark_palette(self)
         self.setMinimumWidth(400)
 
-        # 顺序由调用方（catalog）决定：配好的 → 文档里写了怎么配的 → 其余。这里不再排一遍，
-        # 两处各排一次必然打架——之前就是这里把「还没模型可选」的 OAuth 家顶到了第一位。
+        # 顺序由调用方（catalog）决定：配好的 → 文档里写了怎么配的 → 其余。这里不再排一遍。
         self._choices = [row for row in choices if row.get("provider")]
         # 现在生效的是哪一家哪个模型（引擎给的 option id，形如 `deepseek:deepseek-flash`）：
         # 文本页用它决定「在用」圈在谁身上，并且逐家回填上次选过的模型。
@@ -759,22 +758,9 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             ),
         )
 
-    @staticmethod
-    def _needs_key(row: dict) -> bool:
-        """这家要不要填 Key。
-
-        有变量名要填；引擎没给变量名、但认证类型是 api_key（正常填 Key 的家）也要填——
-        配过一次之后，引擎的旧回包里不再带 `key_env`，照变量名判断会把 Key 框和「确定」
-        一起灰掉，看着就像密钥再也改不了。
-        """
-        if row.get("env_vars"):
-            return True
-        return str(row.get("auth_type") or "api_key") == "api_key"
-
     def _add_key_block(self, rows: QtWidgets.QVBoxLayout, row: dict) -> None:
         slug = str(row["provider"])
         names = list(row.get("env_vars") or [])
-        needs_key = self._needs_key(row)
         block = QtWidgets.QFrame(rows.parentWidget())
         block.setObjectName("text-block")
         box = QtWidgets.QVBoxLayout(block)
@@ -796,15 +782,12 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         key = QtWidgets.QLineEdit(block)
         key.setEchoMode(QtWidgets.QLineEdit.Password)
         key.setPlaceholderText(
-            f"粘贴 {names[0]} 的值" if names
-            else ("粘贴新的 Key（会覆盖已存的那把）" if needs_key else "这家用引擎的登录态，不需要密钥")
+            f"粘贴 {names[0]} 的值" if names else "粘贴新的 Key（会覆盖已存的那把）"
         )
-        key.setEnabled(needs_key)
         key.setFixedHeight(28)
         confirm = QtWidgets.QPushButton("确定", block)
         confirm.setObjectName("secondary")
         confirm.setFixedHeight(28)
-        confirm.setEnabled(needs_key)
         confirm.setToolTip("把这串 Key 存进 .env（存好就会出现「模型设置」里）")
         key_row.addWidget(key, 1)
         key_row.addWidget(confirm)
@@ -1115,7 +1098,6 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         block = self._key_blocks.get(slug)
         if not block:
             return
-        needs_key = self._needs_key(block["row"])
         if block.get("saving"):
             self._set_badge(block["badge"], "保存中…")
             block["button"].setText("保存中…")
@@ -1125,16 +1107,14 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             block["note"].setText("正在把这串 Key 交给引擎…")
             return
         block["button"].setText("确定")
-        block["button"].setEnabled(needs_key)
-        block["key"].setEnabled(needs_key)
+        block["button"].setEnabled(True)
+        block["key"].setEnabled(True)
         if block["configured"]:
             self._set_badge(block["badge"], "已配置", ok=True)
         else:
-            self._set_badge(block["badge"], "未配置" if needs_key else "用登录态")
-        if not needs_key:
-            block["note"].setText("这家用引擎的登录态，没有要填的密钥。")
-        elif not block.get("error"):
-            block["note"].setText("" if block["configured"] else "")
+            self._set_badge(block["badge"], "未配置")
+        if not block.get("error"):
+            block["note"].setText("")
         block["note"].setVisible(bool(block["note"].text().strip()))
 
     def update_rows(self, rows: list[dict], current: str | None = None) -> None:

@@ -770,10 +770,6 @@ from datetime import datetime
 
 from noesia_cli.model_setup_flows import (
     _model_flow_openrouter,
-    _model_flow_openai_codex,
-    _model_flow_xai_oauth,
-    _model_flow_qwen_oauth,
-    _model_flow_minimax_oauth,
     _model_flow_custom,
     _model_flow_azure_foundry,
     _model_flow_named_custom,
@@ -1107,9 +1103,6 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
             from noesia_cli.config import split_model_config_default
             _model_name, _ = split_model_config_default(_model_name)
     _model_name = str(_model_name).strip()
-    # "Explicitly configured" = model differs from the hardcoded default; gates
-    # Claude Code credentials so they don't skip setup on a fresh install.
-    _has_noesia_config = _model_name and _model_name != DEFAULT_CONFIG.get("model", "")
 
     # Env vars (.env or shell). OPENAI_BASE_URL alone counts — local models
     # (vLLM, llama.cpp) often need no API key.
@@ -1155,20 +1148,6 @@ def _has_any_provider_configured(*, strict_profile_scope: bool = False) -> bool:
                 and status.get("key_source") != "keyless"
                 for pid, pconfig in PROVIDER_REGISTRY.items()
                 if pconfig.auth_type == "api_key"
-            ):
-                return True
-        except Exception:
-            pass
-
-    # Claude Code OAuth credentials count only once Noesia is explicitly
-    # configured — having Claude Code installed isn't consent to use its tokens.
-    if _has_noesia_config and not strict_profile_scope:
-        try:
-            from agent.anthropic_credentials import read_claude_code_credentials, is_claude_code_token_valid
-
-            creds = read_claude_code_credentials()
-            if creds and (
-                is_claude_code_token_valid(creds) or creds.get("refreshToken")
             ):
                 return True
         except Exception:
@@ -1787,16 +1766,6 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
-def cmd_proxy(args):
-    """Local OpenAI-compatible proxy to OAuth providers."""
-    # aiohttp is an extras install; keep it off the common path.
-    from noesia_cli.proxy.cli import cmd_proxy as _cmd_proxy
-
-    rc = _cmd_proxy(args)
-    if isinstance(rc, int) and rc != 0:
-        raise SystemExit(rc)
-
-
 def _forward_command(name: str, module: str, attr: str, *, forward_return: bool = False, doc: str = ""):
     """A ``noesia <cmd>`` handler that hands ``args`` to ``<module>.<attr>``.
 
@@ -1867,10 +1836,6 @@ _PROVIDER_MODEL_FLOWS = {
     "openrouter": lambda c, m, a: _model_flow_openrouter(c, m),
     "moa": lambda c, m, a: _model_flow_moa(c, m),
     "ai-gateway": lambda c, m, a: _model_flow_ai_gateway(c, m),
-    "openai-codex": lambda c, m, a: _model_flow_openai_codex(c, m),
-    "xai-oauth": lambda c, m, a: _model_flow_xai_oauth(c, m, args=a),
-    "qwen-oauth": lambda c, m, a: _model_flow_qwen_oauth(c, m),
-    "minimax-oauth": lambda c, m, a: _model_flow_minimax_oauth(c, m, args=a),
     "copilot-acp": lambda c, m, a: _model_flow_copilot_acp(c, m),
     "copilot": lambda c, m, a: _model_flow_copilot(c, m),
     "custom": lambda c, m, a: _model_flow_custom(c),
@@ -3314,12 +3279,12 @@ def _build_cli_parser():
     build_worktree_parser(subparsers)
     build_browser_parser(subparsers)
     build_secrets_parser(subparsers)
-    # OUTBOUND egress firewall; ``noesia proxy`` (gateway group) is the INBOUND one.
+    # OUTBOUND egress firewall.
     build_egress_parser(subparsers)
     build_migrate_parser(subparsers)
     build_codex_runtime_parser(subparsers)
     build_gateway_parser(
-        subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy, cmd_gateway_enroll=cmd_gateway_enroll
+        subparsers, cmd_gateway=cmd_gateway, cmd_gateway_enroll=cmd_gateway_enroll
     )
 
     # LSP is optional — a registration failure must not break the CLI.

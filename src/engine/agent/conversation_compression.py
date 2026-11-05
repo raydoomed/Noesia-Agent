@@ -3958,7 +3958,7 @@ def _route_codex_compaction(
 
 
 def _refresh_main_credential(agent: Any) -> None:
-    """Re-resolve a rotating Anthropic OAuth token so the summary call never carries a revoked one."""
+    """Re-resolve a rotating Anthropic credential so the summary call never carries a revoked one."""
     if getattr(agent, "api_mode", None) != "anthropic_messages":
         return
     refresh = getattr(agent, "_try_refresh_anthropic_client_credentials", None)

@@ -296,9 +296,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-opus-4-8": 1000000, "claude-opus-4.8": 1000000, "claude-opus-4-7": 1000000, "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000, "claude-sonnet-4-6": 1000000, "claude-opus-4.6": 1000000, "claude-sonnet-4.6": 1000000,
     "claude": 200000,  # catch-all for older Claude models
-    # OpenAI — direct-API windows (Codex OAuth caps gpt-5.4+/5.5/5.6 at 272K, resolved by
-    # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
-    # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
+    # OpenAI — direct-API windows. 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark
+    # is listed so "gpt-5" (400k) doesn't win.
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
     "gpt-6.1-sol": 1050000,  # -pro too (OpenAI model page + OpenRouter live 2026-09-29)
     "gpt-6-sol": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
@@ -335,8 +334,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
     "glm-4.7-flash": 202752, "glm-4.7": 204_800, "glm-4.6v": 131072, "glm-4.6": 204_800, "glm": 202752,
     # xAI — /v1/models returns no context_length, so these prevent probe-down on api.x.ai
-    # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI) is OAuth-only:
-    # 200k usable (the /v1/responses ~262144 input+output budget is a separate limit).
+    # custom providers (docs.x.ai). grok-composer(-2.5-fast, Grok Build CLI): 200k usable
+    # (the /v1/responses ~262144 input+output budget is a separate limit).
     # grok-build-latest aliases grok-4.5; grok-4-fast / grok-4.20 also match their
     # -(non-)reasoning and -multi-agent variants; "grok" is the catch-all.
     "grok-composer": 200000, "grok-build-latest": 500000, "grok-build": 256000, "grok-code-fast": 256000,
@@ -442,11 +441,11 @@ def _is_custom_endpoint(base_url: str) -> bool:
 # hosts; models.inference.ai.azure.com (GitHub Models free tier, ~8K per-request cap)
 # is mapped so a targeted hint fires instead of the custom-endpoint path.
 _URL_TO_PROVIDER: dict[str, str] = {
-    "api.openai.com": "openai", "chatgpt.com": "openai", "api.anthropic.com": "anthropic",
+    "api.openai.com": "openai", "api.anthropic.com": "anthropic",
     "api.z.ai": "zai", "open.bigmodel.cn": "zai",
     "api.moonshot.ai": "kimi-coding", "api.moonshot.cn": "kimi-coding-cn", "api.kimi.com": "kimi-coding",
     "api.stepfun.ai": "stepfun", "api.stepfun.com": "stepfun", "api.arcee.ai": "arcee", "api.minimax": "minimax",
-    "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba", "portal.qwen.ai": "qwen-oauth",
+    "dashscope.aliyuncs.com": "alibaba", "dashscope-intl.aliyuncs.com": "alibaba",
     "openrouter.ai": "openrouter", "generativelanguage.googleapis.com": "gemini",
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot", ".githubcopilot.com": "copilot", "models.github.ai": "copilot",
@@ -614,24 +613,9 @@ def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
 
 
 def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
-    """Providers whose disk context cache must not short-circuit probing: LM Studio (loaded
-    context is transient), Codex OAuth (entitlement-specific window; a persisted fallback would suppress revalidation)."""
-    return (provider or "").strip().lower() in {"lmstudio", "openai-codex"}
-
-
-def _is_codex_route(provider: str, base_url: str, custom_providers: list | None) -> bool:
-    """True when the request travels the Codex Responses wire regardless of host: the native
-    ``openai-codex`` provider (also behind a ``NOESIA_CODEX_BASE_URL`` / ``model.base_url`` proxy)
-    or a custom entry declaring ``api_mode: codex_responses``. The transport, not the hostname,
-    decides which window the model actually gets (#116191)."""
-    if (provider or "").strip().lower() == "openai-codex":
-        return True
-    if not base_url:
-        return False
-    with contextlib.suppress(Exception):  # config unreadable → not a known Codex route
-        from noesia_cli.config import get_custom_provider_api_mode
-        return get_custom_provider_api_mode(base_url, custom_providers) == "codex_responses"
-    return False
+    """Providers whose disk context cache must not short-circuit probing: LM Studio's loaded
+    context is transient."""
+    return (provider or "").strip().lower() == "lmstudio"
 
 
 def _save_unless_skipped(model: str, base_url: str, ctx: int, provider: str) -> None:
@@ -1656,35 +1640,6 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
     return None
 
 
-# Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
-# slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
-_CODEX_OAUTH_CONTEXT_FALLBACK: dict[str, int] = {
-    "gpt-6-astra": 272_000, "gpt-6.1-sol": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
-    "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
-    "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
-    "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
-    "gpt-5.5": 272_000, "gpt-5.4": 272_000, "gpt-5.2": 272_000, "gpt-5": 272_000,
-}
-# Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
-# gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``
-# picker variants (a 900K default burned subscription usage); the suffix is stripped before the wire.
-# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` and the gpt-6
-# tiers are FAMILY PREFIXES so dated snapshots (``gpt-6-sol-2026-09-22``) inherit the bump (``-pro`` slugs
-# aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K. The gpt-6 tiers
-# carry the 5.6 verdict forward: they replace Sol/Terra/Luna on the same Codex route, and the live
-# catalog's ``max_context_window`` still caps the bump (#105443) if it publishes a lower ceiling.
-_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: dict[str, int] = {
-    "gpt-5.6": 900_000, "gpt-6-sol": 900_000, "gpt-6-luna": 900_000,
-}
-_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: dict[str, int] = {
-    "gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000,
-    "gpt-6-astra": 900_000,  # advertised 272K; 920,043 input OK, 1,000,043 rejected (live 2026-09-04)
-    # advertised 272K; 918,137 input OK, ~931K rejected (live 2026-09-29), consistent with the 922K left by
-    # the model page's 1.05M context minus 128K max output (derived, not a published input cap).
-    # EXACT, not a prefix: the dotted slug is its own line and ``-pro`` is not routable.
-    "gpt-6.1-sol": 900_000,
-}
-_CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
 # The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
 # dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
@@ -1737,193 +1692,6 @@ def has_codex_context_variant(model_bare: str) -> bool:
     return is_codex_900k_base(model_bare)
 
 
-def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
-    """Live-verified cap for a VALID ``-900k`` variant only; base slugs and ineligible aliases -> None."""
-    base = _codex_variant_base(model_bare)
-    if base is None:
-        return None
-    exact = _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT.get(base)
-    if exact is not None:
-        return exact
-    return next((ctx for key, ctx in _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES.items() if base == key or base.startswith((key + "-", key + "."))), None)
-
-
-_codex_oauth_context_cache: dict[str, tuple[dict[str, int], float]] = {}
-# ``{slug: max_context_window}`` from the same fetch, keyed by the same token fingerprint. Only the
-# opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
-_codex_oauth_max_context_cache: dict[str, dict[str, int]] = {}
-_CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
-_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL = 300  # a probe that found no catalog is retried after 5 minutes; must stay < TTL
-# The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
-# hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
-# returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
-# legacy list (astra + the 5.6 trio) while any version at or above the newest
-# ``minimal_client_version`` (0.155.0, 1.0.0, 99.0.0 alike, live 2026-09-22) returns everything the
-# account is entitled to (#119412). So ask as the newest possible client first and keep "0.0.0" as
-# the fallback for the day the backend rejects out-of-sequence versions again (it used to return an
-# empty catalog for them; omitting the parameter is HTTP 400).
-CODEX_MODELS_CATALOG_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
-CODEX_NEWEST_CLIENT_VERSION = "99.0.0"
-CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
-
-
-def _codex_catalog_urls(base_url: str = "") -> tuple[str, ...]:
-    """Catalog URLs against ``base_url`` when it names a Codex-compatible gateway, else the
-    hard-coded endpoint. A custom base's credential belongs to that service — sending it to
-    chatgpt.com (or fetching the direct catalog behind a gateway's back) is wrong (#121486)."""
-    base = (base_url or "").strip().rstrip("/")
-    endpoint = f"{base}/models" if base else CODEX_MODELS_CATALOG_ENDPOINT
-    return tuple(
-        f"{endpoint}?client_version={v}"
-        for v in (CODEX_NEWEST_CLIENT_VERSION, CODEX_UNGATED_CLIENT_VERSION)
-    )
-
-
-CODEX_MODELS_CATALOG_URLS = _codex_catalog_urls()
-
-
-def _codex_catalog_probe_allowed(access_token: str, base_url: str = "") -> bool:
-    """Whether a catalog probe may carry ``access_token`` to ``base_url``'s ``/models``.
-
-    The caller binds ``base_url`` to the credential's own route, so a custom gateway is asked with
-    its own key (opaque or JWT). chatgpt.com only accepts ChatGPT OAuth access tokens — JWTs — so a
-    non-JWT credential aimed there is a gateway key composed with the wrong host: refuse it
-    (defense in depth, mirroring ``_probe_codex_quota_restored``'s gate; #121486).
-    """
-    if not access_token:
-        return False
-    base = (base_url or "").strip() or CODEX_MODELS_CATALOG_ENDPOINT
-    if not base_url_host_matches(base, "chatgpt.com"):
-        return True
-    from noesia_cli.auth_constants import _decode_jwt_claims
-    return bool(_decode_jwt_claims(access_token))
-
-
-def fetch_codex_catalog_entries(get: Callable[[str], Any], base_url: str = "") -> tuple[list[Any], Optional[int]]:
-    """``(models, last_status)`` from the first catalog URL that answers HTTP 200 with a non-empty
-    ``models`` list; ``get(url)`` is any client returning an object with ``status_code``/``json()``.
-    An empty or non-200 answer on the newest-client URL falls through to the ``0.0.0`` sentinel."""
-    status: Optional[int] = None
-    for url in _codex_catalog_urls(base_url):
-        resp = get(url)
-        status = resp.status_code
-        if status != 200:
-            continue
-        data = resp.json()
-        entries = data.get("models") if isinstance(data, dict) else None
-        if isinstance(entries, list) and entries:
-            return entries, status
-    return [], status
-
-
-def _codex_oauth_token_fingerprint(access_token: str, base_url: str = "") -> str:
-    """Non-secret cache key for a Codex OAuth access token (plus the base it was probed against —
-    a gateway's catalog can differ from chatgpt.com's for the same forwarded token)."""
-    return hashlib.sha256(f"{access_token}\n{(base_url or '').strip().rstrip('/')}".encode()).hexdigest()[:16]
-
-
-def _remember_no_codex_catalog(cache_key: str) -> None:
-    """A probe that found no catalog (down, non-200, not Codex-shaped) is remembered briefly: context
-    resolution runs on init, /status, aux and @-reference turns, and each miss can block ~30s. The entry is
-    stamped as if cached ``TTL - NEGATIVE_TTL`` ago, so the shared freshness check expires it after
-    ``_CODEX_OAUTH_CONTEXT_NEGATIVE_TTL``. A fresh catalog a concurrent probe just stored is kept, and the
-    max cache is left alone so an observed cap survives."""
-    now = time.time()
-    current = _codex_oauth_context_cache.get(cache_key)
-    if current is not None and current[0] and now - current[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
-        return
-    _codex_oauth_context_cache[cache_key] = ({}, now - _CODEX_OAUTH_CONTEXT_CACHE_TTL + _CODEX_OAUTH_CONTEXT_NEGATIVE_TTL)
-
-
-def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> tuple[dict[str, int], bool]:
-    """Account-scoped catalogue context lengths and HTTP freshness; also retain max-context and
-    speed metadata. In-process hits report False and must not drive persistent writes."""
-    if not _codex_catalog_probe_allowed(access_token, base_url):
-        return {}, False
-    now = time.time()
-    cache_key = _codex_oauth_token_fingerprint(access_token, base_url)
-    cached = _codex_oauth_context_cache.get(cache_key)
-    if cached is not None and now - cached[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
-        return cached[0], False
-    # Without ChatGPT-Account-ID /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200) and
-    # the probe silently falls back; residency-enforced workspaces 401 without the residency header.
-    from agent.codex_headers import codex_account_headers
-    headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
-    try:
-        entries, status = fetch_codex_catalog_entries(
-            lambda url: model_metadata_http.get(url, headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify()),
-            base_url=base_url,
-        )
-        if status != 200:
-            logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", status)
-            _remember_no_codex_catalog(cache_key)
-            return {}, False
-    except Exception as exc:
-        logger.debug("Codex /models probe failed: %s", exc)
-        _remember_no_codex_catalog(cache_key)
-        return {}, False
-    from agent.codex_service_tiers import remember_catalog
-    remember_catalog(cache_key, entries)
-    result: dict[str, int] = {}
-    max_result: dict[str, int] = {}
-    for item in entries:
-        slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
-        if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
-            result[slug.strip()] = ctx
-            if isinstance(max_ctx, int) and max_ctx > 0:
-                max_result[slug.strip()] = max_ctx
-    if not result:
-        _remember_no_codex_catalog(cache_key)
-        return {}, False
-    # Max first: a reader that sees the fresh context entry must also see its cap.
-    _codex_oauth_max_context_cache[cache_key] = max_result
-    _codex_oauth_context_cache[cache_key] = (result, now)
-    return result, True
-
-
-def _codex_catalog_key(keys, slug: str) -> Optional[str]:
-    """The catalog key for ``slug``: exact, then case-insensitive in case casing drifts."""
-    return slug if slug in keys else next((k for k in keys if k.lower() == slug.lower()), None)
-
-
-def _cached_codex_catalog_max(access_token: str, base_url: str, slug: str) -> Optional[int]:
-    """``max_context_window`` the catalog behind ``(access_token, base_url)`` last published for ``slug``."""
-    published = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token, base_url), {})
-    return published.get(_codex_catalog_key(published, slug))
-
-
-def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "", base_url: str = "") -> tuple[Optional[int], str]:
-    """``(context_length, source)`` for a Codex OAuth slug. source: "live" (fresh authenticated probe —
-    the only one eligible for persistent writes), "memory" (same-token in-process hit), "fallback"
-    (static table), or "" when unresolved."""
-    model_bare = _strip_provider_prefix(model).strip()
-    if not model_bare:
-        return None, ""
-    def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
-        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
-        bumped = _verified_codex_ctx_for_slug(model_bare)
-        if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
-            bumped = min(bumped, catalog_max) if catalog_max else bumped
-            logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
-            return bumped, source
-        return ctx, source
-    # The Codex catalog only knows the base slug (no -900k, no vendor/).
-    # ``-900k`` variants are Noesia picker aliases — the Codex catalog only knows the base slug, so resolve
-    # against the stripped id. Also drop any ``vendor/`` namespace (``openai/gpt-5.6-sol-900k``): the
-    # main-agent path normalizes it away before reaching here, but display/auxiliary callers pass it through
-    # (#92797 review).
-    lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
-    catalog_max = None
-    if access_token:
-        live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token, base_url=base_url)
-        # Read after the fetch; a failed refresh past the TTL keeps the cap already observed.
-        catalog_max = _cached_codex_catalog_max(access_token, base_url, lookup_bare)
-        slug = _codex_catalog_key(live, lookup_bare)
-        if slug is not None:
-            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", catalog_max)
-    hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
-    return _apply_verified_bump(hit[1], "fallback", catalog_max) if hit else (None, "")
 
 
 def _validate_cached_context_length(model: str, base_url: str, cached: int, *, api_key: str = "") -> Optional[int]:
@@ -2039,28 +1807,6 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     return DEFAULT_FALLBACK_CONTEXT
 
 
-def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
-    """Step 2 for a custom ``api_mode: codex_responses`` route — a Codex proxy on a generic URL.
-    The Codex OAuth table (with the opted-in ``-900k`` bump) answers first: the proxy's own /models
-    and the direct-API catalog both advertise the 1.05M direct window that Codex does not honour.
-    The proxy's context_window is never trusted; only an opted-in ``-900k`` variant asks the route's own
-    catalog (with the route's own key), and only for its max_context_window cap. Slugs the table does
-    not know take the ordinary endpoint probes."""
-    ctx, _source = _resolve_codex_oauth_context_length_with_source(model)
-    if ctx and api_key and is_codex_context_variant(model):
-        # The -900k bump is an account-level assumption; a gateway whose own catalog publishes a
-        # Codex-shaped max_context_window caps it, as the native provider's live catalog does.
-        _fetch_codex_oauth_context_lengths_with_source(api_key, base_url)
-        cap = _cached_codex_catalog_max(api_key, base_url, _bare_codex_slug(strip_codex_context_variant_suffix(model)))
-        if cap and cap < ctx:
-            logger.info("Route catalog at %s caps %r at max_context_window %s", base_url, model, f"{cap:,}")
-            ctx = cap
-    if ctx:
-        logger.info("Using Codex OAuth context length %s for model %r (codex_responses route at %s)", f"{ctx:,}", model, base_url)
-        return ctx
-    return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
-
-
 def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Optional[int]:
     """Step 0a: MoA virtual provider — ``model`` is a preset name, so every probe would miss. Resolve
     the aggregator's real provider+model (references are advisory). None on any failure."""
@@ -2121,18 +1867,6 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
             ctx = get_copilot_model_context(model, api_key=api_key)
             if ctx:
                 return ctx
-    # 5b. Codex OAuth (lower limits than the direct API for the same slug; its own /models is
-    # authoritative). Persist ONLY the authoritative source ("live"): a static-table value cached on
-    # a blip would be frozen in by step 1 forever.
-    sourced = {
-        "openai-codex": lambda: _resolve_codex_oauth_context_length_with_source(model, access_token=api_key or "", base_url=base_url or "") + ("live",),
-    }.get(effective_provider)
-    if sourced is not None:
-        ctx, source, persist_on = sourced()
-        if ctx:
-            if base_url and source == persist_on:
-                save_context_length(model, base_url, ctx)
-            return ctx
     if effective_provider in {"gmi", "commandcode", "commandcode-anthropic"} and base_url:
         # GMI and CommandCode expose authoritative context_length via /models (e.g. muse-spark 1M) but are
         # not in models.dev, and as known providers they skip step 2's probe — else they fell to 256K.
@@ -2172,11 +1906,11 @@ def get_model_context_length(
     provider: str = "", custom_providers: list | None = None,
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
-    model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Noesia, LM
-    Studio, Codex OAuth bypass it) and Bedrock; 2-3 custom endpoints (/models, local
-    probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot,
-    Noesia, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
-    unknown providers; 7 local server; 8 hardcoded defaults; 9 256K fallback."""
+    model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (LM Studio
+    bypasses it) and Bedrock; 2-3 custom endpoints (/models, local probe, Ollama);
+    4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot, Noesia, GMI, Ollama,
+    OpenRouter live, models.dev); 6 OpenRouter for unknown providers; 7 local server;
+    8 hardcoded defaults; 9 256K fallback."""
     # 0. Explicit config override — user knows best
     if isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
@@ -2221,12 +1955,8 @@ def get_model_context_length(
     if type(context) is int and context > 0:
         return context
     is_bedrock_context = _is_bedrock_context(base_url, provider)
-    # A Codex Responses route is keyed on its transport, not its host: behind a proxy
-    # (NOESIA_CODEX_BASE_URL, model.base_url, custom api_mode: codex_responses) the URL looks
-    # generic while the window is still the Codex OAuth one (#116191).
-    codex_route = _is_codex_route(provider, base_url, custom_providers)
-    # 1. Persistent cache (LM Studio / Codex routes excluded — see _skip_persistent_context_cache).
-    cached = get_cached_context_length(model, base_url) if base_url and not is_bedrock_context and not codex_route and not _skip_persistent_context_cache(base_url, provider) else None
+    # 1. Persistent cache (LM Studio excluded — see _skip_persistent_context_cache).
+    cached = get_cached_context_length(model, base_url) if base_url and not is_bedrock_context and not _skip_persistent_context_cache(base_url, provider) else None
     validated = _validate_cached_context_length(model, base_url, cached, api_key=api_key) if cached is not None else None
     if validated is not None:
         return validated
@@ -2242,11 +1972,9 @@ def get_model_context_length(
                 save_context_length(model, base_url, ctx)
             return ctx
     # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
-    # report a provider-imposed limit (Copilot: 128k) rather than the window. The native
-    # openai-codex provider skips it too even on a proxy URL — step 5 runs its live catalog probe.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and (provider or "").strip().lower() != "openai-codex":
-        resolve = _resolve_custom_codex_route_context_length if codex_route else _resolve_custom_endpoint_context_length
-        return resolve(model, base_url, api_key, provider)
+    # report a provider-imposed limit (Copilot: 128k) rather than the window.
+    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
+        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)

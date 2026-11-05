@@ -155,33 +155,6 @@ def _build_turn_input(user_input: Any) -> tuple[list[dict], str]:
     return items + images, text
 
 
-# Strong credential-failure signals: trusted whether they appear in the primary
-# JSON-RPC error or in ambient app-server stderr.
-_OAUTH_REFRESH_FAILURE_HINTS = (
-    "invalid_grant", "invalid grant", "refresh token", "refresh_token", "token refresh", "token_refresh",
-    "token has expired", "expired_token", "token_expired", "expired token", "not authenticated", "unauthenticated",
-    "re-authenticate", "reauthenticate", "please log in", "please login", "no auth profile",
-)
-# Generic auth words are authoritative only in the primary error. codex writes
-# independent ChatGPT plugin prewarm failures ("HTTP 401 Unauthorized") to stderr,
-# so there they must not mask an unrelated RPC error or timeout (#75167).
-_PRIMARY_ONLY_OAUTH_HINTS = ("401 unauthorized", "unauthorized", "oauth", "auth profile")
-
-_OAUTH_REAUTH_HINT = (
-    "Codex authentication failed — your ChatGPT/Codex login looks expired or invalid. Run `codex login` to refresh, "
-    "then retry. (Fall back to default runtime with `/codex-runtime auto` if the issue persists.)"
-)
-
-
-def _classify_oauth_failure(primary: str = "", *, stderr: str = "") -> Optional[str]:
-    """Re-auth hint when ``primary`` (the operation's own error) or ``stderr`` proves the codex login is broken."""
-    primary_l = (primary or "").lower()
-    stderr_l = (stderr or "").lower()
-    if any(n in primary_l for n in _OAUTH_REFRESH_FAILURE_HINTS + _PRIMARY_ONLY_OAUTH_HINTS):
-        return _OAUTH_REAUTH_HINT
-    return _OAUTH_REAUTH_HINT if any(n in stderr_l for n in _OAUTH_REFRESH_FAILURE_HINTS) else None
-
-
 @dataclass
 class _ServerRequestRouting:
     """Default approval policies when no interactive approval_callback is wired in (tests, cron)."""
@@ -372,14 +345,6 @@ class CodexAppServerSession:
         result.error = error
         result.should_retire = True
 
-    def _set_classified_error(self, result: TurnResult, prefix: str, classify_text: str, detail: Any) -> None:
-        """OAuth failures -> re-auth hint AND retire (token store broken though JSON-RPC is fine); else stderr tail."""
-        hint = _classify_oauth_failure(classify_text, stderr=self._stderr_blob(40))
-        if hint is not None:
-            self._retire(result, hint)
-        else:
-            result.error = self._format_error_with_stderr(prefix, detail)
-
     def _start_for(self, result: TurnResult) -> bool:
         """ensure_started(); startup failures become a retiring TurnResult.error instead of raw exceptions."""
         try:
@@ -398,10 +363,9 @@ class CodexAppServerSession:
         except CodexAppServerTransportError as exc:
             self._retire(result, self._format_error_with_stderr(f"{label} failed", exc))
         except CodexAppServerError as exc:
-            self._set_classified_error(result, f"{label} failed", exc.message, exc)
+            self._retire(result, self._format_error_with_stderr(f"{label} failed", exc))
         except TimeoutError as exc:
-            hint = _classify_oauth_failure(stderr=self._stderr_blob(40))
-            self._retire(result, hint or self._format_error_with_stderr(f"{label} timed out", exc))
+            self._retire(result, self._format_error_with_stderr(f"{label} timed out", exc))
         return None
 
     def _subprocess_died(self, result: TurnResult, client: Optional[CodexAppServerClient]) -> bool:
@@ -417,8 +381,7 @@ class CodexAppServerSession:
             return True
         if client.is_alive():
             return False
-        hint = _classify_oauth_failure(stderr=self._stderr_blob(60))
-        self._retire(result, hint or self._format_error_with_stderr("codex app-server subprocess exited unexpectedly", tail_lines=20))
+        self._retire(result, self._format_error_with_stderr("codex app-server subprocess exited unexpectedly", tail_lines=20))
         return True
 
     def _absorb_notification(
@@ -549,7 +512,7 @@ class CodexAppServerSession:
             turn_status = turn_obj.get("status")
             if turn_status and turn_status not in {"completed", "interrupted"} and turn_obj.get("error"):
                 err_msg = _format_responses_error(turn_obj["error"], str(turn_status))
-                self._set_classified_error(result, f"turn ended status={turn_status}", err_msg, err_msg)
+                self._retire(result, err_msg)
             return True
 
         self._drive_turn(
@@ -669,7 +632,7 @@ class CodexAppServerSession:
                 result.error = result.error or "compact turn interrupted"
             elif turn_status and turn_status != "completed":
                 err_msg = _format_responses_error(turn_obj.get("error"), str(turn_status))
-                self._set_classified_error(result, f"compact turn ended status={turn_status}", err_msg, err_msg)
+                self._retire(result, err_msg)
             return True
 
         def on_server_request(sreq: dict) -> bool:

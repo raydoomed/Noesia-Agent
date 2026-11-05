@@ -232,13 +232,10 @@ _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
     "or check the details in `{home}/logs/agent.log`."
 )
-_AUTH_COPY: dict[str, str] = {
-    "oauth": "{label} rejected your sign-in, so the model can't be reached. Sign in again: `{relogin}`.",
-    "api_key": (
-        "{label} rejected your API key, so the model can't be reached. Update it in "
-        "Settings → Providers, or run `noesia setup` in a terminal."
-    ),
-}
+_AUTH_COPY = (
+    "{label} rejected your API key, so the model can't be reached. Update it in "
+    "Settings → Providers, or run `noesia setup` in a terminal."
+)
 
 CONTENT_POLICY_NEXT_STEPS = (
     "Try rewording your message or removing sensitive attachments, or switch to another "
@@ -408,31 +405,16 @@ def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
     return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
 
 
-def oauth_relogin_command(provider: Any) -> str:
-    """The exact re-login command for a rejected OAuth grant, naming the provider slug and the active
-    named profile: a profile's credentials are its own (93889b770da), so a bare ``noesia auth`` from
-    the root profile re-signs the wrong store and the goal judge, reading a bare 401, guesses which
-    service revoked the token (#114012)."""
-    from noesia_constants import profile_cli_selector
-
-    slug = str(provider or "").strip().lower()
-    return f"noesia {profile_cli_selector()}auth add {slug} --type oauth"
-
-
 def relogin_command_hint(provider: Any) -> str:
-    """Re-sign-in command for a rejected credential on surfaces that may not know the provider:
-    the exact OAuth command for a known OAuth slug, ``noesia auth add <slug>`` for a known API-key
-    slug, and the ``<provider>`` placeholder when the slug is unknown — always carrying the
-    ``-p <profile>`` selector so a profile user never re-signs the ROOT store (#114012)."""
+    """Re-key command for a rejected credential on surfaces that may not know the provider:
+    ``noesia auth add <slug>`` for a known slug and the ``<provider>`` placeholder when the slug is
+    unknown — always carrying the ``-p <profile>`` selector so a profile user never rewrites the
+    ROOT store (#114012)."""
     from noesia_constants import profile_cli_selector
 
     slug = str(provider or "").strip().lower()
     if not slug:
         return f"noesia {profile_cli_selector()}auth add <provider>"
-    from agent.error_surface import auth_kind
-
-    if auth_kind(slug) == "oauth":
-        return oauth_relogin_command(slug)
     return f"noesia {profile_cli_selector()}auth add {slug}"
 
 
@@ -442,9 +424,7 @@ def nonretryable_copy(
     """Chat copy for a terminal non-retryable rejection (auth, model missing, TLS, generic 4xx)."""
     label = provider_label_for(provider)
     if getattr(classified, "is_auth", False):
-        from agent.error_surface import auth_kind
-
-        template = _AUTH_COPY[auth_kind(str(provider or ""))]
+        template = _AUTH_COPY
     else:
         template = _NONRETRYABLE_COPY.get(classified.reason.value, _NONRETRYABLE_DEFAULT_COPY)
     prefix_hint = (
@@ -452,8 +432,7 @@ def nonretryable_copy(
         f"'{prefix_suggestion}'?"
         if prefix_suggestion else ""
     )
-    body = template.format(label=label, model=model, home=display_noesia_home(), prefix_hint=prefix_hint,
-                           relogin=oauth_relogin_command(provider))
+    body = template.format(label=label, model=model, home=display_noesia_home(), prefix_hint=prefix_hint)
     return f"{body}\n\nProvider said: {summary}"
 
 

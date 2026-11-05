@@ -5,27 +5,12 @@ from typing import Any, Dict, List, Optional
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
-_MCP_PREFIX = "mcp__"
 _THINKING_TYPES = ("thinking", "redacted_thinking")
-
-
-def _unprefix_oauth_tool_name(name: str) -> str:
-    """Reverse the OAuth-wire ``mcp__`` prefix back to the registered tool name.
-    Two originals map onto one wire name (``read_file`` / ``mcp_linear_get_issue``), so
-    resolve by registry lookup, never rewriting a name that already resolves natively.
-    OAuth wire aliases are checked LAST so a real tool under the wire name still wins."""
-    from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
-    from tools.registry import registry as _tool_registry
-    bare = name[len(_MCP_PREFIX):]
-    for candidate in (name, "mcp_" + bare, bare):
-        if _tool_registry.get_entry(candidate):
-            return candidate
-    return _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(bare, name)
 
 
 # build_kwargs params forwarded to build_anthropic_kwargs, with the defaults applied when absent.
 _BUILD_KWARG_DEFAULTS = {
-    "max_tokens": 16384, "reasoning_config": None, "tool_choice": None, "is_oauth": False, "preserve_dots": False,
+    "max_tokens": 16384, "reasoning_config": None, "tool_choice": None, "preserve_dots": False,
     "context_length": None, "base_url": None, "fast_mode": False, "drop_context_1m_beta": False,
 }
 
@@ -66,7 +51,6 @@ class AnthropicTransport(ProviderTransport):
         """Parse content blocks (text/thinking/tool_use), map stop_reason, collect reasoning_details."""
         import json
         from agent.anthropic_message_convert import _sanitize_replay_block, _to_plain_data
-        strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
         text_parts, reasoning_parts, reasoning_details, tool_calls = [], [], [], []
         # Anthropic signs each thinking block against the blocks PRECEDING it; when thinking
         # interleaves with tool_use the parallel lists lose that order and replay -> HTTP 400.
@@ -86,10 +70,7 @@ class AnthropicTransport(ProviderTransport):
                 if isinstance(detail, dict):
                     reasoning_details.append(detail)
             elif block.type == "tool_use":
-                name = block.name
-                if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    name = _unprefix_oauth_tool_name(name)
-                tool_calls.append(ToolCall(id=block.id, name=name, arguments=json.dumps(block.input)))
+                tool_calls.append(ToolCall(id=block.id, name=block.name, arguments=json.dumps(block.input)))
         provider_data = {"reasoning_details": reasoning_details} if reasoning_details else {}
         stop_details = _to_plain_data(getattr(response, "stop_details", None))
         if stop_details is not None:

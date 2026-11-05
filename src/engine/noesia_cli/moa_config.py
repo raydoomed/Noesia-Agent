@@ -12,7 +12,6 @@ MOA_MARKER_PREFIX = "__NOESIA_MOA_TURN_V1__"
 DEFAULT_MOA_PRESET_NAME = "default"
 
 DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = [
-    {"provider": "openai-codex", "model": "gpt-5.5"},
     {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
 
 DEFAULT_MOA_AGGREGATOR: dict[str, str] = {

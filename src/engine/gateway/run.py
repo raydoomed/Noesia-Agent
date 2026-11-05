@@ -986,7 +986,8 @@ def _warm_turn_machinery_sync() -> int:
         get_environment_probe_line()
     try:
         # Same route/credential/profile rules as the turn itself; primes the process-local catalog
-        # caches (codex OAuth, OpenRouter) so AIAgent construction on the first turn is a cache hit.
+        # caches (per-provider capability catalog, OpenRouter) so AIAgent construction on the first
+        # turn is a cache hit.
         ctx = _resolve_gateway_model_context()
         logger.info("Model context warmed: %s -> %d tokens (%s)", ctx.model, ctx.context_length, ctx.context_source)
     except Exception:
@@ -2898,8 +2899,8 @@ from gateway.session_worker_construct import checkpoint_agent_kwargs as _checkpo
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:
-    """Read model from config.yaml (single source of truth), else temporary AIAgents (e.g. /compress)
-    use the hardcoded default, which fails under openai-codex."""
+    """Read model from config.yaml (single source of truth); temporary AIAgents (e.g. /compress)
+    use the hardcoded default."""
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
@@ -4124,7 +4125,7 @@ class GatewayRunner(
         ("model", "context_length"), ("compression", "enabled"),
         ("compression", "progress_notices"), ("compression", "threshold"),
         ("compression", "model_thresholds"), ("compression", "threshold_tokens"),
-        ("compression", "codex_gpt55_autoraise"), ("compression", "codex_app_server_auto"),
+        ("compression", "codex_app_server_auto"),
         ("compression", "codex_responses_native"),
         ("compression", "codex_responses_compact_threshold"), ("compression", "in_place"),
         ("compression", "checkpoint_required"), ("compression", "micro_compact"),

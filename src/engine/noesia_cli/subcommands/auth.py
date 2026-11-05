@@ -11,10 +11,10 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_subparsers = auth_parser.add_subparsers(dest="auth_action")
     auth_add = auth_subparsers.add_parser("add", help="Add a pooled credential")
     auth_add.add_argument(
-        "provider", help="Provider id (for example: anthropic, openai-codex, openrouter)")
+        "provider", help="Provider id (for example: anthropic, openrouter, deepseek)")
     auth_add.add_argument(
         "--type", dest="auth_type", choices=["oauth", "api-key", "api_key"],
-        help="Credential type to add")
+        help="Credential type to add (oauth = browser PKCE login, openrouter only)")
     auth_add.add_argument("--label", help="Optional display label")
     auth_add.add_argument(
         "--priority", type=int,
@@ -22,16 +22,11 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
              "appends last when omitted")
     auth_add.add_argument("--api-key", help="API key value (otherwise prompted securely)")
     auth_add.add_argument(
-        "--no-browser", action="store_true", help="Do not auto-open a browser for OAuth login")
+        "--no-browser", action="store_true", help="Do not auto-open a browser for the PKCE login")
+    auth_add.add_argument("--timeout", type=float, help="Login/network timeout in seconds")
     auth_add.add_argument(
-        "--browser", action="store_true",
-        help="openai-codex only: sign in with the browser authorization-code (PKCE) flow on "
-             "http://localhost:1455/auth/callback instead of the default device-code flow; falls back "
-             "to device code when that port is busy (config: auth.codex_login_flow)")
-    auth_add.add_argument("--timeout", type=float, help="OAuth/network timeout in seconds")
-    auth_add.add_argument(
-        "--insecure", action="store_true", help="Disable TLS verification for OAuth login")
-    auth_add.add_argument("--ca-bundle", help="Custom CA bundle for OAuth login")
+        "--insecure", action="store_true", help="Disable TLS verification for the login request")
+    auth_add.add_argument("--ca-bundle", help="Custom CA bundle for the login request")
     auth_list = auth_subparsers.add_parser("list", help="List pooled credentials")
     auth_list.add_argument("provider", nargs="?", help="Optional provider filter")
     auth_remove = auth_subparsers.add_parser(
@@ -50,7 +45,7 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_priority.add_argument("target", help="Credential index, entry id, or exact label")
     auth_priority.add_argument("priority", type=int, help="New priority; others are renumbered")
     auth_refresh = auth_subparsers.add_parser(
-        "refresh", help="Refresh a pooled OAuth credential's tokens and clear its cooldown")
+        "refresh", help="Refresh a pooled plugin-OAuth credential's tokens and clear its cooldown")
     auth_refresh.add_argument("provider", help="Provider id")
     auth_refresh.add_argument(
         "target", nargs="?",

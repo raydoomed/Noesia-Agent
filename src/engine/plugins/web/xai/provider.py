@@ -2,7 +2,7 @@
 Responses API (https://docs.x.ai/developers/tools/web-search); Grok is asked for structured JSON
 so rows match every other Noesia web provider. Config: ``web.backend: "xai"``; optional ``web.xai``:
 ``model`` (default grok-build-0.1), ``allowed_domains`` / ``excluded_domains`` (max 5, mutually
-exclusive), ``timeout`` (default 90s). Auth: Grok OAuth via ``noesia auth``, else XAI_API_KEY.
+exclusive), ``timeout`` (default 90s). Auth: XAI_API_KEY.
 """
 
 from __future__ import annotations
@@ -58,9 +58,8 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
     DISPLAY_NAME = "xAI Web Search (Grok)"
 
     def is_available(self) -> bool:
-        """Cheap probe (env var OR auth-store tokens). Deliberately NOT
-        ``resolve_xai_http_credentials``: must never refresh tokens or take the
-        auth-store lock, since this runs on every ``noesia tools`` repaint."""
+        """Cheap secret probe. Deliberately NOT ``resolve_xai_http_credentials``: it must
+        stay I/O free, since this runs on every ``noesia tools`` repaint."""
         return has_xai_credentials()
 
     def search(self, query: str, limit: int = 5) -> dict[str, Any]:
@@ -74,7 +73,7 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         api_key = str(creds.get("api_key") or "").strip()
         base_url = str(creds.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
         if not api_key:
-            return _fail("No xAI credentials found. Run `noesia auth` to sign in with xAI Grok OAuth, or set XAI_API_KEY.")
+            return _fail("No xAI credentials found. Set XAI_API_KEY.")
         # Same clamp range as web_search_tool so explicit limits aren't downgraded.
         limit = max(1, min(_coerce(int, limit, 5), 100))
         cfg = _load_xai_web_config()
@@ -92,7 +91,6 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         logger.info("xAI web search via %s: '%s' (limit=%d, model=%s)", base_url, query, limit, model)
         data, error = self._post_responses(
             base_url, payload, api_key, _coerce(float, cfg.get("timeout", DEFAULT_TIMEOUT), DEFAULT_TIMEOUT),
-            is_oauth_path=(creds.get("provider") == "xai-oauth"),
         )
         if error:
             return error
@@ -117,46 +115,24 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
         return {"type": "web_search", "filters": filters} if filters else {"type": "web_search"}
 
     @staticmethod
-    def _post_responses(base_url: str, payload: dict[str, Any], api_key: str, timeout: float, *, is_oauth_path: bool) -> tuple[Any, Optional[dict[str, Any]]]:
-        """POST ``/responses`` → ``(parsed_json, None)`` or ``(None, failure_envelope)``.
-
-        Two attempts: on a first-call 401 with OAuth creds, force-refresh once and retry
-        (opaque tokens the resolver can't pre-check; mid-window revocation/rotation).
-        XAI_API_KEY creds can't be refreshed, so they skip the retry rather than burn quota.
-        """
+    def _post_responses(base_url: str, payload: dict[str, Any], api_key: str, timeout: float) -> tuple[Any, Optional[dict[str, Any]]]:
+        """POST ``/responses`` → ``(parsed_json, None)`` or ``(None, failure_envelope)``."""
         import httpx
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": noesia_xai_user_agent()}
-        def _refreshed_key() -> str:
-            """New bearer after a 401, or "" when refresh fails / returns the same token (retry would be pointless)."""
+        try:
+            resp = httpx.post(f"{base_url}/responses", headers=headers, json=payload, timeout=timeout)
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
             try:
-                key = str(resolve_xai_http_credentials(force_refresh=True, api_key_hint=api_key).get("api_key") or "").strip()
-                return key if key != api_key else ""
-            except Exception as refresh_exc:
-                logger.warning("xAI web search OAuth refresh after 401 failed: %s", refresh_exc)
-                return ""
-
-        resp = None
-        for attempt in range(2):
-            try:
-                resp = httpx.post(f"{base_url}/responses", headers=headers, json=payload, timeout=timeout)
-                resp.raise_for_status()
-                break
-            except httpx.HTTPStatusError as exc:
-                status = exc.response.status_code if exc.response is not None else 0
-                if status == 401 and attempt == 0 and is_oauth_path:
-                    logger.info("xAI web search got 401 on first attempt; forcing OAuth refresh and retrying once.")
-                    if new_key := _refreshed_key():
-                        api_key, headers["Authorization"] = new_key, f"Bearer {new_key}"
-                        continue
-                try:
-                    body = exc.response.text[:300] if exc.response is not None else ""
-                except Exception:
-                    body = ""
-                logger.warning("xAI web search HTTP %d: %s", status, body)
-                return None, _fail(f"xAI web search returned HTTP {status}: {body}".rstrip())
-            except httpx.RequestError as exc:
-                logger.warning("xAI web search request error: %s", exc)
-                return None, _fail(f"Could not reach xAI: {exc}")
+                body = exc.response.text[:300] if exc.response is not None else ""
+            except Exception:
+                body = ""
+            logger.warning("xAI web search HTTP %d: %s", status, body)
+            return None, _fail(f"xAI web search returned HTTP {status}: {body}".rstrip())
+        except httpx.RequestError as exc:
+            logger.warning("xAI web search request error: %s", exc)
+            return None, _fail(f"Could not reach xAI: {exc}")
         if resp is None:
             return None, _fail("xAI web search produced no response")
         try:
@@ -253,8 +229,8 @@ class XAIWebSearchProvider(BaseWebSearchProvider):
 
     def get_setup_schema(self) -> dict[str, Any]:
         # Auth resolution is delegated to the shared ``xai_grok`` post_setup hook
-        # (same one image_gen.xai / tts.xai use) for a consistent OAuth-or-key prompt.
+        # (same one image_gen.xai / tts.xai use) for a consistent setup prompt.
         return setup_schema(
             "xAI Web Search (Grok)", "paid",
-            "Agentic web search via Grok's web_search tool — uses xAI Grok OAuth or XAI_API_KEY.", post_setup="xai_grok",
+            "Agentic web search via Grok's web_search tool — uses XAI_API_KEY.", post_setup="xai_grok",
         )

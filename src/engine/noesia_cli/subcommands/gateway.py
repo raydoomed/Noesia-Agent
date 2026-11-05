@@ -1,4 +1,4 @@
-"""``noesia gateway`` and ``noesia proxy`` subcommand parsers."""
+"""``noesia gateway`` subcommand parser."""
 
 from __future__ import annotations
 
@@ -59,9 +59,9 @@ def _add_system_flag(parser: argparse.ArgumentParser) -> None:
 
 
 def build_gateway_parser(
-    subparsers, *, cmd_gateway: Callable, cmd_proxy: Callable, cmd_gateway_enroll: Callable
+    subparsers, *, cmd_gateway: Callable, cmd_gateway_enroll: Callable
 ) -> None:
-    """Attach the ``gateway`` and ``proxy`` subcommands to ``subparsers``."""
+    """Attach the ``gateway`` subcommand to ``subparsers``."""
     gateway_parser = subparsers.add_parser("gateway", help="Messaging gateway management",
         description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin, and more)")
     gateway_subparsers = gateway_parser.add_subparsers(
@@ -243,24 +243,4 @@ def build_gateway_parser(
             "reconnects on its own.")
     gateway_enroll.set_defaults(func=cmd_gateway_enroll)
 
-    # proxy: local OpenAI-compatible proxy attaching the user's OAuth provider credentials,
-    # so external apps (Open WebUI, Karakeep, ...) ride a logged-in subscription.
-    proxy_parser = subparsers.add_parser(
-        "proxy", help="Local OpenAI-compatible proxy to OAuth providers",
-        description="Run a local HTTP server that forwards OpenAI-compatible requests "
-            "to an OAuth-authenticated provider (e.g. Noesia Portal). External "
-            "apps can point at the proxy with any bearer token; the proxy "
-            "attaches your real credentials.")
-    proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_command")
-
-    proxy_start = proxy_subparsers.add_parser("start", help="Run the proxy in the foreground")
-    proxy_start.add_argument("--provider", default="noesia",
-        help="Upstream provider: noesia or xai (default: noesia). See `noesia proxy providers`.")
-    proxy_start.add_argument("--host", default=None,
-        help="Bind address (default: 127.0.0.1). Use 0.0.0.0 to expose on LAN.")
-    proxy_start.add_argument("--port", type=int, default=None, help="Bind port (default: 8645)")
-
-    proxy_subparsers.add_parser("status", help="Show which proxy upstreams are ready")
-    proxy_subparsers.add_parser("providers", help="List available proxy upstream providers")
-    proxy_parser.set_defaults(func=cmd_proxy)
     gateway_parser.set_defaults(func=cmd_gateway)

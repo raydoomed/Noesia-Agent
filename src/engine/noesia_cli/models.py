@@ -38,7 +38,6 @@ from noesia_cli.models_catalog_static import (
     _COPILOT_MODEL_ALIASES,
     _LIVE_FIRST_PICKER_PROVIDERS,
     _OPENAI_FAST_MODE_PREFIXES,
-    _OPENAI_ULTRAFAST_MODELS,
     _PROVIDER_ALIASES,
     _PROVIDER_LABELS)
 from noesia_cli.models_reasoning_caps import (
@@ -806,8 +805,8 @@ def _live_catalog_matches(name: str, current_provider: str):
     """Yield every ``(provider_id, name)`` whose **线上清单** lists *name*, in ladder order.
 
     Several first-party providers list the same slug (``gpt-5.6-luna`` on ``openai-api`` AND
-    ``openai-codex``); the first is only a guess, so callers that gate on credentials need the
-    siblings too (#102775). 清单来自 live 缓存，不再有随包表。"""
+    ``azure-foundry``); the first is only a guess, so callers that gate on credentials need the
+    siblings too. 清单来自 live 缓存，不再有随包表。"""
     name_lower = name.lower()
     current_keys = _provider_keys(current_provider)
     # Step 1: direct live-catalog match. Aggregators list other vendors' models — never
@@ -915,7 +914,7 @@ def _detection_candidates(name: str, current_provider: str):
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         yield static_match
-        # Sibling catalogs listing the same slug (openai-api / openai-codex share the gpt-5.6
+        # Sibling catalogs listing the same slug (openai-api / azure-foundry share the gpt-5.6
         # family): the credential gate downstream takes the first one the user can actually use.
         for sibling in _live_catalog_matches(name, current_provider):
             if sibling != static_match:
@@ -1014,7 +1013,6 @@ def _fast_mode_route_supported(
         allowed = {
             "openai": "api.openai.com",
             "openai-api": "api.openai.com",
-            "openai-codex": "chatgpt.com",
         }
     if provider and normalize_provider(provider) not in allowed:
         return False
@@ -1022,30 +1020,18 @@ def _fast_mode_route_supported(
     return not host or host in allowed.values()
 
 
-def model_supports_ultrafast(model_id: Optional[str]) -> bool:
-    """OpenAI Ultrafast (``service_tier: "ultrafast"``) is published per model, not per family."""
-    from agent.model_metadata import strip_codex_context_variant_suffix
-
-    base = _strip_vendor_prefix(strip_codex_context_variant_suffix(str(model_id or ""))).split(":")[0]
-    return base in _OPENAI_ULTRAFAST_MODELS
-
-
 def resolve_fast_mode_overrides(
     model_id: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
-    tier: Optional[str] = None,
 ) -> dict[str, Any] | None:
     """Fast/priority request_overrides — ``{"speed": "fast"}`` (Anthropic Fast Mode) or
     ``{"service_tier": "priority"}`` (OpenAI / xAI Priority Processing) — or None if unsupported.
-    ``tier="ultrafast"`` asks for OpenAI Ultrafast instead: ``{"service_tier": "ultrafast"}`` on an
-    Ultrafast model, None elsewhere (never a silent downgrade to a different paid tier).
+
     With ``provider``/``base_url`` the route is gated too (``_fast_mode_route_supported``) so proxies
     never see the params. Single fast-mode gate for ``/fast`` and ``agent.fast_mode`` windows."""
     if not model_supports_fast_mode(model_id):
         return None
     if (provider or base_url) and not _fast_mode_route_supported(model_id, provider, base_url):
         return None
-    if tier == "ultrafast":
-        return {"service_tier": "ultrafast"} if model_supports_ultrafast(model_id) else None
     return {"speed": "fast"} if _is_anthropic_fast_model(model_id) else {"service_tier": "priority"}
 
 
@@ -1184,31 +1170,10 @@ def _openai_discovery_base_url(provider: str) -> str:
     return "https://api.openai.com/v1"
 
 
-def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
-    from noesia_cli.codex_models import get_codex_model_ids
-
-    # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
-    # catalog without a token / when unreachable. Read-only (#68004): a picker never imports,
-    # refreshes or persists a credential, so an expired stored token means the hardcoded catalog
-    # until the runtime lease refreshes it.
-    # The token and the host it is routed to come from the same resolution (#121486): a pooled
-    # gateway key is only ever sent to that gateway, never to the chatgpt.com default.
-    base_url = None
-    try:
-        from noesia_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
-
-        creds = resolve_codex_runtime_credentials(read_only=True)
-        access_token, base_url = creds.get("api_key"), creds.get("base_url")
-        if _codex_access_token_is_expiring(access_token, 0):
-            access_token = None
-    except Exception:
-        access_token = None
-    return get_codex_model_ids(access_token=access_token, base_url=base_url)
-
 
 _COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
 _COPILOT_ACP_SESSION_FAIL_TTL = 30.0  # failed probes re-probe quickly so a fresh CLI login is picked up
-_copilot_acp_session_memo: Optional[tuple[float, float, Optional[list[str]]]] = None  # (at, ttl, models)
+_copilot_acp_session_memo: Optional[tuple[float, float, Optional[list[str]]]] = None
 
 
 def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
@@ -1383,7 +1348,6 @@ def _azure_foundry_catalog(normalized: str, force_refresh: bool) -> Optional[lis
 # falls through to the profile/curated path; a list is returned as-is (even empty).
 _PROVIDER_CATALOG_FETCHERS: dict[str, Any] = {
     "openrouter": lambda normalized, force_refresh: model_ids(force_refresh=force_refresh),
-    "openai-codex": _codex_catalog,
     "copilot": _copilot_catalog,
     "copilot-acp": _copilot_catalog,
     "stepfun": _stepfun_catalog,
@@ -1426,8 +1390,8 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         return None
     # external_process providers (ACP agent CLIs) have no api_key/base_url credentials: the
     # profile's fetch_models drives its own subprocess (kwargs are ignored per the base contract).
-    # Every non-api-key profile falls back to its own fallback_models (OAuth plugins have no
-    # bundled model list), exactly as api_key plugins do below.
+    # Every non-api-key profile falls back to its own fallback_models (a plugin profile need not
+    # bundle a model list), exactly as api_key plugins do below.
     if profile.auth_type == "external_process":
         try:
             live = profile.fetch_models()
@@ -1512,7 +1476,7 @@ def _configured_relay_base_url(provider: str) -> str:
         return ""
     # A base_url equal to the provider's own endpoint (the profile's or the registry row's: TokenHub's
     # profile leaves it empty; OpenRouter has no registry row) is not a relay: setup persists
-    # canonical URLs, and OAuth providers (Codex) need native discovery.
+    # canonical URLs, and a provider's own discovery host must still be probed natively.
     try:
         from noesia_cli.auth import PROVIDER_REGISTRY
         from providers import get_provider_profile
@@ -1736,9 +1700,8 @@ def _provider_credential_part(label: str, path: Path, provider: str) -> str:
 def _credential_fingerprint(provider: str) -> str:
     """Short hash of the credentials ``provider_model_ids(provider)`` would see right now.
 
-    API-key providers include their configured values and credential-file mtimes. Codex uses the
-    stable principal selected by its read-only resolver: routine token and pool-state writes must
-    not discard an account-scoped catalog, while a real account switch must invalidate it.
+    API-key providers include their configured values and credential-file mtimes, so routine
+    pool-state writes never discard a catalog while a real key switch invalidates it.
     """
     import hashlib
 
@@ -1811,21 +1774,14 @@ def _credential_fingerprint(provider: str) -> str:
         except Exception:
             pass
 
-    if provider == "openai-codex":
-        from noesia_cli.codex_models import codex_catalog_credential_identity
-
-        parts.append(f"codex_identity={codex_catalog_credential_identity()}")
-    else:
-        try:
-            from noesia_constants import get_noesia_home
-            for rel in ("auth.json", "credentials.json"):
-                parts.append(_provider_credential_part(rel, get_noesia_home() / rel, provider))
-        except Exception:
-            pass
-        for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
-                    "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
-            path = os.path.expanduser(rel)
-            _mtime_part(path, path)
+    try:
+        from noesia_constants import get_noesia_home
+        for rel in ("auth.json", "credentials.json"):
+            parts.append(_provider_credential_part(rel, get_noesia_home() / rel, provider))
+    except Exception:
+        pass
+    copilot_hosts = os.path.expanduser("~/.config/github-copilot/hosts.json")
+    _mtime_part(copilot_hosts, copilot_hosts)
 
     blob = "|".join(parts).encode("utf-8", errors="replace")
     # blake2b, not sha256: fingerprint only (collisions = a harmless cache miss), and CodeQL's
@@ -1869,8 +1825,8 @@ def _normalized_cache_slug(provider: Optional[str]) -> str:
 
 
 def _model_requires_account_discovery(provider: Optional[str], model: str) -> bool:
-    """Astra names cannot confer API/OAuth entitlement through picker state."""
-    return _normalized_cache_slug(provider) in {"openai", "openai-api", "openai-codex"} and is_astra_model(model)
+    """Astra names cannot confer API entitlement through picker state."""
+    return _normalized_cache_slug(provider) in {"openai", "openai-api"} and is_astra_model(model)
 
 
 def cached_provider_model_ids(
@@ -1976,8 +1932,8 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
 
 
 def _resolve_anthropic_pool_catalog_credentials() -> tuple[str, str]:
-    """Read-only API-key pool credential for model discovery (``resolve_anthropic_token()`` ignores
-    ``api_key`` pool entries — its runtime contract is OAuth-oriented)."""
+    """Read-only API-key pool credential for model discovery (``resolve_anthropic_token()`` reads the
+    env / auth.json subscription token, never ``api_key`` pool entries)."""
     try:
         from agent.credential_pool import AUTH_TYPE_API_KEY
         from noesia_cli.auth import read_credential_pool
@@ -1997,10 +1953,10 @@ def _fetch_anthropic_models(
     timeout: float = 5.0, *, base_url: Optional[str] = None, api_key: Optional[str] = None
 ) -> Optional[list[str]]:
     """Sorted model ids from the Anthropic /v1/models endpoint, or None. Credentials: explicit
-    ``api_key``, else ``resolve_anthropic_token()`` (env / OAuth / Claude Code), else a read-only
-    API-key credential_pool entry."""
+    ``api_key``, else ``resolve_anthropic_token()`` (env / auth.json), else a read-only API-key
+    credential_pool entry."""
     try:
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_credentials import resolve_anthropic_token
     except ImportError:
         return None
 
@@ -2013,34 +1969,12 @@ def _fetch_anthropic_models(
     if not token:
         return None
 
-    headers: dict[str, str] = {"anthropic-version": "2023-06-01"}
-    is_oauth = _is_oauth_token(token)
-    if is_oauth:
-        headers["Authorization"] = f"Bearer {token}"
-        from agent.anthropic_adapter import _COMMON_BETAS, _OAUTH_ONLY_BETAS, _CONTEXT_1M_BETA
-        headers["anthropic-beta"] = ",".join(_COMMON_BETAS + _OAUTH_ONLY_BETAS)
-    else:
-        headers["x-api-key"] = token
+    headers: dict[str, str] = {
+        "anthropic-version": "2023-06-01", "x-api-key": token}
 
     url = _anthropic_models_url(resolved_base_url)
     try:
-        try:
-            data = _get_json(url, timeout=timeout, headers=headers)
-        except urllib.error.HTTPError as http_err:
-            # OAuth subscriptions that 400 the 1M context beta ("long context beta is not yet
-            # available for this subscription"): retry once without it; re-raise anything else.
-            if not (is_oauth and http_err.code == 400):
-                raise
-            try:
-                body_text = http_err.read().decode(errors="ignore").lower()
-            except Exception:
-                body_text = ""
-            if not ("long context beta" in body_text and "not yet available" in body_text):
-                raise
-            headers["anthropic-beta"] = ",".join(
-                [b for b in _COMMON_BETAS if b != _CONTEXT_1M_BETA] + list(_OAUTH_ONLY_BETAS)
-            )
-            data = _get_json(url, timeout=timeout, headers=headers)
+        data = _get_json(url, timeout=timeout, headers=headers)
         models = [m["id"] for m in data.get("data", []) if m.get("id")]
         seen_cursors: set[str] = set()
         for _page in range(_ANTHROPIC_MODELS_MAX_PAGES):

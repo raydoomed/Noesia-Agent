@@ -19,7 +19,7 @@ class NoesiaOverlay:
 
     transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
     is_aggregator: bool = False
-    auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
+    auth_type: str = "api_key"            # api_key | external_process
     extra_env_vars: tuple[str, ...] = ()  # env vars models.dev doesn't list
     base_url_override: str = ""           # override if models.dev URL is wrong/missing
     base_url_env_var: str = ""            # env var for user-custom base URL
@@ -28,28 +28,20 @@ class NoesiaOverlay:
 NOESIA_OVERLAYS: dict[str, NoesiaOverlay] = {
     "moa": NoesiaOverlay(auth_type="virtual", base_url_override="moa://local"),
     "openrouter": NoesiaOverlay(is_aggregator=True, base_url_env_var="OPENROUTER_BASE_URL"),
-    "openai-codex": NoesiaOverlay(transport="codex_responses", auth_type="oauth_external",
-                                  base_url_override="https://chatgpt.com/backend-api/codex"),
     "openai-api": NoesiaOverlay(transport="codex_responses", base_url_override="https://api.openai.com/v1",
                                 base_url_env_var="OPENAI_BASE_URL"),
-    "xai-oauth": NoesiaOverlay(transport="codex_responses", auth_type="oauth_external",
-                               base_url_override="https://api.x.ai/v1", base_url_env_var="XAI_BASE_URL"),
-    "qwen-oauth": NoesiaOverlay(auth_type="oauth_external", base_url_override="https://portal.qwen.ai/v1",
-                                base_url_env_var="NOESIA_QWEN_BASE_URL"),
     "lmstudio": NoesiaOverlay(extra_env_vars=("LM_API_KEY",), base_url_override="http://127.0.0.1:1234/v1",
                               base_url_env_var="LM_BASE_URL"),
     "copilot-acp": NoesiaOverlay(transport="codex_responses", auth_type="external_process",
                                  base_url_override="acp://copilot", base_url_env_var="COPILOT_ACP_BASE_URL"),
     "github-copilot": NoesiaOverlay(extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN")),
-    "anthropic": NoesiaOverlay(transport="anthropic_messages", extra_env_vars=("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")),
+    "anthropic": NoesiaOverlay(transport="anthropic_messages", extra_env_vars=("ANTHROPIC_TOKEN",)),
     "zai": NoesiaOverlay(extra_env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), base_url_env_var="GLM_BASE_URL"),
     "kimi-for-coding": NoesiaOverlay(base_url_env_var="KIMI_BASE_URL"),
     "stepfun": NoesiaOverlay(extra_env_vars=("STEPFUN_API_KEY",),
                              base_url_override="https://api.stepfun.ai/step_plan/v1",
                              base_url_env_var="STEPFUN_BASE_URL"),
     "minimax": NoesiaOverlay(transport="anthropic_messages", base_url_env_var="MINIMAX_BASE_URL"),
-    "minimax-oauth": NoesiaOverlay(transport="anthropic_messages", auth_type="oauth_external",
-                                   base_url_override="https://api.minimax.io/anthropic"),
     "minimax-cn": NoesiaOverlay(transport="anthropic_messages", base_url_env_var="MINIMAX_CN_BASE_URL"),
     "deepseek": NoesiaOverlay(base_url_env_var="DEEPSEEK_BASE_URL"),
     "alibaba": NoesiaOverlay(base_url_env_var="DASHSCOPE_BASE_URL"),
@@ -117,12 +109,11 @@ class ProviderDef:
 # ``ALIASES`` is the inverted lookup table. ---------------------------------------------------
 _ALIAS_GROUPS: dict[str, tuple[str, ...]] = {
     "openrouter": ("openai",), "zai": ("glm", "z-ai", "z.ai", "zhipu"), "xai": ("x-ai", "x.ai", "grok"),
-    "xai-oauth": ("grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"),
     "nvidia": ("nim", "nvidia-nim", "build-nvidia", "nemotron"),
     "kimi-for-coding": ("kimi", "kimi-coding", "kimi-coding-cn", "moonshot"),
     "stepfun": ("step", "stepfun-coding-plan"), "minimax-cn": ("minimax-china", "minimax_cn"),
     "anthropic": ("claude", "claude-code"), "github-copilot": ("copilot", "github"),
-    "copilot-acp": ("github-copilot-acp",), "openai-codex": ("chatgpt", "chatgpt-codex"),
+    "copilot-acp": ("github-copilot-acp",),
     "vercel": ("ai-gateway", "aigateway", "vercel-ai-gateway"),
     "opencode": ("opencode-zen", "zen"), "opencode-go": ("go", "opencode-go-sub"), "kilo": ("kilocode", "kilo-code", "kilo-gateway"),
     "deepseek": ("deep-seek",), "alibaba": ("dashscope", "aliyun", "qwen", "alibaba-cloud"),
@@ -145,12 +136,11 @@ ALIASES: dict[str, str] = {alias: canon for canon, aliases in _ALIAS_GROUPS.item
 # -- Display labels for providers not in the models.dev catalog ---------------
 
 _LABEL_OVERRIDES: dict[str, str] = {
-    "moa": "Mixture of Agents", "noesia": "Noesia Portal", "openai-codex": "ChatGPT or Codex Subscription",
+    "moa": "Mixture of Agents", "noesia": "Noesia Portal",
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
-    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
 
@@ -196,7 +186,7 @@ def _overlay_pdef(canonical, ov: NoesiaOverlay, name, env_vars, base_url, doc, s
 
 def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderDef]:
     """Look up a built-in provider by id or alias: models.dev catalog merged with the Noesia overlay;
-    Noesia-only overlay (noesia, openai-codex, …); plugin provider profiles with a concrete endpoint."""
+    Noesia-only overlay (noesia, bedrock, …); plugin provider profiles with a concrete endpoint."""
     canonical = normalize_provider(name)
     mdev_info = _models_dev_info(canonical, allow_network)
     overlay = NOESIA_OVERLAYS.get(canonical)

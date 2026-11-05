@@ -399,13 +399,7 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
             label = (body.label or "").strip() or f"key #{len(pool.entries()) + 1}"
             pool.add_entry(PooledCredential(
                 provider=provider,
-                # Add a distinct, self-contained pool entry per account (matching the qwen-oauth /
-                # minimax-oauth multi-account patterns, and the xai-oauth path below) instead of routing
-                # through the singleton ``_save_codex_tokens`` save path. The singleton round-trip collapsed
-                # every added account into the latest login: a second ``noesia auth add openai-codex``
-                # overwrote the first account's singleton-mirrored ``device_code`` entry rather than
-                # creating an independent one (#39236). ``manual:device_code`` entries refresh from their
-                # own token pair, so they need no singleton shadow.
+                # One self-contained pool entry per account, so a second key never overwrites the first.
                 id=uuid.uuid4().hex[:6],
                 label=label,
                 auth_type=AUTH_TYPE_API_KEY,

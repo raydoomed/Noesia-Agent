@@ -532,7 +532,7 @@ def _ensure_reference_path_allowed(path: Path) -> None:
     if any(_is_under(path, blocked_dir) for blocked_dir in blocked_dirs):
         raise ValueError("path is a sensitive credential or internal Noesia path and cannot be attached")
     # Anchor to the canonical read deny-list (agent/file_safety.get_read_block_error): the
-    # narrow list above never caught auth.json, .anthropic_oauth.json, mcp-tokens/, webhook
+    # narrow list above never caught auth.json, mcp-tokens/, webhook
     # secrets or project .env files, and it grows automatically with that deny-list.
     try:
         from agent.file_safety import get_read_block_error

@@ -1,7 +1,7 @@
 """Hold a job's fires while a provider's usage window is known to be closed (#89376).
 
-A quota-exhausted provider answers with an explicit ``retry after <N>s`` (Codex 429: the
-``AuthError`` from ``noesia_cli.auth_codex._codex_quota_exhausted_error``). When the whole
+A quota-exhausted provider answers with an explicit ``retry after <N>s`` (a 429 carrying the
+window in its error text). When the whole
 fallback chain is unavailable, re-firing on cadence is guaranteed to fail identically until
 the window reopens — every fire is a usage probe plus a delivered failure alert. The failing
 run's alert says the job is held; ``mark_job_run`` then parks ``next_run_at`` at the recovery

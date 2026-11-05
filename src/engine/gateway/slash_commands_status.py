@@ -541,13 +541,12 @@ class GatewayStatusCommandsMixin:
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage -- token usage for the current session (live or cached agent) plus
-        account/credit blocks; ``/usage reset [--force]`` redeems a banked Codex reset credit."""
+        account/credit blocks."""
         source = event.source
         session_key = self._session_key_for_source(source)
         raw_args = event.get_command_args().strip()
         args = [a.lower() for a in raw_args.split()] if raw_args else []
-        wants_reset = bool(args) and args[0] == "reset"
-        if args and not wants_reset:
+        if args:
             return t("gateway.usage.unknown_subcommand", args=raw_args)
 
         # Running agent first (mid-turn), then cached agent (between turns).
@@ -565,15 +564,6 @@ class GatewayStatusCommandsMixin:
             # fall back to the configured provider, as /status does, so account limits such as
             # Codex subscription windows still render from on-disk credentials (#15167).
             provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
-        if wants_reset:
-            if str(provider or "").strip().lower() != "openai-codex":
-                return t("gateway.usage.reset_wrong_provider")
-            from agent.account_usage import redeem_codex_reset_credit
-            result = await asyncio.to_thread(
-                redeem_codex_reset_credit, base_url=base_url, api_key=api_key, force="--force" in args[1:],
-            )
-            return result.message
-
         # Account usage off the event loop so slow provider APIs don't block the gateway;
         # failures are non-fatal (account_lines stays []).
         account_snapshot = provider and await _quiet(

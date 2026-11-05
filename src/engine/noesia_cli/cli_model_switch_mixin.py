@@ -1,4 +1,4 @@
-"""Model picker, /model switch application, runtime snapshot/restore, and codex runtime handling for the interactive CLI
+"""Model picker, /model switch application, and runtime snapshot/restore for the interactive CLI
 
 Mixin split out of ``cli.py``; bound onto ``NoesiaCLI`` via the MRO. cli.py-internal
 symbols are imported LAZILY inside each method (``from cli import ...``) — the mixin
@@ -404,7 +404,7 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
 
 
 class CLIModelSwitchMixin:
-    """Model picker, /model switch application, runtime snapshot/restore, and codex runtime handling for the interactive CLI"""
+    """Model picker, /model switch application, and runtime snapshot/restore for the interactive CLI"""
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -462,35 +462,6 @@ class CLIModelSwitchMixin:
                 lambda m: opencode_model_api_mode(resolved_provider, m),
                 lambda new: t("cli.model.stripped_provider_prefix", old=current_model, new=new, provider=resolved_provider))
 
-        if resolved_provider != "openai-codex":
-            return changed
-
-        # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
-        if "/" in current_model:
-            slug = current_model.split("/", 1)[1]
-            if not self._model_is_default:
-                self._console_print(
-                    "[yellow]⚠️  " + _escape(t("cli.model.stripped_provider_prefix", old=current_model, new=slug, provider="OpenAI Codex")) + "[/]")
-            self.model = slug
-            current_model = slug
-            changed = True
-
-        # 2. Replace untouched default with a Codex model（只有真问到了才换：没有随包名单可退）
-        if self._model_is_default:
-            from noesia_cli.codex_models import get_codex_model_ids
-
-            fallback_model = ""
-            try:
-                # self.base_url is the route resolved with self.api_key (#121486).
-                available = get_codex_model_ids(
-                    access_token=self.api_key if self.api_key else None, base_url=self.base_url or None)
-                if available:
-                    fallback_model = available[0]
-            except Exception:
-                pass
-            if fallback_model and current_model != fallback_model:
-                self.model = fallback_model
-                changed = True
         return changed
 
     def _persist_model_switch_to_session(self, result) -> None:
@@ -1021,38 +992,6 @@ class CLIModelSwitchMixin:
                                  reasoning_effort=reasoning_effort)
         finally:
             self._one_turn_selection_context = None
-
-    def _handle_codex_runtime(self, cmd_original: str) -> None:
-        """Handle /codex-runtime — toggle the codex app-server runtime opt-in.
-
-        Usage:
-            /codex-runtime                       — show current state
-            /codex-runtime auto                  — Noesia default (chat_completions)
-            /codex-runtime codex_app_server      — hand turns to codex subprocess
-            /codex-runtime on / off              — synonyms for the above
-        """
-        from cli import _cprint
-        from noesia_cli import codex_runtime_switch as crs
-
-        parts = cmd_original.split(None, 1)
-        new_value, errors = crs.parse_args(parts[1].strip() if len(parts) > 1 else "")
-        if errors:
-            for err in errors:
-                _cprint(f"❌ {err}")
-            return
-        try:
-            from noesia_cli.config import load_config, save_config
-        except Exception as exc:
-            _cprint(t("cli.model.could_not_load_config", error=exc))
-            return
-        result = crs.apply(
-            load_config(), new_value,
-            persist_callback=(save_config if new_value is not None else None))
-        prefix = "✓" if result.success else "✗"
-        for line in result.message.splitlines():
-            _cprint(f"  {prefix} {line}" if line.startswith("openai_runtime") else f"    {line}")
-        if result.success and result.requires_new_session:
-            _cprint(f"    {t('cli.model.tip_reset_new_session')}")
 
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""

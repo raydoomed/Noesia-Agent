@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 ROUTER_DEFAULT_BASE_URL = "https://api.router.com/v1"
 
+#: Disk mirror older than this is refreshed in the background on the next lookup. Router's catalog
+#: is account-scoped and effort vocabularies change rarely, so a day is long enough to stay quiet.
+_DISK_TTL_SECONDS = 24 * 60 * 60
+
 #: model id -> accepted effort levels. ``[]`` = model accepts NO reasoning
 #: fields; absent = unknown (callers keep their defaults).
 _efforts_cache: Optional[dict[str, list[str]]] = None

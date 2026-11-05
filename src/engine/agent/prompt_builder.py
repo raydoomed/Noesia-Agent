@@ -239,18 +239,14 @@ SESSION_SEARCH_GUIDANCE = (
     "context exists, use session_search to recall it before asking them to repeat themselves."
 )
 
-# The opening sentence is worded deliberately: Anthropic's server-side filter rejected the previous phrasing
-# ("After completing a complex task (5+ tool calls)... save the approach as a skill...") on subscription OAuth
-# credentials, surfacing as a billing-shaped HTTP 400. If you rewrite it, re-verify with a subscription OAuth
-# token — sk-ant-api keys do not hit the filter. The safety-rule heading is referenced by tests and compaction summaries.
-# Anthropic's server-side content filter rejects the previous phrasing ("After completing a complex task (5+
-# tool calls), fixing a tricky error, or discovering a non-trivial workflow, save the approach as a skill
-# with skill_manage so you can reuse it next time.") on subscription OAuth credentials, and surfaces that
-# rejection as a billing-shaped HTTP 400 ("You're out of extra usage"), which sends users to buy quota they
-# do not need. Bisected against the live API: that sentence alone reproduces the 400 and removing it alone
-# clears it; size and the system[0] identity gate were both ruled out. The reword is empirically validated,
-# not understood — if you rewrite this sentence, re-verify against a subscription OAuth token, not an
-# sk-ant-api… key, which does not hit the filter. Dieted (#95681, maintainer-directed): the record-it /
+# The opening sentence is worded deliberately: Anthropic's server-side content filter rejects the previous
+# phrasing ("After completing a complex task (5+ tool calls)... save the approach as a skill...") and
+# surfaces that rejection as a billing-shaped HTTP 400 ("You're out of extra usage"), which sends users to
+# buy quota they do not need. Bisected against the live API: that sentence alone reproduces the 400 and
+# removing it alone clears it; size and the system[0] identity gate were both ruled out. The reword is
+# empirically validated, not understood — if you rewrite this sentence, re-verify against the live API.
+# The safety-rule heading is referenced by tests and compaction summaries. Dieted (#95681,
+# maintainer-directed): the record-it /
 # patch-it coaching that used to open this block duplicated the ## Skills section (which teaches both "offer
 # to save as a skill" and "fix it with skill_manage(action='patch')") and skill_manage's own schema. Only
 # the compaction-pruning contract lives here — nothing else teaches it.

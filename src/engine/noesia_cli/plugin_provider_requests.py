@@ -1,12 +1,9 @@
 """Signed-in provider requests that core makes FOR plugins; the token never reaches plugin code.
 
-A plugin that needs the user's subscription sign-in (today: Codex / ChatGPT) must not read, refresh
-or rewrite Noesia's auth store or ``~/.codex/auth.json``. Codex refresh tokens are single-use, so a
-second refresher races Noesia's locked refresh and can sign the user out. Instead the plugin declares
-``requires_auth: [openai-codex]`` in its ``plugin.yaml`` and calls :func:`credentialed_provider_request`.
-Noesia resolves the credential through its own locked-refresh path, attaches ``Authorization``
-itself, sends only to that provider's origins, never follows a redirect, and hands back
-status, headers and body.
+A plugin that needs a third-party sign-in declares it under ``oauth:`` in its ``plugin.yaml`` and calls
+:func:`credentialed_provider_request`. Noesia resolves the grant through its own locked-refresh path,
+attaches ``Authorization`` itself, sends only to that provider's declared origins, never follows a
+redirect, and hands back status, headers and body.
 
 The caller is identified by file location: the nearest stack frame inside an installed plugin
 directory. Like capabilities this is consent and visibility, not a sandbox. In-process plugin code
@@ -19,7 +16,7 @@ import json as _json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Mapping, Optional
 
 from noesia_cli.urllib_security import url_origin
 
@@ -40,36 +37,6 @@ class ProviderResponse:
 
     def json(self) -> Any:
         return _json.loads(self.body)
-
-
-def _codex_auth(url: str) -> tuple[dict[str, str], str]:
-    """``(auth headers, credential base URL)`` from Noesia's own locked-refresh resolver."""
-    from agent.codex_headers import codex_account_headers
-    from agent.turn_failure_copy import oauth_relogin_command
-    from noesia_cli.auth_codex import resolve_codex_runtime_credentials
-    from noesia_cli.auth_constants import AuthError
-
-    try:
-        creds = resolve_codex_runtime_credentials()
-    except AuthError as exc:
-        if not exc.relogin_required:
-            raise
-        creds = {}
-    token = str(creds.get("api_key") or "").strip()
-    if not token:
-        raise ProviderNotSignedIn(
-            f"Not signed in to Codex in Noesia. Run `{oauth_relogin_command('openai-codex')}` "
-            "or sign in to OpenAI Codex under Providers in the Noesia desktop app.")
-    headers = codex_account_headers(token) if url_origin(url)[1] == "chatgpt.com" else {}
-    headers["Authorization"] = f"Bearer {token}"
-    return headers, str(creds.get("base_url") or "")
-
-
-# provider -> (origins its token may be sent to, auth resolver). chatgpt.com is the Codex backend
-# core itself calls; api.openai.com hosts the Realtime client-secret endpoint Codex clients use.
-_PROVIDERS: dict[str, tuple[frozenset, Callable[[str], tuple[dict[str, str], str]]]] = {
-    "openai-codex": (frozenset({("https", "chatgpt.com", 443), ("https", "api.openai.com", 443)}), _codex_auth),
-}
 
 
 def _plugin_roots() -> set[Path]:
@@ -108,57 +75,26 @@ def _detached(exc: BaseException) -> BaseException:
     return exc.with_traceback(None)
 
 
-def declared_auth_providers(manifest: Mapping[str, Any]) -> list[str]:
-    """``requires_auth`` from a manifest dict: the providers whose sign-in the plugin uses."""
-    raw = (manifest or {}).get("requires_auth")
-    return [str(p).strip() for p in raw if str(p).strip()] if isinstance(raw, list) else []
-
-
-def requires_auth_notice(manifest: Mapping[str, Any]) -> str:
-    """One line for install/show surfaces; empty when the plugin declares no sign-in use."""
-    from noesia_cli.plugin_oauth import oauth_notice
-
-    providers = declared_auth_providers(manifest)
-    sign_in = (f"Uses your sign-in for: {', '.join(providers)} (Noesia sends the requests; "
-               "the plugin never receives the token)") if providers else ""
-    return "; ".join(part for part in (sign_in, oauth_notice(manifest)) if part)
-
-
-def _declared_providers(plugin_dir: Path) -> list[str]:
-    from pm.plugin_declarations import native_manifest_file, read_native_manifest
-
-    manifest = native_manifest_file(plugin_dir)
-    return declared_auth_providers(read_native_manifest(manifest)) if manifest else []
-
-
 def credentialed_provider_request(
     provider: str, method: str, url: str, *, json: Any = None,
     headers: Optional[Mapping[str, str]] = None, timeout: float = 30.0,
 ) -> ProviderResponse:
     """Send ``method url`` with the user's *provider* sign-in attached by Noesia.
 
-    *provider* is a Noesia sign-in (listed under ``requires_auth``) or an ``id`` the calling plugin
-    declares under ``oauth:`` (:mod:`noesia_cli.plugin_oauth`); the plugin's own entry wins.
-    Refuses (``PermissionError``) a caller outside an installed plugin, a plugin whose ``plugin.yaml``
-    does not list *provider* under ``requires_auth``, and any origin outside the provider's
-    allowlist; raises :class:`ProviderNotSignedIn` when this profile has no sign-in. Redirects are
-    returned as-is, never followed. The result carries no credential.
+    *provider* is an ``id`` the calling plugin declares under ``oauth:``
+    (:mod:`noesia_cli.plugin_oauth`). Refuses (``PermissionError``) a caller outside an installed
+    plugin and any origin outside the provider's allowlist; raises :class:`ProviderNotSignedIn` when
+    this profile has no sign-in. Redirects are returned as-is, never followed. The result carries no
+    credential.
     """
     from noesia_cli.plugin_oauth import _plugin_oauth_spec
 
     plugin_dir = _calling_plugin_dir()
     if plugin_dir is None:
         raise PermissionError("credentialed_provider_request must be called from an installed plugin's code")
-    # The plugin's own oauth: entry first, so a core provider added later under the same id cannot take it over.
     spec = _plugin_oauth_spec(plugin_dir, provider)
     if spec is None:
-        spec = _PROVIDERS.get(provider)
-        if spec is None:
-            raise ValueError(f"No signed-in requests for provider {provider!r} (supported: {', '.join(_PROVIDERS)}, "
-                             "or an id the plugin declares under oauth: in plugin.yaml)")
-        if provider not in _declared_providers(plugin_dir):
-            raise PermissionError(
-                f"Plugin '{plugin_dir.name}' must declare `requires_auth: [{provider}]` in plugin.yaml")
+        raise ValueError(f"No sign-in declared for provider {provider!r}; add it under `oauth:` in plugin.yaml")
     origins, resolve = spec
     if url_origin(url) not in origins:
         raise PermissionError(f"Refusing to send the {provider} sign-in to {url_origin(url)[1] or url!r}")
@@ -177,7 +113,6 @@ def credentialed_provider_request(
             refusal = _detached(exc)
         else:
             if url_origin(credential_base) not in origins:
-                # A pooled gateway key belongs to its own host only (#121486).
                 refusal = PermissionError(
                     f"This profile's {provider} credential routes to a custom endpoint; refusing")
             else:
@@ -194,7 +129,4 @@ def credentialed_provider_request(
     return ProviderResponse(response.status_code, dict(response.headers), response.content)
 
 
-__all__ = [
-    "ProviderNotSignedIn", "ProviderResponse", "credentialed_provider_request", "declared_auth_providers",
-    "requires_auth_notice",
-]
+__all__ = ["ProviderNotSignedIn", "ProviderResponse", "credentialed_provider_request"]

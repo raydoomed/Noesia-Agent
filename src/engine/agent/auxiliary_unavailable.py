@@ -25,7 +25,7 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
 
     ``resolve_provider_client()`` returns ``None`` both when no credential exists and when every
     pool entry sits in a 429/quota cooldown, so the raise sites could only say "no credentials
-    were found. Run noesia auth add …" — wrong on both counts for a valid OAuth grant that is
+    were found. Run noesia auth add …" — wrong on both counts for a valid grant that is
     merely rate-limited (#56810). Read the persisted pool state (no seeding, no writes) and name
     the cooldown and its reset time instead; ``None`` when the pool is empty or a credential is
     usable (the caller keeps the missing-credential diagnostic).
@@ -157,10 +157,9 @@ def missing_provider_credentials_message(provider_id: str) -> str:
     """The "Provider 'X' is set in config.yaml but …" error for an explicit provider with no credentials.
 
     The remedy comes from the registry, never from the provider id: ``f"{id.upper()}_API_KEY"``
-    invents names nothing reads (alibaba → ALIBABA_API_KEY instead of DASHSCOPE_API_KEY, and the
-    unsettable MINIMAX-OAUTH_API_KEY for OAuth ids, #114405 / #78996). OAuth providers have no key
-    env var at all, so they are pointed at the sign-in command instead. A pool whose every
-    credential is cooling down is not "missing" — that case names the cooldown (#56810).
+    invents names nothing reads (alibaba → ALIBABA_API_KEY instead of DASHSCOPE_API_KEY,
+    #114405 / #78996). A pool whose every credential is cooling down is not "missing" — that
+    case names the cooldown (#56810).
     """
     cooldown = pool_cooldown_message(provider_id)
     if cooldown:
@@ -178,8 +177,6 @@ def missing_provider_credentials_message(provider_id: str) -> str:
         remedy = f"Set the {env_vars[0]} environment variable"
     elif pconfig is None:
         remedy = f"Set the {provider_id.upper().replace('-', '_')}_API_KEY environment variable"
-    elif str(pconfig.auth_type).startswith("oauth"):
-        problem, remedy = "no credentials were found", f"Run `noesia auth add {provider_id}` to sign in"
     else:
         problem = "no credentials were found"
     switch = "switch to a different provider with `noesia model`."

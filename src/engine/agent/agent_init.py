@@ -172,86 +172,6 @@ def _custom_provider_runtime_ids(value: Any) -> set[str]:
     return {normalized, f"custom:{normalized}"}
 
 
-def _build_codex_gpt5_autoraise_notice(
-    autoraise: dict[str, Any], context_length: Optional[int] = None
-) -> str:
-    """One-time notice when Codex gpt-5.x raises compaction (``autoraise``: model/from/to).
-
-    ``context_length`` is the live-resolved window (Codex's catalog shifts server-side) so the
-    banner reports what this session got. Printed for CLI and replayed via status_callback for
-    gateway users, so it must be self-contained and include the exact opt-back-out command.
-    """
-    model = str(autoraise.get("model") or "gpt-5.4/5.5").strip().lower().rsplit("/", 1)[-1]
-    if isinstance(context_length, int) and context_length > 0:
-        cap = f"{round(context_length / 1000)}K"
-    else:
-        # Static fallback: codex-spark is natively 128K; gpt-5.4/5.5/5.6 are capped at 272K.
-        cap = "128K" if model.startswith("gpt-5.3-codex-spark") else "272K"
-    from_pct = round(autoraise["from"] * 100)
-    to_pct = round(autoraise["to"] * 100)
-    return (
-        f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
-        f"to {to_pct}% (from {from_pct}%) to use more of the window before "
-        f"summarizing.\n"
-        f"  Opt back out: noesia config set compression.codex_gpt55_autoraise false"
-    )
-
-
-def _resolve_compression_threshold(
-    global_threshold: float, model_cthresh: Optional[float], *, model: Optional[str] = None,
-    is_codex_autoraise: bool,
-) -> tuple[float, Optional[dict[str, Any]]]:
-    """Global compaction threshold merged with a per-model override.
-
-    Returns ``(threshold, autoraise_notice)``; the notice is set only when a Codex autoraise
-    actually RAISES the threshold — it never lowers a higher user value (the user deliberately
-    keeps more raw context). Other overrides (Arcee Trinity) stay unconditional.
-    """
-    if model_cthresh is None:
-        return global_threshold, None
-    if is_codex_autoraise:
-        if model_cthresh <= global_threshold + 1e-9:
-            return global_threshold, None
-        return model_cthresh, {"model": model, "from": global_threshold, "to": model_cthresh}
-    return model_cthresh, None
-
-
-def _codex_gpt55_autoraise_notice_marker():
-    """Per-profile marker path (``$NOESIA_HOME`` is profile-scoped; not a config key)."""
-    return get_noesia_home() / ".codex_gpt55_autoraise_notice"
-
-
-def _codex_gpt55_autoraise_notice_state(autoraise: dict[str, Any]) -> str:
-    """Notice identity keyed on what it displays (model + from→to percentages).
-
-    An unchanged threshold stays silent across restarts; a changed global threshold or a
-    different autoraised Codex model re-notifies once.
-    """
-    model = str(autoraise.get("model") or "").strip().lower().rsplit("/", 1)[-1]
-    from_pct = round(float(autoraise["from"]) * 100)
-    to_pct = round(float(autoraise["to"]) * 100)
-    return f"{model}:{from_pct}:{to_pct}"
-
-
-def _codex_gpt55_autoraise_notice_seen(autoraise: dict[str, Any]) -> bool:
-    """True if this exact notice was already shown for this profile (unreadable = unseen)."""
-    try:
-        current = _codex_gpt55_autoraise_notice_state(autoraise)
-        return _codex_gpt55_autoraise_notice_marker().read_text(
-            encoding="utf-8"
-        ).strip() == current
-    except (OSError, KeyError, TypeError, ValueError):
-        return False
-
-
-def _record_codex_gpt55_autoraise_notice(autoraise: dict[str, Any]) -> None:
-    """Persist that the notice was shown. Best-effort: a failure only re-shows it later."""
-    with suppress(OSError, KeyError, TypeError, ValueError):
-        marker = _codex_gpt55_autoraise_notice_marker()
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(_codex_gpt55_autoraise_notice_state(autoraise), encoding="utf-8")
-
-
 def _normalized_custom_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
@@ -396,11 +316,8 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
         # A provider plugin's own dialect (``register_transport(api_mode, cls)``) is as explicit
         # as the in-tree modes; rewriting it to chat_completions silently dropped its transport.
         agent.api_mode = api_mode
-    elif agent.provider in {"openai-codex", "xai", "xai-oauth"}:
+    elif agent.provider == "xai":
         agent.api_mode = "codex_responses"
-    elif provider_name is None and host == "chatgpt.com" and "/backend-api/codex" in url:
-        agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
     elif provider_name is None and host == "api.x.ai":
         agent.api_mode = "codex_responses"
         agent.provider = "xai"
@@ -652,12 +569,12 @@ def _init_prompt_cache_config(agent):
     )
     agent._cache_disabled = False
     # cache_ttl: "5m" (default), "1h" (2x write cost; pays off with >5-minute pauses) or "auto"
-    # (1h when a person paces the session, 5m when a machine does); unknown values keep "5m". A falsy/off value disables caching entirely (OAuth plans
-    # billing cache writes, proxies adding their own cache_control); the disable survives
+    # (1h when a person paces the session, 5m when a machine does); unknown values keep "5m". A falsy/off value disables caching entirely (subscription
+    # plans bill cache writes, proxies add their own cache_control); the disable survives
     # /model switches and fallback re-derivation.
     # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from config.yaml under
     # prompt_caching.cache_ttl; unknown values keep "5m". 1h tier costs 2x on write vs 1.25x for 5m, but
-    # amortizes across long sessions with >5-minute pauses between turns (#14971). This is useful for OAuth
+    # amortizes across long sessions with >5-minute pauses between turns (#14971). This is useful for
     # subscription users where cache writes bill against "extra usage" or for third-party proxies that
     # inject their own cache_control markers (#13477).
     agent._cache_ttl = "5m"
@@ -739,29 +656,8 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     _is_native_anthropic = agent.provider == "anthropic"
     effective_key = api_key or (resolve_anthropic_token(model=getattr(agent, "model", None)) if _is_native_anthropic else None) or ""
 
-    # MiniMax OAuth tokens live ~15 min and the SDK freezes api_key at construction, so use a
-    # callable provider: build_anthropic_client mints a fresh bearer per request (re-reading
-    # auth.json, so other processes' refreshes are seen).
-    if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
-        try:
-            from noesia_cli.auth import build_minimax_oauth_token_provider
-            effective_key = build_minimax_oauth_token_provider()
-        except Exception as _mm_exc:
-            logging.getLogger(__name__).warning(
-                "MiniMax OAuth: failed to install per-request token provider "
-                "(%s); falling back to static bearer that will expire ~15min in.",
-                _mm_exc,
-            )
-
     agent.api_key = effective_key
     agent._anthropic_api_key = effective_key
-    # OAuth only for native Anthropic routes (the anthropic provider, or a custom provider whose host
-    # is exactly api.anthropic.com, incl. a key_cmd callable token — #114967). Third-party
-    # providers (MiniMax, Kimi, GLM, LiteLLM proxies) that accept the Anthropic protocol must never
-    # trip OAuth code paths — doing so injects Claude-Code identity headers and system prompts that
-    # cause 401/403 on their endpoints. See #1739.
-    from agent.anthropic_credentials import anthropic_route_is_oauth
-    agent._is_anthropic_oauth = anthropic_route_is_oauth(base_url, effective_key, provider=agent.provider)
     agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
     if not agent.quiet_mode:
         print(f"🤖 AI Agent initialized with model: {agent.model} (Anthropic native)")
@@ -1009,7 +905,6 @@ def _build_client(agent, api_key, base_url, fallback_model):
     # LLM client per wire mode (raw_codex=True: the main agent needs direct
     # responses.stream()). One provider/model timeout up front so every path applies it.
     agent._anthropic_client = None
-    agent._is_anthropic_oauth = False
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
     if agent.api_mode == "anthropic_messages":
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
@@ -1042,8 +937,6 @@ _HOST_DEFAULT_HEADERS: list[tuple[str, Callable[[Any, str], dict[str, str]]]] = 
     ("api.routermint.com", _lazy_headers("agent.client_lifecycle", "_routermint_headers")),
     ("githubcopilot.com", _lazy_headers("noesia_cli.models", "copilot_default_headers")),
     ("api.kimi.com", lambda _k, _b: {"User-Agent": "claude-code/0.1.0"}),
-    ("portal.qwen.ai", _lazy_headers("agent.client_lifecycle", "_qwen_portal_headers")),
-    ("chatgpt.com", _lazy_headers("agent.codex_headers", "codex_cloudflare_headers", pass_key=True)),
     ("x.ai", _lazy_headers("tools.xai_http", "noesia_xai_default_headers")),
 ]
 
@@ -1442,35 +1335,15 @@ def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
-def _compression_threshold(agent, cfg: dict[str, Any]) -> tuple[float, bool]:
-    """Global threshold merged with the per-model override; stashes the autoraise notice.
-    Codex gpt-5.4/5.5 raise to 85% (272K cap → 50% would compact at ~136K); the opt-out flag
-    restores the global value, and the notice has its own display gate."""
+def _compression_threshold(agent, cfg: dict[str, Any]) -> float:
+    """Global threshold merged with the per-model override."""
     threshold = float(cfg.get("threshold", 0.50))
-    autoraise = _cfg_flag(cfg, "codex_gpt55_autoraise", True)
-    notice_enabled = _cfg_flag(cfg, "codex_gpt55_autoraise_notice", True)
-    agent._compression_threshold_autoraised = None
     with suppress(Exception):
-        from agent.auxiliary_client import (
-            _compression_threshold_for_model as _cthresh_fn,
-            _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
-            _is_codex_spark as _is_codex_spark_fn,
-        )
-        _model_cthresh = _cthresh_fn(
-            agent.model, agent.provider, allow_codex_gpt55_autoraise=autoraise,
-        )
-        # Codex autoraises apply only when they RAISE; Arcee Trinity keeps its
-        # unconditional override.
-        threshold, agent._compression_threshold_autoraised = _resolve_compression_threshold(
-            threshold,
-            _model_cthresh,
-            model=agent.model,
-            is_codex_autoraise=(
-                _is_codex_gpt54_or_gpt55_fn(agent.model, agent.provider)
-                or _is_codex_spark_fn(agent.model, agent.provider)
-            ),
-        )
-    return threshold, notice_enabled
+        from agent.auxiliary_client import _compression_threshold_for_model as _cthresh_fn
+        _model_cthresh = _cthresh_fn(agent.model, agent.provider)
+        if _model_cthresh is not None:
+            threshold = _model_cthresh
+    return threshold
 
 
 def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optional[int]]:
@@ -1502,7 +1375,7 @@ def _compression_codex_settings(cfg: dict[str, Any]) -> tuple[str, bool, Optiona
 def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     """Parse the ``compression`` section. Defaults here MUST match DEFAULT_CONFIG."""
     cfg = _cfg_dict(_agent_cfg, "compression")
-    threshold, autoraise_notice_enabled = _compression_threshold(agent, cfg)
+    threshold = _compression_threshold(agent, cfg)
     # Plain int()/float() coercions raise on garbage; evaluated up front, in config order.
     target_ratio = float(cfg.get("target_ratio", 0.20))
     protect_last = int(cfg.get("protect_last_n", 20))
@@ -1529,7 +1402,6 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
     return CompressionSettings(
         threshold=threshold,
-        autoraise_notice_enabled=autoraise_notice_enabled,
         enabled=_cfg_flag(cfg, "enabled", True),
         target_ratio=target_ratio,
         protect_last=protect_last,
@@ -1953,12 +1825,6 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
-        # External engines own compaction policy — the host threshold (and its Codex
-        # autoraise) never reaches the plugin, so drop the notice.
-        agent._compression_threshold_autoraised = None
-        # External engines own compaction policy: the host compression threshold (including the Codex
-        # gpt-5.5 autoraise above) only configures the built-in ContextCompressor and never reaches the
-        # plugin, so the autoraise notice would announce a change that does not apply. (#44439)
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
             agent.model, base_url=agent.base_url, api_key=getattr(agent, "api_key", ""),
@@ -2023,7 +1889,6 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     from agent.native_compaction import resolve_native_compaction_capabilities
     agent.runtime_capabilities = resolve_native_compaction_capabilities(
         model=agent.model, base_url=agent.base_url, provider=agent.provider,
-        is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
     )
     agent.max_compression_attempts = cs.max_attempts
     agent.compression_idle_compact_after_seconds = cs.idle_compact_after_seconds
@@ -2123,23 +1988,6 @@ def _inject_context_engine_tools(agent):
 
 
 def _emit_compression_summary(agent, cs):
-    # Codex autoraise notice: once per profile/config state (persisted marker; the gateway
-    # rebuilds the agent per message). The display gate hides the banner, not the autoraise.
-    _autoraise = agent._compression_threshold_autoraised or {}
-    _autoraise_notice = None
-    if (
-        # A change in the raised threshold (or the autoraised model) updates the marker state and
-        # re-notifies once. The config display gate (compression.codex_gpt55_autoraise_notice) still
-        # suppresses the banner entirely without disabling the threshold autoraise. See #54432.
-        bool(_autoraise)
-        and cs.enabled
-        and cs.autoraise_notice_enabled
-        and not _codex_gpt55_autoraise_notice_seen(_autoraise)
-    ):
-        _autoraise_notice = _build_codex_gpt5_autoraise_notice(
-            _autoraise, context_length=getattr(agent.context_compressor, "context_length", None)
-        )
-
     if not agent.quiet_mode:
         _cc = agent.context_compressor
         if cs.enabled:
@@ -2153,15 +2001,9 @@ def _emit_compression_summary(agent, cs):
             print(f"📊 Context limit: {_cc.context_length:,} tokens (compress at {int(_pct*100)}% = {_cc.threshold_tokens:,}{_cap_note})")
         else:
             print(f"📊 Context limit: {_cc.context_length:,} tokens (auto-compression disabled)")
-        # Gateway users get the same text via _compression_warning on turn 1.
-        if _autoraise_notice:
-            agent._safe_print(_autoraise_notice, diagnostic=True)
 
-    # status_callback isn't wired yet: stash for replay on the first turn; mark shown so
-    # repeated inits stay silent.
-    agent._compression_warning = _autoraise_notice
-    if _autoraise_notice:
-        _record_codex_gpt55_autoraise_notice(_autoraise)
+    # status_callback isn't wired yet; late compression messages replay through this slot.
+    agent._compression_warning = None
     # Feasibility check deferred to the first turn near threshold (eager costs ~400ms cold).
     agent._compression_feasibility_checked = False
 

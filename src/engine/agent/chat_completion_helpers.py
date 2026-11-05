@@ -424,29 +424,23 @@ def estimate_request_context_tokens(api_payload: Any) -> int:
     return sum(_chars(value) for value in api_payload.values()) // 4
 
 
-def _is_openai_codex_backend(agent) -> bool:
-    from agent.codex_responses_adapter import classify_responses_route
-    return classify_responses_route(agent).is_codex_backend
-
-
-def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
-    """Minimum wall-clock stale timeout for openai-codex by estimated context:
-    subscription-backed Codex can spend minutes in admission/prefill on
-    gateway-scale payloads, so the generic default would abort healthy calls.
-    The floor engages above 10k estimated tokens."""
+def _codex_responses_stale_timeout_floor(est_tokens: int) -> float:
+    """Minimum wall-clock stale timeout for a Codex Responses route by estimated context:
+    large gateway-scale payloads can spend minutes in admission/prefill, so the generic
+    default would abort healthy calls. The floor engages above 10k estimated tokens."""
     for threshold, floor in ((100_000, 1200.0), (50_000, 900.0), (10_000, 600.0)):
         if est_tokens > threshold:
             return floor
     return 0.0
 
 
-def _bound_openai_codex_stale_timeout(stale_timeout: float, est_tokens: int) -> float:
-    """Apply the openai-codex stale bounds: raise to ``openai_codex_stale_timeout_floor``
+def _bound_codex_responses_stale_timeout(stale_timeout: float, est_tokens: int) -> float:
+    """Apply the Codex Responses stale bounds: raise to ``_codex_responses_stale_timeout_floor``
     so healthy gateway-scale requests aren't aborted mid-prefill, then clamp to the flat
     NOESIA_CODEX_HARD_TIMEOUT_SECONDS ceiling (#64507, default 1500s — above the max
     floor, a backstop for a request that emits SOME events then wedges; 0 disables).
     Shared by the worker watchdogs and the inline cron path (#69734)."""
-    floor = openai_codex_stale_timeout_floor(est_tokens)
+    floor = _codex_responses_stale_timeout_floor(est_tokens)
     if floor:
         stale_timeout = max(stale_timeout, floor)
     hard_timeout = env_float("NOESIA_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
@@ -789,7 +783,7 @@ def should_use_direct_api_call(agent) -> bool:
     Responses (#69734): both Codex paths (non-stream, and streaming via
     ``_stream_codex_passthrough`` -> ``_interruptible_api_call``) reach
     ``direct_api_call``, whose client comes from ``make_client`` so the inline stale
-    watchdog can abort it; the stale budget keeps the openai-codex floor/hard cap.
+    watchdog can abort it; the stale budget keeps the Codex Responses floor/hard cap.
     Trade-off: the worker-only Codex TTFB/progress/idle watchdogs don't run inline, so
     a Codex call that never sends a first byte waits the full wall-clock stale budget
     (600-1200s on large contexts) instead of the ~120s TTFB cutoff. Delegated children
@@ -818,7 +812,7 @@ _DIRECT_API_ACTIVITY_HEARTBEAT_SECONDS = 15.0
 
 def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
     """Stale budget for the inline call via ``agent._compute_non_stream_stale_timeout``,
-    plus the same openai-codex floor/hard cap the worker path applies (inline cron Codex,
+    plus the same Codex Responses floor/hard cap the worker path applies (inline cron Codex,
     #69734). A non-numeric result (stub agent) leaves the watchdog disarmed; a resolver
     that *raises* propagates — swallowing into ``inf`` would reinstate the hang."""
     resolver = getattr(agent, "_compute_non_stream_stale_timeout", None)
@@ -827,7 +821,7 @@ def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
         return float("inf")
     base_url = getattr(agent, "base_url", None)
     if getattr(agent, "api_mode", None) == "codex_responses" and not (base_url and is_local_endpoint(base_url)):
-        return _bound_openai_codex_stale_timeout(float(value), estimate_request_context_tokens(api_kwargs))
+        return _bound_codex_responses_stale_timeout(float(value), estimate_request_context_tokens(api_kwargs))
     return float(value)
 
 
@@ -1163,7 +1157,6 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     # run-budget cap still bounds it; here the floor only raises the TTFB/idle implicit defaults.
     stale_timeout = agent._compute_non_stream_stale_timeout(api_kwargs)
     codex = agent.api_mode == "codex_responses"
-    openai_codex_backend = _is_openai_codex_backend(agent)
     est_tokens = estimate_request_context_tokens(api_kwargs)
     effort_floor = _high_effort_silence_floor(agent) if codex else 0.0
     codex_floor = 0.0
@@ -1172,15 +1165,15 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     base_url = getattr(agent, "base_url", None)
     local = bool(base_url) and is_local_endpoint(base_url)
     if codex and not local:
-        codex_floor = openai_codex_stale_timeout_floor(est_tokens)
-        stale_timeout = _bound_openai_codex_stale_timeout(stale_timeout, est_tokens)
+        codex_floor = _codex_responses_stale_timeout_floor(est_tokens)
+        stale_timeout = _bound_codex_responses_stale_timeout(stale_timeout, est_tokens)
 
     idle_default = max(effort_floor, next(
         (default for threshold, default in ((100_000, 180.0), (50_000, 120.0), (10_000, 60.0)) if est_tokens > threshold),
         12.0))
 
     # No-event TTFB cutoff. Default 120s: the SDK's own read timeout is 600s,
-    # and a tight 12s killed subscription-backed requests mid-prefill.
+    # and a tight 12s killed large-prefill requests mid-stream.
     ttfb_enabled = codex
     ttfb_explicit = env_float("NOESIA_CODEX_TTFB_TIMEOUT_SECONDS", -1.0) != -1.0
     ttfb_timeout = env_float("NOESIA_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
@@ -1223,7 +1216,7 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     # default for unset AND unparseable values, so both count as implicit.
     idle_explicit = env_float("NOESIA_CODEX_EVENT_STALE_TIMEOUT_SECONDS", -1.0) != -1.0
     idle_timeout = env_float("NOESIA_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_default)
-    progress_gated = codex and openai_codex_backend and codex_floor > 0 and not idle_explicit
+    progress_gated = codex and codex_floor > 0 and not idle_explicit
     return _NonStreamWatchdogs(stale_timeout=stale_timeout, codex=codex, est_tokens=est_tokens,
         ttfb_enabled=ttfb_enabled, ttfb_timeout=ttfb_timeout, idle_enabled=codex and idle_timeout > 0,
         idle_timeout=idle_timeout, idle_requires_progress=progress_gated,
@@ -1332,7 +1325,7 @@ def _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api):
     reverse-map a name this request never aliased). Deep-copy first (#27907)."""
     if transport is not None and hasattr(transport, "_last_wire_aliases"):
         transport._last_wire_aliases = {}
-    is_xai_chat = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
+    is_xai_chat = agent.provider == "xai" or agent._base_url_hostname == "api.x.ai"
     if not (is_xai_chat and tools_for_api):
         return tools_for_api
     try:
@@ -1365,12 +1358,12 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
     anthropic_kwargs = agent._get_transport().build_kwargs(model=agent.model,
         messages=agent._prepare_anthropic_messages_for_api(api_messages), tools=tools_for_api,
         max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
-        reasoning_config=reasoning_config, is_oauth=agent._is_anthropic_oauth,
+        reasoning_config=reasoning_config,
         preserve_dots=agent._anthropic_preserve_dots(),
         context_length=ctx_len.context_length if ctx_len else None,
         base_url=getattr(agent, "_anthropic_base_url", None),
         fast_mode=request_overrides.get("speed") == "fast",
-        drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)))
+    )
     return anthropic_kwargs
 
 
@@ -1768,7 +1761,6 @@ _FALLBACK_REASON_LABELS = {
     FailoverReason.multimodal_tool_content_unsupported: "multimodal tool content unsupported",
     FailoverReason.thinking_signature: "thinking signature rejected",
     FailoverReason.long_context_tier: "long-context tier unavailable",
-    FailoverReason.oauth_long_context_beta_forbidden: "OAuth long-context beta unavailable",
     FailoverReason.llama_cpp_grammar_pattern: "grammar pattern rejected",
     FailoverReason.unknown: "provider failure",
 }
@@ -1813,8 +1805,6 @@ def _fallback_api_mode_hint(fb: dict, fb_provider: str, fb_base_url_hint: Option
 def _fallback_api_mode_resolved(agent, fb_provider: str, fb_model: str, fb_base_url: str) -> str:
     """Re-detect api_mode from provider / resolved base URL / model when the hint pass
     landed on the chat_completions default (never called for an explicit api_mode)."""
-    if fb_provider == "openai-codex":
-        return "codex_responses"
     from noesia_cli.models import opencode_model_api_mode
     from noesia_cli.runtime_provider_custom import _opencode_family_for_custom
     opencode_family = _opencode_family_for_custom(fb_provider, fb_base_url)
@@ -1911,10 +1901,6 @@ def _should_skip_fallback_candidate(agent, fb: dict, fb_key: tuple, fb_provider:
         logger.debug("Fallback skip: %s previously marked unavailable", fb_key)
         return True
     if not fb_provider or not fb_model:
-        return True
-    from agent.fallback_cooldown import _is_entitlement_rejected
-    if _is_entitlement_rejected(agent, fb_provider, fb_model):
-        logger.info("Fallback skip: %s/%s was rejected as unentitled for this account", fb_provider, fb_model)
         return True
     if _candidate_pool_exhausted(agent, fb_provider, fb_model):
         logger.warning("Fallback skip: %s/%s credential pool is exhausted (every entry in cooldown)", fb_provider, fb_model)
@@ -2062,7 +2048,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
             _reset_stale_streak(agent)
             from agent.native_compaction import resolve_native_compaction_capabilities
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
-                model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
+                model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=False)
             return True
         except Exception as e:
             logger.error("Failed to activate fallback %s: %s", fb_model, e)
@@ -2199,11 +2185,11 @@ def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
     def _attempt(retry_count: int) -> str:
         ant_kw = agent._get_transport().build_kwargs(
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
-            reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
+            reasoning_config=agent.reasoning_config,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         response = _managed_summary_call(
             agent, api_request_id, ant_kw, agent._interruptible_api_call, retry_count=retry_count)
-        return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
+        return _summary_text(agent, response)
     return _attempt
 
 

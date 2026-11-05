@@ -9,14 +9,12 @@ runs sync httpx connects through the process-wide Happy Eyeballs racer
 
 from __future__ import annotations
 
-import functools
 import socket
 import sys
 import threading
 from typing import Any, Optional
 
-from noesia_bootstrap import _happy_eyeballs_create_connection
-from utils import base_url_hostname, normalize_proxy_url
+from utils import normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy
 from agent.thread_scoped_output import _ThreadRoutingStream
 
@@ -35,77 +33,6 @@ _SHARED_TRANSPORTS_MAX = 32
 # the socket-abort walker in agent_runtime_helpers uses it to find only the
 # owning client's in-flight connections on a shared pool.
 NOESIA_TRANSPORT_OWNER_EXT = "noesia_transport_owner"
-
-
-class _HappyEyeballsSyncBackend:
-    """httpcore sync backend with concurrent IPv6/IPv4 connection fallback."""
-
-    def __init__(self):
-        self._fallback = None
-
-    def _default_backend(self):
-        if self._fallback is None:
-            from httpcore import SyncBackend
-            self._fallback = SyncBackend()
-        return self._fallback
-
-    def connect_tcp(self, host: str, port: int, timeout: Optional[float] = None, local_address: Optional[str] = None,
-                    socket_options=None):
-        from httpcore import ConnectError, ConnectTimeout
-        from httpcore._backends.sync import SyncStream
-        source_address = None if local_address is None else (local_address, 0)
-        try:
-            sock = _happy_eyeballs_create_connection((host, port), timeout, source_address=source_address,
-                                                     socket_options=socket_options or ())
-        except TimeoutError as exc:
-            raise ConnectTimeout(str(exc)) from exc
-        except OSError as exc:
-            raise ConnectError(str(exc)) from exc
-        return SyncStream(sock)
-
-    def connect_unix_socket(self, *args, **kwargs):
-        return self._default_backend().connect_unix_socket(*args, **kwargs)
-
-    def sleep(self, seconds: float) -> None:
-        self._default_backend().sleep(seconds)
-
-
-def _uses_codex_cloud_transport(base_url: str) -> bool:
-    return base_url_hostname(base_url).lower() == "chatgpt.com" and "/backend-api/codex" in str(base_url).lower()
-
-
-def _enable_happy_eyeballs(transport, skip_pool_types: tuple = ()) -> None:
-    """Install the racing backend on one httpx transport.
-
-    Reaches into private ``transport._pool._network_backend`` (httpcore pinned
-    1.0.x); hasattr-guarded so an incompatible httpcore degrades to the default
-    serial backend. Pools of ``skip_pool_types`` (proxies) are left alone.
-    """
-    pool = getattr(transport, "_pool", None)
-    if pool is not None and hasattr(pool, "_network_backend") and not (skip_pool_types and isinstance(pool, skip_pool_types)):
-        pool._network_backend = _HappyEyeballsSyncBackend()
-
-
-def enable_happy_eyeballs_on_client(client) -> None:
-    """Install the racing backend on every direct transport of a ready-built httpx.Client.
-
-    For callers that build clients inline (Codex OAuth/device-login). Proxy-backed
-    pools are skipped (TCP connect goes to the proxy host); async clients need
-    nothing (anyio already races per RFC 8305). Best-effort.
-
-    Proxy-backed transports (``httpcore.HTTPProxy`` / SOCKS pools) are left untouched: with a proxy in play
-    the TCP connect goes to the proxy host, which is out of scope for the direct-transport racing added in
-    #94388. Async clients are also left untouched — httpcore's async backend already performs RFC 8305
-    racing natively via ``anyio.connect_tcp(happy_eyeballs_delay=0.25)``.
-    """
-    try:
-        import httpcore
-        proxy_pool_types = tuple(
-            t for t in (getattr(httpcore, "HTTPProxy", None), getattr(httpcore, "SOCKSProxy", None)) if t is not None)
-    except Exception:
-        return
-    for transport in (getattr(client, "_transport", None), *(getattr(client, "_mounts", None) or {}).values()):
-        _enable_happy_eyeballs(transport, proxy_pool_types)
 
 
 def _load_openai_cls() -> type:
@@ -241,7 +168,7 @@ def _shared_transport_key(base_url: str, verify: Any, proxy: Optional[str]) -> t
         verify_key = ("path", verify)
     else:
         verify_key = ("id", id(verify))  # SSLContext / custom object: share by identity only
-    return (verify_key, proxy, _uses_codex_cloud_transport(base_url))
+    return (verify_key, proxy)
 
 
 def _get_shared_transport(key: tuple, build) -> Any:
@@ -293,13 +220,7 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
         transport_cls = httpx.AsyncHTTPTransport if async_mode else httpx.HTTPTransport
         client_cls = httpx.AsyncClient if async_mode else httpx.Client
         mounts = None
-        # Official Codex backend only: zstd request bodies when the stdlib codec exists (None otherwise).
-        from agent.codex_headers import codex_request_compression_hooks
-        hooks = codex_request_compression_hooks(base_url, async_mode=async_mode)
-        if hooks:
-            client_cls = functools.partial(client_cls, event_hooks=hooks)
         if proxy is None:
-            happy_eyeballs = not async_mode and _uses_codex_cloud_transport(base_url)
             # One pool serves every agent in the process, so its ceiling must cover a whole
             # fan-out of concurrently streaming children. (Client-level ``limits`` never reach
             # mounted transports — they used to run on httpx defaults, keepalive_expiry=5s.)
@@ -308,11 +229,7 @@ def build_keepalive_http_client(base_url: str = "", *, async_mode: bool = False,
             )
 
             def _build_direct():
-                transport = transport_cls(verify=verify, limits=direct_limits)
-                # Async transports race natively (anyio happy_eyeballs_delay=0.25).
-                if happy_eyeballs:
-                    _enable_happy_eyeballs(transport)
-                return transport
+                return transport_cls(verify=verify, limits=direct_limits)
 
             if async_mode:
                 mounts = {"http://": _build_direct(), "https://": _build_direct()}
@@ -354,5 +271,4 @@ __all__ = [
     "_load_openai_cls",
     "build_keepalive_http_client",
     "close_shared_transports",
-    "enable_happy_eyeballs_on_client",
 ]

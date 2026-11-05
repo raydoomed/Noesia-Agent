@@ -184,16 +184,15 @@ def build_write_denied_paths(home: str) -> set[str]:
     )
     # Secret material under NOESIA_HOME, on both the active profile and the global
     # root: overwriting the root .env leaks credentials across every profile that
-    # inherits it, and the root Anthropic PKCE store is still read by default /
-    # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; both Bitwarden caches hold Secrets Manager material.
+    # inherits it. google_oauth.json is a Google Workspace token store; both
+    # Bitwarden caches hold Secrets Manager material.
     #
     # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
     # deliberately NOT here: #45947 freed those control files on purpose
     # ("true containment belongs in Docker/remote backends and OS permissions,
     # not an expanding hardcoded denylist"). They stay read-denied, not write-denied.
     noesia_files = (
-        ".env", ".anthropic_oauth.json",
+        ".env",
         os.path.join("auth", "google_oauth.json"),
         os.path.join("cache", "bws_cache.json"),
         os.path.join("cache", "bws_cache.enc.json"),
@@ -344,7 +343,7 @@ _DID_SUFFIX = (
 # needs these directly — provider tools consume them through internal channels.
 # bws_cache.json is the Bitwarden Secrets Manager disk cache: plaintext secret values.
 _CREDENTIAL_FILE_NAMES = (
-    "auth.json", "auth.lock", ".anthropic_oauth.json", ".env", "webhook_subscriptions.json",
+    "auth.json", "auth.lock", ".env", "webhook_subscriptions.json",
     os.path.join("auth", "google_oauth.json"), os.path.join("cache", "bws_cache.json"),
 )
 

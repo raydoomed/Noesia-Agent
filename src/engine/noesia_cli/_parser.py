@@ -105,7 +105,7 @@ Examples:
     noesia auth remove <p> <t>    Remove pooled credential by index, id, or label
     noesia auth reset <p> [t]     Clear exhaustion status for a provider, or one credential
     noesia auth priority <p> <t> <n>  Move a pooled credential to priority n (0 = tried first)
-    noesia auth refresh <p> [t]   Refresh a pooled OAuth credential and clear its cooldown
+    noesia auth refresh <p> [t]   Refresh a pooled plugin-OAuth credential and clear its cooldown
     noesia model                  Select default model
     noesia fallback [list]        Show fallback provider chain
     noesia fallback add           Add a fallback provider (same picker as `noesia model`)

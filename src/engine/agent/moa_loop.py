@@ -1255,7 +1255,7 @@ class MoAChatCompletions:
                     output = _extract_text(agg_response)
             trace["aggregator_output"] = output
         if stream and hasattr(agg_response, "choices"):
-            # Some adapters (openai-codex Responses) return a completed response even
+            # Some adapters (Codex Responses) return a completed response even
             # when streaming was requested; hand the loop a one-chunk iterator.
             return iter((_completed_response_as_stream_chunk(agg_response),))
         return agg_response

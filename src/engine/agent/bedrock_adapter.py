@@ -467,7 +467,6 @@ def bind_bedrock_runtime(agent, base_url: str, api_mode: str) -> None:
     agent._client_kwargs = {}
     agent.api_key = agent._anthropic_api_key = "aws-sdk"
     agent._anthropic_base_url = base_url
-    agent._is_anthropic_oauth = False
     if api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_bedrock_client
         agent._anthropic_client = build_anthropic_bedrock_client(agent._bedrock_region)

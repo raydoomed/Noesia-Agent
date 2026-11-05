@@ -1,15 +1,13 @@
 """Shared constants, the lazy ``httpx`` proxy and :class:`AuthError` for the auth package.
 
 Pure leaf: imports nothing from ``noesia_cli.auth`` so the per-provider modules
-(``auth_codex``, ``auth_xai``, ...) can import it at module scope without cycles."""
+(``auth_openrouter``, ``auth_zai_kimi``, ...) can import it at module scope without cycles."""
 
 from __future__ import annotations
 
 import base64
 import json
 from typing import Any, Callable, Dict, Optional
-
-from noesia_cli.version_info import get_version_info
 
 # httpx is imported lazily (~30ms) because noesia_cli.auth is on the interactive-CLI startup path
 # (credential_pool -> auxiliary_client -> cli_commands_mixin). The proxy resolves on first attribute
@@ -59,17 +57,6 @@ NOESIA_INVOKE_JWT_MIN_TTL_SECONDS = ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 _FORM_JSON_HEADERS = {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}
-DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
-DEFAULT_XAI_OAUTH_BASE_URL = "https://api.x.ai/v1"
-MINIMAX_OAUTH_CLIENT_ID = "78257093-7e40-4613-99e0-527b14b39113"
-MINIMAX_OAUTH_SCOPE = "group_id profile model.completion"
-MINIMAX_OAUTH_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:user_code"
-MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
-MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
-MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
-MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
-MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
-DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
@@ -77,22 +64,6 @@ DEFAULT_ACTUAL_BASE_URL = "https://api.actual.inc/v1"
 DEFAULT_ACTUAL_LOCAL_BASE_URL = "http://127.0.0.1:8080/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
-CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
-CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
-CODEX_OAUTH_USER_AGENT = f"noesia-cli/{get_version_info().base_version}"
-CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
-XAI_OAUTH_ISSUER = "https://auth.x.ai"
-XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
-XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
-XAI_OAUTH_SCOPE = "openid profile email offline_access grok-cli:access api:access"
-XAI_OAUTH_DEVICE_CODE_URL = f"{XAI_OAUTH_ISSUER}/oauth2/device/code"
-# xAI/Grok OAuth access tokens are short-lived (~6h). A two-minute refresh window leaves noisy
-# credential-expiry gaps for gateway/cron workloads that touch the provider every ~30 min, so refresh
-# up to an hour early.
-XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 3600
-QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
-QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
-QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 # OpenRouter PKCE (https://openrouter.ai/docs/guides/overview/auth/oauth): the "token" endpoint
 # mints a plain user-controlled API key; there is no refresh token.
 OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
@@ -135,12 +106,8 @@ def _provider_error_factory(provider: str) -> Callable[..., AuthError]:
     return factory
 
 
-# Per-provider AuthError constructors: ``_xai_err(message, code, relogin=True)``.
+# Per-provider AuthError constructors: ``_openrouter_err(message, code, relogin=True)``.
 _noesia_err = _provider_error_factory("noesia")
-_xai_err = _provider_error_factory("xai-oauth")
-_codex_err = _provider_error_factory("openai-codex")
-_qwen_err = _provider_error_factory("qwen-oauth")
-_minimax_err = _provider_error_factory("minimax-oauth")
 _openrouter_err = _provider_error_factory("openrouter")
 
 

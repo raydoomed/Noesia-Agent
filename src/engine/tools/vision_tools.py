@@ -517,7 +517,7 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 _TOOL_RESULT_MEDIA_PROVIDERS = frozenset({
     "openrouter", "noesia", "vertex", "bedrock", "anthropic-vertex", "google-vertex",
     "anthropic", "claude", "anthropic-direct",
-    "openai", "openai-chat", "openai-codex", "azure-openai",
+    "openai", "openai-chat", "azure-openai",
 })
 _GEMINI_PROVIDERS = frozenset({"google", "gemini", "google-gemini", "google-vertex-gemini"})
 

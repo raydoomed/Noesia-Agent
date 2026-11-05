@@ -5,9 +5,8 @@
   suppression markers; ``_auth_store_lock`` / ``_load_auth_store`` / ``_save_auth_store`` are the
   only I/O primitives (cross-process flock, atomic 0o600 writes).
 - ``resolve_provider()`` picks the active provider via the documented priority chain.
-- ``OAUTH_PROVIDER_FLOWS`` maps each OAuth provider to its resolver/status builder; the flows live in
-  ``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_openrouter`` and are
-  re-imported here so ``noesia_cli.auth.<name>`` stays the public/patchable surface."""
+- 注册表只有 API Key / 外部进程 / 云 SDK / 第三方插件四类行，没有内置供应商 OAuth 登录。
+"""
 
 from __future__ import annotations
 
@@ -24,7 +23,6 @@ import webbrowser
 
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
-from functools import partial
 from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
@@ -47,43 +45,13 @@ from noesia_cli.auth_oauth_grants import (
     SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices,
     consume_oauth_heal_notices, heal_forked_single_use_oauth_grants,
     strip_cloned_single_use_oauth_grants)
-from noesia_cli.auth_minimax import (
-    _MINIMAX_OAUTH_ERROR_BODY_LIMIT, _login_minimax_oauth, _minimax_oauth_login, _minimax_pkce_pair,
-    _minimax_poll_token, _minimax_post_form, _minimax_request_user_code,
-    _minimax_resolve_token_expiry_unix, _minimax_response_error_text, _minimax_save_auth_state,
-    _refresh_minimax_oauth_state, build_minimax_oauth_token_provider,
-    resolve_minimax_oauth_runtime_credentials)
-from noesia_cli.auth_xai import (
-    _login_xai_oauth, _read_xai_oauth_tokens, _refresh_xai_oauth_tokens, _save_xai_oauth_tokens,
-    _write_through_xai_oauth_to_global_root, _xai_access_token_is_expiring,
-    _xai_oauth_device_code_login, _xai_oauth_discovery, _xai_oauth_poll_device_token,
-    _xai_oauth_request_device_code, _xai_proactive_refresh_skew_seconds,
-    _xai_validate_inference_base_url, refresh_xai_oauth_pure, resolve_xai_oauth_runtime_credentials)
-from noesia_cli.auth_codex import (
-    _codex_access_token_is_expiring, _codex_device_code_login, _codex_http_client,
-    _codex_pool_rate_limit_status, _codex_quota_probe_cache, _codex_usage_probe_url,
-    _import_codex_cli_tokens, _is_codex_rate_limit_shaped, _login_openai_codex,
-    _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
-    _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
-    refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
-from noesia_cli.auth_openrouter import _openrouter_pkce_login
-from noesia_cli.auth_qwen import (
-    _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
-    _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
-    resolve_qwen_runtime_credentials)
 from noesia_cli.auth_constants import (
     _decode_jwt_claims, AUTH_STORE_VERSION, AUTH_LOCK_TIMEOUT_SECONDS, NOESIA_BILLING_MANAGE_SCOPE,
     NOESIA_DEVICE_CODE_SOURCE, NOESIA_AUTH_PATH_INVOKE_JWT,
-    ACCESS_TOKEN_REFRESH_SKEW_SECONDS, NOESIA_INVOKE_JWT_MIN_TTL_SECONDS, DEFAULT_CODEX_BASE_URL,
-    DEFAULT_XAI_OAUTH_BASE_URL, MINIMAX_OAUTH_CLIENT_ID, MINIMAX_OAUTH_SCOPE,
-    MINIMAX_OAUTH_GLOBAL_BASE, MINIMAX_OAUTH_CN_BASE, MINIMAX_OAUTH_GLOBAL_INFERENCE,
-    MINIMAX_OAUTH_CN_INFERENCE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, DEFAULT_QWEN_BASE_URL,
+    ACCESS_TOKEN_REFRESH_SKEW_SECONDS, NOESIA_INVOKE_JWT_MIN_TTL_SECONDS,
     DEFAULT_GITHUB_MODELS_BASE_URL, DEFAULT_COPILOT_ACP_BASE_URL, DEFAULT_OLLAMA_CLOUD_BASE_URL,
     DEFAULT_ACTUAL_BASE_URL, DEFAULT_ACTUAL_LOCAL_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL,
-    STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
-    CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
-    XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    LMSTUDIO_NOAUTH_PLACEHOLDER,
+    STEPFUN_STEP_PLAN_CN_BASE_URL, LMSTUDIO_NOAUTH_PLACEHOLDER,
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE, AuthError, _noesia_err, httpx)
 
 logger = logging.getLogger(__name__)
@@ -130,7 +98,7 @@ class ProviderConfig:
     """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", "oauth_minimax", "api_key", ...
+    auth_type: str  # "oauth_device_code", "oauth_external" (plugin logins), "api_key", ...
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
@@ -151,14 +119,9 @@ def _api_key_provider(
 
 # Registry rows in priority order (resolve_provider() scans api_key rows in this order). A tuple
 # row is ``_api_key_provider(id, name, inference_base_url, api_key_env_vars[, base_url_env_var
-# [, auth_type]])``; OAuth / bespoke rows are full ``ProviderConfig`` objects.
+# [, auth_type]])``；外部进程 / 云 SDK 走完整的 ``ProviderConfig`` 对象。
 _REGISTRY_ROWS: tuple[Any, ...] = (
-    ProviderConfig("openai-codex", "OpenAI Codex", "oauth_external", inference_base_url=DEFAULT_CODEX_BASE_URL),
     ("openai-api", "OpenAI API", "https://api.openai.com/v1", ("OPENAI_API_KEY",), "OPENAI_BASE_URL"),
-    ProviderConfig(
-        "xai-oauth", "xAI Grok OAuth (SuperGrok / Premium+)", "oauth_external",
-        inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL),
-    ProviderConfig("qwen-oauth", "Qwen OAuth", "oauth_external", inference_base_url=DEFAULT_QWEN_BASE_URL),
     ("lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", ("LM_API_KEY",), "LM_BASE_URL"),
     ("copilot", "GitHub Copilot", DEFAULT_GITHUB_MODELS_BASE_URL,
      ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"), "COPILOT_API_BASE_URL"),
@@ -179,19 +142,8 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     ("gmi", "GMI Cloud", "https://api.gmi-serving.com/v1", ("GMI_API_KEY",), "GMI_BASE_URL"),
     ("actual", "Actual Computer", DEFAULT_ACTUAL_BASE_URL, ("ACTUAL_API_KEY",), "ACTUAL_BASE_URL"),
     ("minimax", "MiniMax", "https://api.minimax.io/anthropic", ("MINIMAX_API_KEY",), "MINIMAX_BASE_URL"),
-    ProviderConfig(
-        "minimax-oauth", "MiniMax (OAuth \u00b7 minimax.io)", "oauth_minimax",
-        portal_base_url=MINIMAX_OAUTH_GLOBAL_BASE, inference_base_url=MINIMAX_OAUTH_GLOBAL_INFERENCE,
-        client_id=MINIMAX_OAUTH_CLIENT_ID, scope=MINIMAX_OAUTH_SCOPE,
-        extra={"region": "global", "cn_portal_base_url": MINIMAX_OAUTH_CN_BASE,
-               "cn_inference_base_url": MINIMAX_OAUTH_CN_INFERENCE}),
-    # CLAUDE_CODE_OAUTH_TOKEN is NOT an API key despite auth_type="api_key": `claude setup-token`
-    # yields an `sk-ant-oat01…` OAuth token (401s as x-api-key, 429s as bare Bearer). It stays in
-    # this tuple because the tuple doubles as the credential-DISCOVERY list
-    # (agent/credential_pool.py builds its env scan from it); the adapter routes it down the OAuth
-    # path by prefix. Only ANTHROPIC_API_KEY and ANTHROPIC_TOKEN are usable as literal API keys.
     ("anthropic", "Anthropic", "https://api.anthropic.com",
-     ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"), "ANTHROPIC_BASE_URL"),
+     ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN"), "ANTHROPIC_BASE_URL"),
     ("alibaba", "Qwen Cloud", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
      ("DASHSCOPE_API_KEY",), "DASHSCOPE_BASE_URL"),
     ("alibaba-coding-plan", "Alibaba Cloud (Coding Plan)", "https://coding-intl.dashscope.aliyuncs.com/v1",
@@ -765,7 +717,7 @@ def _save_private_json(target: Path, data: Any, *, fsync_dir: bool = False, **du
 
 def _save_auth_store(auth_store: dict[str, Any], target_path: Optional[Path] = None) -> Path:
     """Atomically persist *auth_store* (0o600, parent tightened to 0o700) to the active store, or to
-    an explicit *target_path* (e.g. the global-root write-through for rotating xAI OAuth grants)."""
+    an explicit *target_path* (e.g. a plugin write-through to the global root)."""
     auth_file = target_path if target_path is not None else _auth_file_path()
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(UTC).isoformat()
@@ -798,8 +750,8 @@ def _load_provider_state_with_source(
 ) -> tuple[Optional[dict[str, Any]], Optional[Path]]:
     """Provider state plus the auth.json path it came from (profile first, then the global root).
 
-    Refresh paths that rotate single-use OAuth refresh tokens must write the updated chain back to
-    the same store they read."""
+    Refresh paths that rotate single-use refresh tokens must write the updated chain back to the
+    same store they read."""
     state = _provider_state_in(auth_store, provider_id)
     if state is not None:
         return state, _auth_file_path()
@@ -1082,7 +1034,7 @@ def write_credential_pool(
         auth_store = _load_auth_store()
         pool = _store_section(auth_store, "credential_pool")
         sanitized = [
-            sanitize_borrowed_credential_payload(e, provider_id) if isinstance(e, dict) else e
+            sanitize_borrowed_credential_payload(e) if isinstance(e, dict) else e
             for e in entries]
         existing_list = pool.get(provider_id)
         existing_list = existing_list if isinstance(existing_list, list) else []
@@ -1182,8 +1134,8 @@ def _config_selects_provider(normalized: str) -> bool:
 
     MoA presets are explicit model selections too: ``provider: anthropic`` in a MoA slot opts into
     Anthropic credentials for that slot even when the main model is another provider; otherwise
-    Claude Code OAuth entries get pruned by ``load_pool("anthropic")`` and MoA advisors fail with
-    "no ANTHROPIC_API_KEY" while the picker says Anthropic is logged in."""
+    the pooled Anthropic key gets pruned by ``load_pool("anthropic")`` and MoA advisors fail with
+    "no ANTHROPIC_API_KEY"."""
     from noesia_cli.config import load_config
     cfg = load_config()
     if _slot_selects(cfg.get("model"), normalized):
@@ -1209,12 +1161,10 @@ def _config_selects_provider(normalized: str) -> bool:
 
 def _explicit_pool_entry_present(normalized: str) -> bool:
     """Pool rows from EXPLICIT Noesia flows (manual add / device-code / PKCE) or live env keys;
-    ambient borrowed sources (gh_cli / claude_code / qwen-cli) are deliberately excluded."""
+    ambient borrowed sources (e.g. gh_cli) are deliberately excluded."""
     return any(_pool_entry_is_explicit(entry) for entry in read_credential_pool(normalized))
 
 
-# Set by Claude Code itself, not by the user explicitly configuring anthropic in Noesia.
-_IMPLICIT_ENV_VARS = frozenset({"CLAUDE_CODE_OAUTH_TOKEN"})
 _EXPLICIT_POOL_SOURCES = frozenset({"device_code", "loopback_pkce", "manual"})
 _VERTEX_PROVIDER_IDS = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "vertexai")
 
@@ -1248,7 +1198,7 @@ def _explicit_env_credentials_present(normalized: str) -> bool:
         if not pconfig:
             return False
     if pconfig.auth_type == "api_key":
-        return any(_env_secret(v) for v in pconfig.api_key_env_vars if v not in _IMPLICIT_ENV_VARS)
+        return any(_env_secret(v) for v in pconfig.api_key_env_vars)
     if pconfig.auth_type == "aws_sdk":
         return _env_secret("AWS_BEARER_TOKEN_BEDROCK") or (
             _env_secret("AWS_ACCESS_KEY_ID") and _env_secret("AWS_SECRET_ACCESS_KEY"))
@@ -1299,7 +1249,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
     """True only if the user explicitly configured this provider: auth.json ``active_provider``,
     config.yaml ``model.provider`` / MoA slots, a pasted provider env var, a pool entry from a
     Noesia-initiated flow, or Noesia-scoped routing config for keyless cloud-SDK providers. Ambient
-    borrowed credentials (gh CLI, qwen-cli, ~/.claude/.credentials.json) never count."""
+    borrowed credentials (e.g. the gh CLI) never count."""
     normalized = (provider_id or "").strip().lower()
     for check, best_effort in _EXPLICIT_CONFIG_CHECKS:
         try:
@@ -1335,8 +1285,8 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
 
 
 def deactivate_provider() -> None:
-    """Clear active_provider without deleting credentials: used when the user switches to a non-OAuth
-    provider (OpenRouter, custom) so auto-resolution doesn't keep picking the OAuth provider."""
+    """Clear active_provider without deleting credentials: used when the user switches to a provider
+    (OpenRouter, custom) so auto-resolution doesn't keep picking the previously signed-in one."""
     with _auth_store_lock():
         auth_store = _load_auth_store()
         auth_store["active_provider"] = None
@@ -1397,8 +1347,6 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
     "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
     "x-ai": "xai", "x.ai": "xai", "grok": "xai",
-    "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
-    "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
     "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
     "step": "stepfun", "stepfun-coding-plan": "stepfun",
@@ -1406,7 +1354,6 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "gmi-cloud": "gmi", "gmicloud": "gmi",
     "actual-computer": "actual", "actualcomputer": "actual", "aci": "actual",
     "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
-    "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
     "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
     "alibaba_coding_plan": "alibaba-coding-plan",
     "claude": "anthropic", "claude-code": "anthropic",
@@ -1415,7 +1362,6 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
     "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
     "opencode": "opencode-zen", "zen": "opencode-zen",
-    "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
     "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
     "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
     "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
@@ -1425,7 +1371,6 @@ _PROVIDER_ALIASES: dict[str, str] = {
     "go": "opencode-go", "opencode-go-sub": "opencode-go",
     "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
-    "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
     # Local server aliases — route through the generic custom provider
     "local": "custom",
     "ollama": "custom", "ollama_cloud": "ollama-cloud",
@@ -1513,7 +1458,7 @@ def _openrouter_auto_detected(scoped_key_env: Callable[[str], str]) -> bool:
         return False
 
 
-def _logged_in_oauth_active_provider() -> Optional[str]:
+def _logged_in_active_provider() -> Optional[str]:
     """auth.json ``active_provider`` when it is a registry provider that reports logged in."""
     try:
         _maybe = _load_auth_store().get("active_provider")
@@ -1573,24 +1518,24 @@ _NO_AUTO_DETECT_PROVIDERS = frozenset({"copilot", "lmstudio"})
 
 
 def _env_key_auto_detected(
-    scoped_key_env: Callable[[str], str], oauth_active: Optional[str]) -> Optional[str]:
+    scoped_key_env: Callable[[str], str], signed_in_provider: Optional[str]) -> Optional[str]:
     """First registry api_key provider (registry order) with a usable env key, warning when it
-    preempts a logged-in OAuth provider so a stale key in ~/.noesia/.env never switches silently."""
+    preempts a signed-in provider so a stale key in ~/.noesia/.env never switches silently."""
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key" or pid in _NO_AUTO_DETECT_PROVIDERS:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(scoped_key_env(env_var)):
-                if oauth_active and oauth_active != pid:
+                if signed_in_provider and signed_in_provider != pid:
                     logger.warning(
-                        # An exported API key now wins over a logged-in OAuth provider (the #29285 fix).
-                        # Surface that so a user who deliberately uses OAuth but has a stale key in
+                        # An exported API key now wins over a signed-in provider (the #29285 fix).
+                        # Surface that so a user who signed in deliberately but has a stale key in
                         # ~/.noesia/.env isn't silently switched without knowing why.
                         "Provider resolved to %r via %s, preempting your "
-                        "logged-in OAuth provider %r. If you meant to use the "
-                        "OAuth login, unset %s or set `model.provider` "
+                        "signed-in provider %r. If you meant to use that "
+                        "sign-in, unset %s or set `model.provider` "
                         "explicitly.",
-                        pid, env_var, oauth_active, env_var)
+                        pid, env_var, signed_in_provider, env_var)
                 return pid
     return None
 
@@ -1602,7 +1547,7 @@ def resolve_provider(
     explicit_base_url: Optional[str] = None) -> str:
     """Determine which inference provider to use.
 
-    "auto" priority (explicit intent beats a stale OAuth login): 1. CLI api_key/base_url ->
+    "auto" priority (explicit intent beats a stale sign-in): 1. CLI api_key/base_url ->
     "openrouter"; 2. config.yaml ``model.provider``; 3. OPENROUTER_API_KEY (or an sk-or- key in
     OPENAI_API_KEY) -> "openrouter"; 4. OpenRouter pool; 5. provider env keys; 6. auth.json ``active_provider``;
     7. AWS Bedrock chain; 8. AuthError(no_provider_configured).
@@ -1630,25 +1575,24 @@ def resolve_provider(
         _refuse_env_adoption_if_config_corrupt()
         return "openrouter"
 
-    # Determined up front so the env-key tier can warn when an exported key preempts it; the actual
-    # OAuth fallback still happens after the env-key tier.
-    _oauth_active = _logged_in_oauth_active_provider()
-    env_pid = _env_key_auto_detected(_scoped_key_env, _oauth_active)
+    # Determined up front so the env-key tier can warn when an exported key preempts it; the
+    # signed-in-provider fallback itself still happens after the env-key tier.
+    _signed_in_provider = _logged_in_active_provider()
+    env_pid = _env_key_auto_detected(_scoped_key_env, _signed_in_provider)
     if env_pid:
         return env_pid
 
-    # Logged-in OAuth provider is a LAST-RESORT fallback (it used to sit above the env/config
-    # checks, so a stale login silently overrode explicit intent).
-    # Logged-in OAuth provider (auth.json `active_provider`) — a LAST-RESORT fallback, chosen only when the
-    # user expressed no other preference above. Demoted here so explicit intent always wins. See #29285.
-    if _oauth_active:
+    # The signed-in provider (auth.json `active_provider`) is a LAST-RESORT fallback, chosen only
+    # when the user expressed no other preference above. It used to sit above the env/config checks,
+    # so a stale login silently overrode explicit intent; demoted here so explicit intent wins (#29285).
+    if _signed_in_provider:
         if isinstance(_model_cfg, dict) and _model_cfg and not _model_cfg.get("provider"):
             logger.warning(
-                "Provider resolved to logged-in OAuth provider %r because "
+                "Provider resolved to signed-in provider %r because "
                 "config.yaml `model` has no `provider` key. If you meant a "
                 "different provider, set `model.provider` explicitly.",
-                _oauth_active)
-        return _oauth_active
+                _signed_in_provider)
+        return _signed_in_provider
 
     # AWS Bedrock via the boto3 credential chain (IAM roles, SSO, env vars): implicit host state,
     # below explicit keys and below a sign-in.
@@ -1699,28 +1643,6 @@ def _tls_state_from_verify(verify: Any) -> dict[str, Any]:
     return {"insecure": verify is False, "ca_bundle": verify if isinstance(verify, str) else None}
 
 
-def _last_auth_error_marker(
-    provider: str, error: AuthError, *, reason: str, default_code: Optional[str] = None,
-) -> dict[str, Any]:
-    """The ``last_auth_error`` record persisted when dead OAuth material is quarantined."""
-    return {
-        "provider": provider, "message": str(error), "reason": reason, "relogin_required": True,
-        "code": error.code if default_code is None else (error.code or default_code),
-        "at": datetime.now(UTC).isoformat()}
-
-
-_FLAT_OAUTH_TOKEN_KEYS = ("access_token", "refresh_token", "expires_at", "expires_in", "obtained_at")
-
-
-def _quarantine_flat_oauth_state(state: dict[str, Any], provider: str, exc: AuthError) -> None:
-    """Strip dead tokens from a flat OAuth state after a terminal runtime refresh failure so
-    subsequent calls fail fast without a network retry (mirrors the Noesia / xAI / Codex pattern)."""
-    for _k in _FLAT_OAUTH_TOKEN_KEYS:
-        state.pop(_k, None)
-    state["last_auth_error"] = _last_auth_error_marker(
-        provider, exc, reason="runtime_refresh_failure", default_code="refresh_failed")
-
-
 def _coerce_ttl_seconds(expires_in: Any) -> int:
     try:
         return max(0, int(expires_in))
@@ -1733,95 +1655,7 @@ def _optional_base_url(value: Any) -> Optional[str]:
     return cleaned or None
 
 
-@dataclass(frozen=True)
-class OAuthProviderFlow:
-    """Per-provider OAuth plumbing, keyed by provider id in ``OAUTH_PROVIDER_FLOWS``.
-
-    Callables are named (strings) and looked up in this module at call time so
-    ``monkeypatch.setattr("noesia_cli.auth.resolve_codex_runtime_credentials", ...)`` applies."""
-    provider_id: str
-    resolve_fn: str
-    status_fn: str
-    terminal_refresh_codes: frozenset[str] = frozenset()  # retrying the same refresh token cannot succeed
-    # ``noesia logout`` with no active provider falls back to config.yaml ``model.provider`` only
-    # for providers whose credentials live in auth.json.
-    logout_from_config: bool = False
-
-    def resolve(self, **kwargs: Any) -> dict[str, Any]:
-        return globals()[self.resolve_fn](**kwargs)
-
-    def status(self) -> dict[str, Any]:
-        return globals()[self.status_fn]()
-
-    def is_terminal_refresh_error(self, exc: Exception) -> bool:
-        return (
-            isinstance(exc, AuthError) and exc.provider == self.provider_id
-            and exc.code in self.terminal_refresh_codes and bool(exc.relogin_required))
-
-
 _OAUTH_GRANT_DEAD_CODES = frozenset({"invalid_grant", "invalid_token", "refresh_token_reused"})
-
-OAUTH_PROVIDER_FLOWS: dict[str, OAuthProviderFlow] = {
-    "openai-codex": OAuthProviderFlow(
-        "openai-codex", "resolve_codex_runtime_credentials", "get_codex_auth_status",
-        terminal_refresh_codes=_OAUTH_GRANT_DEAD_CODES | {"codex_refresh_failed", "codex_auth_missing_refresh_token"},
-        logout_from_config=True),
-    "xai-oauth": OAuthProviderFlow(
-        "xai-oauth", "resolve_xai_oauth_runtime_credentials", "get_xai_oauth_auth_status",
-        terminal_refresh_codes=frozenset({"xai_refresh_failed", "xai_auth_missing_refresh_token"}),
-        logout_from_config=True),
-    "qwen-oauth": OAuthProviderFlow(
-        "qwen-oauth", "resolve_qwen_runtime_credentials", "get_qwen_auth_status"),
-    "minimax-oauth": OAuthProviderFlow(
-        "minimax-oauth", "resolve_minimax_oauth_runtime_credentials", "get_minimax_oauth_auth_status"),
-}
-
-
-def _is_terminal_refresh_error(exc: Exception, provider: str) -> bool:
-    """True when retrying the same *provider* refresh token cannot succeed."""
-    return OAUTH_PROVIDER_FLOWS[provider].is_terminal_refresh_error(exc)
-
-
-_is_terminal_xai_oauth_refresh_error = partial(_is_terminal_refresh_error, provider="xai-oauth")
-_is_terminal_codex_oauth_refresh_error = partial(
-    _is_terminal_refresh_error, provider="openai-codex")
-
-
-def _codex_pool_rate_limited_status() -> Optional[dict[str, Any]]:
-    rate_limit = _codex_pool_rate_limit_status()
-    if not rate_limit:
-        return None
-    return {
-        "logged_in": True, "auth_store": str(_auth_file_path()),
-        "last_refresh": rate_limit.get("last_refresh"), "auth_mode": "chatgpt",
-        "source": f"pool:{rate_limit.get('label') or 'unknown'}", "rate_limited": True,
-        "error_code": CODEX_RATE_LIMITED_CODE,
-        "error": (rate_limit.get("message")
-                  or "Codex provider quota exhausted; retry after the usage limit resets."),
-        "reset_at": rate_limit.get("reset_at")}
-
-
-def get_codex_auth_status() -> dict[str, Any]:
-    """Status snapshot for Codex auth (pool first, then legacy provider state).
-
-    Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
-    status = _pool_first_oauth_status(
-        "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
-        resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
-        on_pool_miss=_codex_pool_rate_limited_status)
-    if str(status.get("source") or "").startswith("pool:"):
-        # Pool rows keep the canonical URL; the chat route may send this key to model.base_url.
-        from noesia_cli.auth_codex import _codex_pool_route_base_url
-        status["base_url"] = _codex_pool_route_base_url(status.get("base_url"))
-    return status
-
-
-def get_xai_oauth_auth_status() -> dict[str, Any]:
-    # auth_mode is display/telemetry only; device-code is the only xAI OAuth flow, so report it
-    # unconditionally (auth.json may still carry a legacy ``oauth_pkce`` label).
-    return _pool_first_oauth_status(
-        "xai-oauth", is_expiring=_xai_access_token_is_expiring, auth_mode="oauth_device_code",
-        resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:
@@ -1852,7 +1686,7 @@ def get_api_key_provider_status(provider_id: str) -> dict[str, Any]:
         base_url = normalize_actual_base_url(base_url)
         actual_local_noauth = not api_key and is_actual_local_base_url(base_url)
     configured = bool(api_key) or actual_local_noauth
-    return {  # logged_in mirrors configured for compat with the OAuth status shape
+    return {  # logged_in mirrors configured so every status consumer reads one shape
         "configured": configured, "provider": provider_id, "name": pconfig.name,
         "key_source": key_source or ("local-offline" if actual_local_noauth else ""),
         "base_url": base_url, "logged_in": configured}
@@ -1956,10 +1790,8 @@ def _get_aws_sdk_auth_status(target: str) -> dict[str, Any]:
 
 
 def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
-    """Generic auth status dispatcher: bespoke builders (``OAUTH_PROVIDER_FLOWS`` plus Azure
-    Foundry) first, then the registry ``auth_type`` so a whole provider class (e.g. every
-    external-process ACP backend) gets a real status. Builders are looked up by NAME at call time so
-    tests that patch ``noesia_cli.auth.get_*_auth_status`` still apply."""
+    """通用状态分发：先查具名构建器（Azure Foundry），再按注册表 ``auth_type`` 分发，让整类供应商
+    （如所有 external_process ACP 后端）都有真实状态。构建器按名字在调用时查找。"""
     target = (provider_id or get_active_provider() or "").strip().lower()
     if not target:
         return {"logged_in": False}
@@ -1974,9 +1806,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
 
 # Bespoke status builders (name -> looked up in this module at call time) win over the
 # auth_type-keyed fallbacks below.
-_BESPOKE_STATUS_FUNCTIONS: dict[str, str] = {
-    **{pid: flow.status_fn for pid, flow in OAUTH_PROVIDER_FLOWS.items()},
-    "azure-foundry": "_get_azure_foundry_auth_status"}
+_BESPOKE_STATUS_FUNCTIONS: dict[str, str] = {"azure-foundry": "_get_azure_foundry_auth_status"}
 _STATUS_BY_AUTH_TYPE: dict[str, str] = {
     "external_process": "get_external_process_provider_status",
     "api_key": "get_api_key_provider_status",
@@ -2188,15 +2018,6 @@ def _should_reset_config_provider_on_logout(provider_id: Optional[str]) -> bool:
     return normalized in PROVIDER_REGISTRY and _get_config_provider() == normalized
 
 
-def _logout_default_provider_from_config() -> Optional[str]:
-    """Fallback logout target when auth.json has no active provider but config.yaml still selects an
-    OAuth provider (e.g. openai-codex) — otherwise logout said "No provider is currently logged in"
-    and never reset model.provider."""
-    provider = _get_config_provider()
-    flow = OAUTH_PROVIDER_FLOWS.get(provider or "")
-    return provider if flow and flow.logout_from_config else None
-
-
 def _reset_config_provider() -> Path:
     """Reset config.yaml provider back to auto after logout."""
     config_path = get_config_path()
@@ -2222,27 +2043,13 @@ def login_command(args) -> None:
     raise SystemExit(0)
 
 
-def get_minimax_oauth_auth_status() -> dict[str, Any]:
-    """Return auth status dict for MiniMax OAuth provider."""
-    state = get_provider_auth_state("minimax-oauth")
-    if not state or not state.get("access_token"):
-        return {"logged_in": False, "provider": "minimax-oauth"}
-    try:
-        token_valid = datetime.fromisoformat(state.get("expires_at", "")).timestamp() > time.time()
-    except Exception:
-        token_valid = True  # access_token is known non-empty here
-    return {
-        "logged_in": token_valid, "provider": "minimax-oauth",
-        "region": state.get("region", "global"), "expires_at": state.get("expires_at")}
-
-
 def logout_command(args) -> None:
     """Clear auth state for a provider."""
     provider_id = getattr(args, "provider", None)
     if provider_id and not is_known_auth_provider(provider_id):
         print(f"Unknown provider: {provider_id}")
         raise SystemExit(1)
-    target = provider_id or get_active_provider() or _logout_default_provider_from_config()
+    target = provider_id or get_active_provider()
     if not target:
         print("No provider is currently logged in.")
         return

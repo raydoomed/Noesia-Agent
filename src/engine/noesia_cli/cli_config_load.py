@@ -70,7 +70,7 @@ def _parse_reasoning_config(effort) -> dict | None:
 
 
 def _parse_service_tier_config(raw: str) -> str | None:
-    """Parse a persisted fast-mode preference: None, "priority", "ultrafast", "auto", or "cold"."""
+    """Parse a persisted fast-mode preference: None, "priority", "auto", or "cold"."""
     from agent.fast_mode import NORMAL_TIER_WORDS, parse_service_tier
 
     tier = parse_service_tier(raw)

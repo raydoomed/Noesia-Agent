@@ -250,13 +250,9 @@ async def _set_fast(connection, ref, policy, value):
         base_url = getattr(agent, 'base_url', None) or (policy.base_url if policy else None)
 
         def offered():
-            from agent.codex_service_tiers import ultrafast_offered
             from noesia_cli.models import resolve_fast_mode_overrides
-            if not model or resolve_fast_mode_overrides(model, provider=provider, base_url=base_url,
-                                                        tier=tier if tier == 'ultrafast' else None) is None:
-                return False
-            return tier != 'ultrafast' or ultrafast_offered(model, provider=provider, base_url=base_url,
-                                                            access_token=getattr(agent, 'api_key', None))
+            return bool(model) and resolve_fast_mode_overrides(
+                model, provider=provider, base_url=base_url) is not None
         if not await asyncio.to_thread(offered):
             raise RuntimeStoreError('fast_unavailable')
     connection.authority.runner._set_session_service_tier_override(

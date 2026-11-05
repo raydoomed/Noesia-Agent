@@ -4266,7 +4266,6 @@
     "shell.modelOptions.sendsOnRoute",
     "shell.modelOptions.thinking",
     "shell.modelOptions.ultra",
-    "shell.modelOptions.ultrafast",
     "shell.modelOptions.updateFailed",
     "shell.modelOptions.useStandardSpeed",
     "shell.modelOptions.xhigh",

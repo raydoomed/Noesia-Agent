@@ -20,9 +20,8 @@ _env_path = get_env_path()
 load_noesia_dotenv(noesia_home=_env_path.parent, project_env=PROJECT_ROOT / ".env")
 
 from noesia_cli.colors import Colors, color
-from noesia_cli.doctor_report import Finding, _section, check_bool, check_info, doctor_check, warn_on_error
-from noesia_cli.doctor_connectivity import _has_healthy_oauth_fallback_for_apikey_provider, build_probes, run_probes
-from noesia_cli.doctor_tools import _safe_which
+from noesia_cli.doctor_report import Finding, _section, doctor_check, warn_on_error
+from noesia_cli.doctor_connectivity import build_probes, run_probes
 
 from noesia_cli.doctor_config import (
     _check_config_drift,
@@ -69,31 +68,6 @@ _PROVIDER_ENV_HINTS = (
 )
 
 @doctor_check()
-def _check_auth_providers(should_fix: bool, f: Finding) -> None:
-    """Refresh-free OAuth status snapshot (doctor must never trigger a token refresh)."""
-    with warn_on_error("Auth provider status", "(could not check: {e})"):
-        from noesia_cli.auth import get_noesia_auth_status_local, get_codex_auth_status, get_minimax_oauth_auth_status
-        _login_row("Noesia Portal auth", get_noesia_auth_status_local())
-        # Native OAuth is Noesia' own device-code flow; the Codex CLI only imports existing ~/.codex/auth.json
-        # tokens, so the hint sits under the Codex row (not as another provider's remedy).
-        if not _login_row("OpenAI Codex auth", get_codex_auth_status(), show_error=True) and not _safe_which("codex"):
-            check_info("codex CLI not installed (optional — only required to import tokens from an existing Codex CLI login)")
-        minimax_status = get_minimax_oauth_auth_status()
-        _login_row("MiniMax OAuth", minimax_status, f"(logged in, region={minimax_status.get('region', 'global')})")
-    with warn_on_error(""):  # xAI OAuth separately, so an import failure cannot disrupt the rows already printed
-        from noesia_cli.auth import get_xai_oauth_auth_status
-        _login_row("xAI OAuth", get_xai_oauth_auth_status() or {}, show_error=True)
-
-
-def _login_row(label: str, status: dict, ok_detail: str = "(logged in)", show_error: bool = False) -> bool:
-    """ok/warn row for an OAuth status dict; with show_error, its ``error`` hint prints under a not-logged-in row."""
-    logged_in = check_bool(status.get("logged_in"), (label, ok_detail), (label, "(not logged in)"))
-    if not logged_in and show_error and status.get("error"):
-        check_info(status["error"])
-    return logged_in
-
-
-@doctor_check()
 def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     """Parallel HTTP/SDK probes for every configured provider; results printed in submission order."""
     probes = build_probes()
@@ -104,7 +78,7 @@ def _check_api_connectivity(should_fix: bool, f: Finding) -> None:
     for r in results:
         for glyph, label, detail in r.lines:
             print(f"  {glyph} {label}" + (f" {detail}" if detail else ""))
-        if r.issues and not _has_healthy_oauth_fallback_for_apikey_provider(r.label):
+        if r.issues:
             f.issues.extend(r.issues)
 
 
@@ -117,7 +91,6 @@ DOCTOR_CHECKS = (
     (None, _check_config_file), (None, _check_config_drift),
     ('xAI Model Retirement (May 15, 2026)', _check_xai_retirement),
     ('Session Reset (timers removed Sep 7, 2026)', _check_retired_session_reset),
-    ('Auth Providers', _check_auth_providers),
     ('Directory Structure', _check_directory_structure), (None, _check_state_db), (None, _check_cron_store),
     (None, _check_checkpoint_store),
     (None, _check_gateway_supervision), (None, _check_command_installation),

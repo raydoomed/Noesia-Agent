@@ -40,9 +40,9 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
-    # Keys the OAuth provider profiles (noesia, qwen-oauth) also accept when pasted. The auth
-    # registry mirrors env_vars only for api_key profiles, and discovering the provider plugins
-    # from here, at import, would re-mirror them over a plugin's own registry entry.
+    # Keys a provider profile also accepts when pasted. The auth registry mirrors env_vars only
+    # for api_key profiles, and discovering the provider plugins from here, at import, would
+    # re-mirror them over a plugin's own registry entry.
     "NOESIA_API_KEY", "QWEN_API_KEY",
     # Noesia' own secrets read in code: the anonymous-inference secret, dashboard auth
     # (basic, OIDC, drain) and the Google Meet realtime key.
@@ -82,16 +82,12 @@ def _build_provider_env_blocklist() -> frozenset:
                 blocked.add(name)
     except ImportError:
         pass
-    # CLAUDE_CODE_OAUTH_TOKEN (via the anthropic registry entry) belongs to the user's
-    # Claude Code install, not Noesia: stripping it made agent-spawned ``claude`` CLIs
-    # fall through to the shared Keychain / ~/.claude store and, on auth failure, wipe
-    # it — logging the user out. BUZZ_* is deliberately NOT discarded: this list feeds
-    # every scrub surface, so an import-time discard would leak BUZZ_PRIVATE_KEY into
-    # non-terminal children; the Buzz carve-out is terminal-only and context-gated
-    # (``_is_terminal_first_party_env``).
-    # It is set and owned by the user's Claude Code install (subscription OAuth), not a Noesia-managed
-    # inference credential — Claude subscription auth is not a working Noesia provider path. It arrives via
-    # the registry loop above (anthropic api_key_env_vars), so remove it explicitly. See #55878.
+    # CLAUDE_CODE_OAUTH_TOKEN belongs to the user's own Claude Code install, not Noesia:
+    # stripping it made agent-spawned ``claude`` CLIs fall through to the shared Keychain /
+    # ~/.claude store and, on auth failure, wipe it — logging the user out. BUZZ_* is
+    # deliberately NOT discarded: this list feeds every scrub surface, so an import-time
+    # discard would leak BUZZ_PRIVATE_KEY into non-terminal children; the Buzz carve-out is
+    # terminal-only and context-gated (``_is_terminal_first_party_env``). See #55878.
     blocked.discard("CLAUDE_CODE_OAUTH_TOKEN")
     # BUZZ_* is deliberately NOT discarded here, even for Buzz-managed agents (BUZZ_MANAGED_AGENT set by the
     # buzz-acp harness). See #76243, #78026, #78065, #78511.

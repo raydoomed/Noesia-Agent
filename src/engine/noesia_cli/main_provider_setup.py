@@ -1,5 +1,5 @@
 """Provider setup wizard helpers: provider picker, custom-provider save/remove, auxiliary-model
-routing menu, API-key/reasoning prompts, Anthropic OAuth.
+routing menu, API-key/reasoning prompts.
 
 Split out of ``noesia_cli/main.py``. Names that still live in main are imported lazily at call time.
 """
@@ -766,71 +766,6 @@ def _infer_stepfun_region(base_url: str) -> str:
 def _stepfun_base_url_for_region(region: str) -> str:
     from noesia_cli.auth import STEPFUN_STEP_PLAN_CN_BASE_URL, STEPFUN_STEP_PLAN_INTL_BASE_URL
     return STEPFUN_STEP_PLAN_CN_BASE_URL if region == "china" else STEPFUN_STEP_PLAN_INTL_BASE_URL
-
-
-def _run_anthropic_oauth_flow(save_env_value):
-    """Run the Claude OAuth setup-token flow. Returns True if credentials were saved."""
-    from agent.anthropic_credentials import run_oauth_setup_token, read_claude_code_credentials, is_claude_code_token_valid
-    from noesia_cli.config import save_anthropic_oauth_token, use_anthropic_claude_code_credentials
-
-    def _activate_claude_code_credentials_if_available() -> bool:
-        try:
-            creds = read_claude_code_credentials()
-        except Exception:
-            creds = None
-        if creds and (is_claude_code_token_valid(creds) or bool(creds.get("refreshToken"))):
-            use_anthropic_claude_code_credentials(save_fn=save_env_value)
-            print("  ✓ Claude Code credentials linked.")
-            from noesia_constants import display_noesia_home as _dhh_fn
-            print(f"    Noesia will use Claude's credential store directly instead of copying a setup-token into {_dhh_fn()}/.env.")
-            return True
-        return False
-
-    def _paste_token(prompt: str):
-        """Manual setup-token entry: True saved, False empty, None cancelled."""
-        token = _ask(prompt, secret=True, cancel_msg="")
-        if not token:
-            return token
-        save_anthropic_oauth_token(token, save_fn=save_env_value)
-        print("  ✓ Setup-token saved.")
-        return True
-
-    try:
-        _say("", "  Running 'claude setup-token' — follow the prompts below.",
-             "  A browser window will open for you to authorize access.", "")
-        token = run_oauth_setup_token()
-        if token:
-            if _activate_claude_code_credentials_if_available():
-                return True
-            save_anthropic_oauth_token(token, save_fn=save_env_value)
-            print("  ✓ OAuth credentials saved.")
-            return True
-
-        # Subprocess completed but no token auto-detected — ask user to paste
-        _say("", "  If the setup-token was displayed above, paste it here:", "")
-        saved = _paste_token("  Paste setup-token (or Enter to cancel): ")
-        if saved is None:
-            return False
-        if saved:
-            return True
-        print("  ⚠ Could not detect saved credentials.")
-        return False
-
-    except FileNotFoundError:
-        # Claude CLI not installed — guide user through manual setup
-        _say("", "  The 'claude' CLI is required for OAuth login.", "", "  To install and authenticate:", "",
-             "    1. Install Claude Code:  npm install -g @anthropic-ai/claude-code",
-             "    2. Run:                  claude setup-token",
-             "    3. Follow the browser prompts to authorize",
-             "    4. Re-run:               noesia model", "",
-             "  Or paste an existing setup-token now (sk-ant-oat-...):", "")
-        saved = _paste_token("  Setup-token (or Enter to cancel): ")
-        if saved is None:
-            return False
-        if saved:
-            return True
-        print("  Cancelled — install Claude Code and try again.")
-        return False
 
 
 def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:

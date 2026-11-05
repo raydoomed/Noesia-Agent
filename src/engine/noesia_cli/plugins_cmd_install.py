@@ -693,8 +693,8 @@ def cmd_install(
             f"[dim]Plugin installed but not enabled. "
             f"Run `noesia plugins enable {installed_name}` to activate.[/dim]")
 
-    from noesia_cli.plugin_provider_requests import requires_auth_notice
-    if notice := requires_auth_notice(installed_manifest):
+    from noesia_cli.plugin_oauth import oauth_notice
+    if notice := oauth_notice(installed_manifest):
         console.print(f"[yellow]{notice}[/yellow]")
     # Non-interactive installs and declines leave declared capabilities ungranted (fail closed).
     declared_caps = _pc()._declared_capabilities_from_manifest(installed_manifest, installed_name)

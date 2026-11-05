@@ -112,45 +112,13 @@ class CredentialPoolAdminMixin:
             return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        from agent.credential_pool import (
-            _borrowed_single_use_pool_root, _next_priority, _profile_owns_pool_provider,
-            write_credential_pool,
-        )
+        from agent.credential_pool import _next_priority
         from noesia_cli import auth as auth_mod
-        from noesia_cli.auth_oauth_grants import SINGLE_USE_REFRESH_POOL_PROVIDERS
 
         with self._lock:
             entry = replace(entry, priority=_next_priority(self._entries))
             self._entries.append(entry)
-            borrowed_ids = self._borrowed_root_ids
-            # Decided now, not from load_pool()'s snapshot: a profile with no
-            # rows of its own borrows from root even when root has none, and
-            # ``_persist`` would send the new row to the update-only root merge,
-            # which drops it (#103694).
-            profile_borrows = (
-                self.provider in SINGLE_USE_REFRESH_POOL_PROVIDERS
-                and not _profile_owns_pool_provider(self.provider)
-                and _borrowed_single_use_pool_root() is not None
-            )
-            if borrowed_ids or profile_borrows:
-                # ``noesia -p <profile> auth add <single-use provider>``: a fresh
-                # login inside the profile is the profile's OWN credential, so
-                # it goes to the profile store, never to root. Only that row is
-                # written: the rest of this pool is root's (its rows, or its
-                # ``providers.<id>`` login seeded through the fallback), and a
-                # copy would fork that single-use refresh token (#100339). Rows
-                # the profile seeds from its own sources come back on the next
-                # load. Once the profile owns rows, the root fallback for this
-                # provider is shadowed.
-                self._entries = [entry]
-                written = write_credential_pool(
-                    self.provider, [entry.to_dict()],
-                    token_bases=self._persisted_token_pairs,
-                )
-                self._persisted_token_pairs = auth_mod._token_pairs_by_id(written)
-                self._borrowed_root_ids = set()
-            else:
-                self._persist()
+            self._persist()
             # Callers print "Added" on return; a row the store did not keep
             # must fail loudly instead.
             if not any(isinstance(row, dict) and row.get("id") == entry.id

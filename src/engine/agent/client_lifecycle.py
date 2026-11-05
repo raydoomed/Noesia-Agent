@@ -14,7 +14,6 @@ from noesia_cli.timeouts import get_provider_request_timeout
 from utils import base_url_host_matches, env_float
 
 logger = logging.getLogger("run_agent")  # origin module's logger name: log records / caplog filters unchanged
-_QWEN_CODE_VERSION = "0.14.1"  # Qwen Portal mimics the QwenCode CLI
 # Per-request cache slot attribute names (OpenAI-style and Anthropic clients).
 _OPENAI_SLOT = "_request_client_cache"
 _ANTHROPIC_SLOT = "_request_anthropic_client_cache"
@@ -27,15 +26,6 @@ def _routermint_headers() -> dict:
     return {"User-Agent": f"NoesiaAgent/{get_version_info().base_version}"}
 
 
-def _qwen_portal_headers() -> dict:
-    import platform as _plat
-    _ua = f"QwenCode/{_QWEN_CODE_VERSION} ({_plat.system().lower()}; {_plat.machine()})"
-    return {
-        "User-Agent": _ua, "X-DashScope-CacheControl": "enable", "X-DashScope-UserAgent": _ua,
-        "X-DashScope-AuthType": "qwen-oauth",
-    }
-
-
 # Route-specific default headers; first host match wins (order preserved from the original chain).
 # Builders resolve their module lazily so run_agent keeps its import-time cost and avoids cycles.
 _ROUTE_DEFAULT_HEADERS = (
@@ -45,10 +35,7 @@ _ROUTE_DEFAULT_HEADERS = (
     ("api.routermint.com", lambda self, url: _routermint_headers()),
     ("githubcopilot.com", lambda self, url: _lazy_attr("noesia_cli.models", "copilot_default_headers")()),
     ("api.kimi.com", lambda self, url: dict(_lazy_attr("agent.auxiliary_client", "_AI_GATEWAY_HEADERS"))),
-    ("portal.qwen.ai", lambda self, url: _qwen_portal_headers()),
-    ("chatgpt.com", lambda self, url: _lazy_attr("agent.codex_headers", "codex_cloudflare_headers")(
-        self._client_kwargs.get("api_key", ""), base_url=url)),
-    # Covers provider=xai and provider=xai-oauth (api.x.ai).
+    # xAI (api.x.ai).
     ("x.ai", lambda self, url: _lazy_attr("tools.xai_http", "noesia_xai_default_headers")()),
 )
 
@@ -77,13 +64,12 @@ def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
+        from agent.anthropic_credentials import resolve_anthropic_token
         is_anthropic = fb_provider == "anthropic"
         effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
-        agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return
     agent.api_key = credential
@@ -484,12 +470,12 @@ class ClientLifecycleMixin:
         self._abort_request_slot_client(_OPENAI_SLOT, client, reason=reason)
 
     def _request_anthropic_client_key(self) -> tuple:
-        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout, 1M-beta flag."""
+        """Cache key over everything forcing a fresh client: credential, base URL/region, timeout."""
         if getattr(self, "provider", None) == "bedrock":
             return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
-            get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            get_provider_request_timeout(self.provider, self.model),
         )
 
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
@@ -497,16 +483,11 @@ class ClientLifecycleMixin:
         from agent.anthropic_adapter import build_anthropic_client
         return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
 
-    def _anthropic_oauth_flag(self, token: str) -> bool:
-        """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
-        from agent.anthropic_credentials import anthropic_route_is_oauth
-        return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
-
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
         if key[0] == "bedrock":
             return build_anthropic_bedrock_client(key[1])
-        return build_anthropic_client(key[1], key[2], timeout=key[3], drop_context_1m_beta=key[4])
+        return build_anthropic_client(key[1], key[2], timeout=key[3])
 
     def _create_request_anthropic_client(self, *, reason: str) -> Any:
         """Build (or reuse) a request-local Anthropic client for one in-flight call.
@@ -566,43 +547,6 @@ class ClientLifecycleMixin:
         self.api_key, self.base_url = api_key.strip(), base_url.strip().rstrip("/")
         self._sync_client_kwargs_credentials()
         return self._replace_primary_openai_client(reason=reason)
-
-    def _try_refresh_codex_client_credentials(self, *, force: bool = True) -> bool:
-        if self.api_mode != "codex_responses" or self.provider not in {"openai-codex", "xai-oauth"}:
-            return False
-        # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
-        # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
-        try:
-            from noesia_cli import auth as _auth
-            resolve = (
-                _auth.resolve_codex_runtime_credentials if self.provider == "openai-codex"
-                else _auth.resolve_xai_oauth_runtime_credentials
-            )
-            singleton_now = resolve(refresh_if_expiring=False)
-        except Exception as exc:
-            logger.debug("%s singleton read failed: %s", self.provider, exc)
-            return False
-        singleton_key = str(singleton_now.get("api_key") or "").strip()
-        old_key = str(self.api_key or "").strip()
-        if singleton_key and old_key and singleton_key != old_key:
-            logger.debug(
-                "%s singleton tokens differ from the active api_key; skipping singleton force-refresh to avoid "
-                "silent account swap. Reactive credential rotation should go through the pool.", self.provider,
-            )
-            return False
-        try:
-            creds = resolve(force_refresh=force)
-        except Exception as exc:
-            logger.debug("%s credential refresh failed: %s", self.provider, exc)
-            return False
-        api_key, base_url = creds.get("api_key"), creds.get("base_url")
-        if not _valid_credential_pair(api_key, base_url):
-            return False
-        # No NEW token minted (the resolver returns the same stale token when refresh fails) → False.
-        if old_key and api_key.strip() == old_key:
-            logger.debug("%s credential refresh returned the same token; refresh likely failed silently", self.provider)
-            return False
-        return self._adopt_openai_credentials(api_key, base_url, reason=f"{self.provider}_credential_refresh")
 
     def _resolve_env_credentials(self) -> Optional[tuple]:
         """Current ``.env``-sourced ``(api_key, base_url, default_base)`` for this provider, or ``None``.
@@ -800,8 +744,8 @@ class ClientLifecycleMixin:
         return ok
 
     def _try_refresh_anthropic_client_credentials(self) -> bool:
-        # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)
-        # and Azure use static keys — a refresh would pick up the ~/.claude OAuth token and break auth.
+        # Only the native Anthropic provider re-reads its key; other anthropic_messages providers
+        # (MiniMax, Alibaba, ...) and Azure use static keys — a refresh would break their auth.
         anthropic_base_url = getattr(self, "_anthropic_base_url", "") or ""
         if (
             self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key")
@@ -809,13 +753,13 @@ class ClientLifecycleMixin:
         ):
             return False
         # Off the official hosts (a /anthropic proxy the resolver accepts, or a URL-bearing alias,
-        # #28660) rotate only a credential the endpoint already holds: swapping a custom key for
-        # ANTHROPIC_API_KEY / the OAuth token would leak it (#17829). Hostname match, not substring,
-        # so ``proxy.example/anthropic.com`` stays foreign.
+        # #28660) re-read only a credential the endpoint already holds: swapping a custom key for
+        # ANTHROPIC_API_KEY would leak it (#17829). Hostname match, not substring, so
+        # ``proxy.example/anthropic.com`` stays foreign.
         official_host = not anthropic_base_url or any(
             base_url_host_matches(anthropic_base_url, host) for host in ("anthropic.com", "claude.com"))
         current_key = str(self._anthropic_api_key or "")
-        if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
+        if not official_host and not current_key.startswith("sk-ant-"):
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
@@ -835,22 +779,20 @@ class ClientLifecycleMixin:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
             return False
         old_token = self._anthropic_api_key
-        self._anthropic_api_key, self._is_anthropic_oauth = new_token, self._anthropic_oauth_flag(new_token)
-        # Claude Code revokes the old token on refresh: every holder of it (agent.api_key, the compressor's
-        # main_runtime, the fallback-restore snapshot) must move too, or compression 401s for the session's life.
+        self._anthropic_api_key = new_token
+        # Every holder of the old key (agent.api_key, the compressor's main_runtime, the fallback-restore
+        # snapshot) must move too, or compression 401s for the session's life.
         if self.api_key == old_token:
             self.api_key = new_token
         cc = getattr(self, "context_compressor", None)
         if cc is not None and getattr(cc, "api_key", None) == old_token:
             cc.api_key = new_token
         rt = getattr(self, "_primary_runtime", None) or {}
-        if rt.get("anthropic_api_key") == old_token:  # fallback restore rebuilds from the key + flag pair
-            rt["is_anthropic_oauth"] = self._is_anthropic_oauth
         for k in ("api_key", "anthropic_api_key", "compressor_api_key"):
             if rt.get(k) == old_token:
                 rt[k] = new_token
         # The turn's aux runtime was published before the first request triggered this refresh, so
-        # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the revoked token.
+        # same-turn `auto` aux calls (approvals, goal judge, plugin llm) would still send the stale key.
         from agent.auxiliary_key_rotation import rotate_runtime_main_api_key
         rotate_runtime_main_api_key(old_token, new_token)
         return True
@@ -915,7 +857,6 @@ class ClientLifecycleMixin:
                 self._anthropic_client.close()
             self._anthropic_api_key, self._anthropic_base_url = runtime_key, stripped_base
             self._anthropic_client = self._build_direct_anthropic_client(runtime_key, self._anthropic_base_url)
-            self._is_anthropic_oauth = self._anthropic_oauth_flag(runtime_key)
             self.api_key, self.base_url = runtime_key, stripped_base
             return True
         self.api_key, self.base_url = runtime_key, stripped_base

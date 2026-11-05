@@ -192,14 +192,10 @@ def _declared_env_names(manifest: Mapping[str, Any]) -> set[str]:
 
 
 def oauth_admission_problems(manifest: Mapping[str, Any], plugin_dir: Path) -> list[str]:
-    """Catalog admission on top of the shape: declared variables, no clash with core sign-ins or ``custom:``."""
-    from noesia_cli.plugin_provider_requests import _PROVIDERS
-
+    """Catalog admission on top of the shape: declared variables and no ``custom:`` clash."""
     clients, problems = parse_oauth_clients(manifest)
     declared = _declared_env_names(manifest)
     for client in clients:
-        if client.id in _PROVIDERS:
-            problems.append(f"oauth id {client.id!r} is a Noesia sign-in provider; pick another id")
         for name in filter(None, (client.client_id_env, client.client_secret_env)):
             if name not in declared:
                 problems.append(f"oauth {client.id!r}: {name} must be declared under requires_env or optional_env")
@@ -426,8 +422,8 @@ def _bearer(plugin_dir: Path, client: OAuthClient) -> str:
 def _plugin_oauth_spec(plugin_dir: Path, provider: str):
     """``(origins, resolver)`` for *provider* when the calling plugin declares it under ``oauth:``, else None.
 
-    Core-only, like the ``_PROVIDERS`` resolvers: the resolver returns the bearer, so plugins go through
-    ``credentialed_provider_request``, which attributes the caller and checks the origin first."""
+    Core-only: the resolver returns the bearer, so plugins go through ``credentialed_provider_request``,
+    which attributes the caller and checks the origin first."""
     client = next((c for c in _declared_clients(plugin_dir) if c.id == provider), None)
     if client is None:
         return None

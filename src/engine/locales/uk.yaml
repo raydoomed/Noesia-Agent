@@ -187,8 +187,7 @@ gateway:
     choice_normal: "normal — стандартна обробка"
     choice_auto: "auto — швидко в перші секунди кожного ходу"
     choice_cold: "cold — швидко лише на першому ході сесії"
-    choice_ultrafast: "ultrafast — OpenAI Ultrafast, ціна ×6"
-    ultrafast_not_supported: "⚡ Ultrafast недоступний для `{model}` у цьому обліковому записі або маршруті."
+
   footer:
     status: "📎 Нижній колонтитул середовища: **{state}**\nПоля: `{fields}`\nПлатформа: `{platform}`"
     usage: "Використання: `/footer [on|off|status]`"
@@ -1606,7 +1605,7 @@ slash:
   reasoning:
     description: "Керувати рівнем зусиль міркування та його показом"
   fast:
-    description: "Швидкий режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold/ultrafast)"
+    description: "Швидкий режим — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)"
   skin:
     description: "Показати або змінити оформлення (тему) інтерфейсу"
   indicator:
@@ -2680,9 +2679,7 @@ cli:
       feature_generic: "Швидкий режим"
       feature_anthropic: "Anthropic Fast Mode"
       feature_openai: "Priority Processing"
-      feature_ultrafast: "OpenAI Ultrafast"
-      ultrafast_not_supported: "(._.) Ultrafast недоступний для {model} у цьому обліковому записі або маршруті."
-      usage: "Використання: /fast [normal|fast|auto|cold|ultrafast|status] [--global]"
+      usage: "Використання: /fast [normal|fast|auto|cold|status] [--global]"
       status: "{feature}: {status}"
       set_to: "✓ {feature}: встановлено {value} {scope}"
     hatch:

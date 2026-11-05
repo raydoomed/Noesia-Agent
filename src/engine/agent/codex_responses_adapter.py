@@ -626,12 +626,8 @@ def _chat_messages_to_responses_input(
     so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:
     local history is never truncated).
 
-    Earlier (PR #26644, May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface rejected
-    replayed ``encrypted_content`` reasoning items minted by prior turns, and we stripped them. That
-    decision was wrong — xAI explicitly relies on Noesia threading encrypted reasoning back across turns for
-    cross-turn coherence (the whole point of their partnership integration). We now replay encrypted
-    reasoning on every Responses transport (xAI, native Codex, custom relays) and let xAI tell us explicitly
-    if a specific surface ever rejects a payload.
+    We replay encrypted reasoning on every Responses transport (xAI, Codex Responses, custom relays) and
+    let the issuer tell us explicitly if a specific surface ever rejects a payload.
     The Copilot backend (api.githubcopilot.com/responses) binds these ids to a specific backend "connection"
     — credential-pool rotation, a gateway restart, or routine load-balancer churn between turns all
     invalidate it — and rejects a stale id with HTTP 401 "input item ID does not belong to this connection"
@@ -753,8 +749,8 @@ def classify_responses_route(agent: Any) -> ResponsesRouteFlags:
     def _host_is(domain: str) -> bool:
         return hostname == domain or hostname.endswith("." + domain)
     return ResponsesRouteFlags(
-        is_codex_backend=provider == "openai-codex" or (_host_is("chatgpt.com") and "/backend-api/codex" in lower),
-        is_xai_responses=provider in {"xai", "xai-oauth"} or hostname == "api.x.ai",
+        is_codex_backend=_host_is("chatgpt.com") and "/backend-api/codex" in lower,
+        is_xai_responses=provider == "xai" or hostname == "api.x.ai",
         is_github_responses=_host_is("models.github.ai") or _host_is("githubcopilot.com"),
     )
 

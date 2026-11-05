@@ -72,7 +72,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text/image/reference)"),
-    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
+    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires XAI_API_KEY)"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("stt",             "🎙️ Speech-to-Text",           "voice transcription (gateway voice messages + voice mode)"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -113,14 +113,8 @@ _CONFIG_ONLY_TOOLSETS = {"stt"}
 
 
 def _xai_credentials_present() -> bool:
-    """Cheap offline check for xAI credentials (auth store + env only); the runtime ``check_fn`` still gates
-    schema registration if creds expire. Also used by ``provider_readiness_status`` for ``xai_grok`` rows."""
-    try:
-        from noesia_cli.auth import _read_xai_oauth_tokens
-        _read_xai_oauth_tokens()
-        return True
-    except Exception:
-        pass
+    """Cheap offline check for xAI credentials (env + secret scope); the runtime ``check_fn`` still gates
+    schema registration. Also used by ``provider_readiness_status`` for ``xai_grok`` rows."""
     if str(get_env_value("XAI_API_KEY") or "").strip():
         return True
     try:
@@ -240,7 +234,7 @@ TOOL_CATEGORIES = {
         "providers": [
             _row("Microsoft Edge TTS", "★ recommended · free", "Good quality, no API key needed", tts_provider="edge"),
             _row("OpenAI TTS", "paid", "High quality voices", [_OPENAI_VOICE_KEY], tts_provider="openai"),
-            _row("xAI TTS", tag="Grok voices — uses xAI Grok OAuth or XAI_API_KEY", tts_provider="xai", post_setup="xai_grok"),
+            _row("xAI TTS", tag="Grok voices — uses XAI_API_KEY", tts_provider="xai", post_setup="xai_grok"),
             _row("ElevenLabs", "paid", "Most natural voices", [_ELEVENLABS_KEY], tts_provider="elevenlabs"),
             # Mistral Voxtral TTS — `mistralai` SDK lazy-installs on first use.
             _row("Mistral (Voxtral TTS)", "paid", "Multilingual, native Opus",
@@ -263,7 +257,7 @@ TOOL_CATEGORIES = {
             _row("OpenAI", "paid", "whisper-1, gpt-4o-transcribe, gpt-transcribe", [_OPENAI_VOICE_KEY], stt_provider="openai"),
             _row("Groq", "free tier", "whisper-large-v3-turbo, whisper-large-v3 — very fast",
                  [_key("GROQ_API_KEY", "Groq API key", "https://console.groq.com/keys")], stt_provider="groq"),
-            _row("xAI", tag="Grok Voice Transcribe — uses xAI Grok OAuth or XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
+            _row("xAI", tag="Grok Voice Transcribe — uses XAI_API_KEY", stt_provider="xai", post_setup="xai_grok"),
             _row("ElevenLabs Scribe", "paid", "scribe_v2 — diarization + audio-event tagging", [_ELEVENLABS_KEY],
                  stt_provider="elevenlabs"),
             _row("Mistral Voxtral", "paid", "voxtral-mini-latest — multilingual",
@@ -296,17 +290,14 @@ TOOL_CATEGORIES = {
         "providers": [],
     },
     "x_search": {
-        "name": "X (Twitter) Search", "setup_title": "Select xAI Credential Source",
+        "name": "X (Twitter) Search", "setup_title": "xAI API Key",
         "setup_note": (
             "Noesia routes X searches through xAI's built-in x_search Responses tool for read-only public X "
-            "discovery. Use the xurl skill for authenticated X API reads and account actions. Both credential "
-            "sources hit the same https://api.x.ai/v1/responses endpoint — pick whichever you already have. "
-            "SuperGrok OAuth is preferred when both are set (uses your subscription quota instead of API spend)."
+            "discovery. Use the xurl skill for authenticated X API reads and account actions. Requests go to "
+            "https://api.x.ai/v1/responses and bill to your xAI API key."
         ),
         "icon": "🐦",
         "providers": [
-            _row("xAI Grok OAuth (SuperGrok / Premium+)", "subscription", "Browser login at accounts.x.ai — no API key required",
-                 post_setup="xai_grok"),
             _row("xAI API key", "paid", "Direct xAI API billing via XAI_API_KEY",
                  [_key("XAI_API_KEY", "xAI API key", "https://console.x.ai/")]),
         ],

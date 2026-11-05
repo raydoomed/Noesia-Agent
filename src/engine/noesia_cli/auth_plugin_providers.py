@@ -30,8 +30,8 @@ _REGISTRY_PLUGIN_SKIP = frozenset({"copilot", "kimi-coding", "kimi-coding-cn", "
 PLUGIN_AUTH_ACTIONS = ("add", "status", "logout", "refresh")
 
 # Names whose PROVIDER_REGISTRY row came from a plugin profile (not the built-in rows). Only these
-# can be "OAuth-shaped with nobody to log them in": a bundled OAuth provider (noesia, openai-codex …)
-# declares the same auth_type but its login lives in core.
+# can be "OAuth-shaped with nobody to log them in": a bundled OAuth provider (noesia …) declares the
+# same auth_type but its login lives in core.
 PLUGIN_MIRRORED_PROVIDERS: set[str] = set()
 
 
@@ -168,13 +168,6 @@ def plugin_auth_handler(provider: str) -> Optional[Callable[[str, Any], Any]]:
 def plugin_refresh_hook(provider: str) -> Optional[Callable[[Any], Any]]:
     """The profile's ``refresh_credential`` hook, i.e. whether its pooled OAuth rows are refreshable."""
     return _profile_hook(provider, "refresh_credential")
-
-
-def is_refreshable_oauth_provider(provider: str) -> bool:
-    """Built-in refreshable set OR a plugin profile shipping ``refresh_credential``."""
-    from agent.credential_pool import REFRESHABLE_OAUTH_PROVIDERS
-
-    return provider in REFRESHABLE_OAUTH_PROVIDERS or plugin_refresh_hook(provider) is not None
 
 
 def dispatch_plugin_auth(action: str, args: Any, provider: str) -> bool:

@@ -155,7 +155,6 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "auth.json", ".env", "auth/google_oauth.json",
     ".op.env",                      # 1Password service-account token (env_loader)
     "npmrc",                        # npm registry auth (source_build)
-    ".anthropic_oauth.json",        # Anthropic OAuth tokens (credential_sources)
     "google_token.json", "google_oauth_pending.json", "google_client_secret.json",
     "google_chat_user_tokens", "google_chat_user_client_secret.json", "google_chat_user_oauth_pending.json",
     "google_chat_user_token.json", "google_chat_user_oauth_pending",  # legacy single-user layouts
@@ -1276,10 +1275,9 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
     for stale in _CLONE_ALL_STRIP:
         (profile_dir / stale).unlink(missing_ok=True)
-    # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
-    # (Anthropic / Codex / xAI): one credential with two owners, and the first profile to
-    # refresh revokes the pair for every sibling. Drop the copies; the clone reads the root
-    # grant through the credential-pool fallback.
+    # auth.json copied verbatim forks single-use OAuth grants (Noesia): one credential with two
+    # owners, and the first profile to refresh revokes the pair for every sibling. Drop the
+    # copies; the clone reads the root grant through the credential-pool fallback.
     from noesia_cli.auth import strip_cloned_single_use_oauth_grants
     stripped = strip_cloned_single_use_oauth_grants(profile_dir)
     if any(stripped.values()):

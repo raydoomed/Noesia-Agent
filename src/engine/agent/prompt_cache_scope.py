@@ -174,14 +174,14 @@ GROK_AGGREGATOR_MODEL_PREFIXES = ("x-ai/grok-", "xai/grok-")
 def is_slot_keyed_cache_route(provider: Any, model: Any, base_url: Any = "") -> bool:
     """True when the cache key selects ONE server-side slot per conversation.
 
-    xAI (``xai``/``xai-oauth``, ``api.x.ai``, or Grok via OpenRouter ``x-ai/grok-*``) pins its
+    xAI (``xai``, ``api.x.ai``, or Grok via OpenRouter ``x-ai/grok-*``) pins its
     prompt cache to the server picked by ``x-grok-conv-id`` / ``prompt_cache_key``: two divergent
     request streams under one key evict each other. Anthropic, DeepSeek and Gemini caches are
     content-addressed and OpenAI's ``prompt_cache_key`` only routes over a prefix match, so the
     shared scope (#109964) stays a win there. Only the OpenRouter profile reads ``cache_scope_id``
     for the sticky header; other aggregators fronting Grok change only the body key.
     """
-    if str(provider or "").strip().lower() in {"xai", "xai-oauth"}:
+    if str(provider or "").strip().lower() == "xai":
         return True
     if base_url_hostname(str(base_url or "")) == "api.x.ai":
         return True

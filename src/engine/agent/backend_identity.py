@@ -62,7 +62,7 @@ def _both_first_class(a: BackendIdentity, b: BackendIdentity) -> bool:
     """True when both providers are distinct registered first-class providers.
 
     Two different registry providers have distinct credential surfaces even when they share an
-    inference host (xai-oauth vs xai). Custom/shim aliases are NOT in the registry, so two
+    inference host. Custom/shim aliases are NOT in the registry, so two
     aliases pointing at one URL still count as the same backend."""
     if not a.provider or not b.provider or a.provider == b.provider:
         return False

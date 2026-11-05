@@ -108,14 +108,6 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "description": "Refuse Docker sandboxes when egress is enabled but not configured/running",
         "category": "security",
     },
-    "auth.adopt_external_logins": {
-        "type": "boolean",
-        "description": (
-            "Borrow and refresh the Codex CLI / Claude Code logins when Noesia has no usable login of its own. "
-            "Off: Noesia uses only its own logins (`noesia auth add <provider>`)."
-        ),
-        "category": "security",
-    },
     "wake_word.provider": _select(
         "Wake engine. Auto selects a platform-supported engine; Porcupine requires PORCUPINE_ACCESS_KEY.",
         "auto", *_PROVIDER_PREFERENCE,

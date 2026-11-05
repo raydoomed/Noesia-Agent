@@ -371,7 +371,7 @@ def _pool_usage_accounts(slug: str, wire_windows, account_resets_at,
 
     Read-only: entries are inspected via ``load_pool(slug)`` properties (no select/rotate/refresh).
     Dedupe is scoped to provider+host+trusted decoded account id where supported (several
-    credentials of one Codex account are ONE account), else per-credential token identity — never
+    credentials of one account are ONE account), else per-credential token identity — never
     a provider-wide singleton. Providers without a usage fetcher still get one metadata row per
     account with state unknown/limited/unavailable, so the chip can count honestly without bogus
     fetches. DEAD auth rows stay visible as ``unavailable`` (never a quota row). No secrets, raw
@@ -449,19 +449,11 @@ def _pool_entry_host(slug: str, entry) -> str:
     """Normalized route host of one entry, for account dedupe scoping. Never serialized."""
     from agent.credential_pool import _norm_url
 
-    if slug == "openai-codex":
-        from noesia_cli.auth_codex import _codex_pool_route_base_url
-
-        return _norm_url(_codex_pool_route_base_url(entry.runtime_base_url))
     return _norm_url(getattr(entry, "runtime_base_url", None))
 
 
 def _pool_entry_route_base_url(slug: str, entry) -> Optional[str]:
     """The base URL a usage fetch for *entry* must target (its own route, never a sibling's)."""
-    if slug == "openai-codex":
-        from noesia_cli.auth_codex import _codex_pool_route_base_url
-
-        return _codex_pool_route_base_url(entry.runtime_base_url)
     return getattr(entry, "runtime_base_url", None) or None
 
 
@@ -538,8 +530,7 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
     silent (the dial is a no-op on models that ignore it; hiding it from a capable model is worse). A
     serving aggregator's detail overrides models.dev (adds ``can_disable_reasoning``). ``supported_efforts``
     is deliberately NOT forwarded — it under-reports levels that work."""
-    from agent.codex_service_tiers import ultrafast_offered
-    from noesia_cli.models import model_supports_ultrafast, resolve_fast_mode_overrides
+    from noesia_cli.models import resolve_fast_mode_overrides
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -563,9 +554,6 @@ def _apply_capabilities(rows: list[dict], *, metadata_config: dict | None = None
             fast = resolve_fast_mode_overrides(
                 model, provider=slug, base_url=row.get("api_url")) is not None
             entry: dict[str, Any] = {"fast": fast, "reasoning": reasoning}
-            if fast and model_supports_ultrafast(model) and ultrafast_offered(
-                    model, provider=slug, base_url=row.get("api_url")):
-                entry["ultrafast"] = True
 
             if reasoning and read_reasoning_catalog is not None:
                 try:
@@ -744,33 +732,6 @@ def _append_unconfigured_rows(
     return extras
 
 
-def _anthropic_oauth_credentials_present() -> bool:
-    """True when the user explicitly authenticated Anthropic via OAuth (Noesia device flow or Claude Code
-    login) — those leave no trace in active_provider / model.provider / API-key env vars."""
-    try:
-        from agent.anthropic_credentials import read_claude_code_credentials, read_noesia_oauth_credentials
-
-        readers = (read_noesia_oauth_credentials, read_claude_code_credentials)
-        if any((read() or {}).get("accessToken") for read in readers):
-            return True
-    except Exception:
-        return False
-    # Pool-only OAuth entries (auth.json credential_pool.anthropic) are equally deliberate — discovery
-    # accepts them via pool.has_credentials(), so the filter must too or those rows are built then
-    # silently dropped. Read-only (no load_pool) so a picker open never mutates auth.json.
-    try:
-        from agent.credential_pool import AUTH_TYPE_OAUTH
-        from noesia_cli.auth import read_credential_pool
-
-        for entry in read_credential_pool("anthropic"):
-            if (isinstance(entry, dict) and entry.get("auth_type") == AUTH_TYPE_OAUTH
-                    and str(entry.get("access_token") or "").strip()):
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list[dict]:
     """Keep only rows backed by explicit user configuration — ``list_authenticated_providers`` also
     discovers ambient credentials (e.g. GitHub CLI -> Copilot) Desktop chat pickers must not show."""
@@ -790,10 +751,9 @@ def _filter_explicit_provider_rows(rows: list[dict], ctx: ConfigContext) -> list
             # wrote an enabled preset into RAW config (the DEFAULT_CONFIG preset must not show MoA).
             return _raw_config_has_enabled_moa_preset()
         return (
-            # Anthropic OAuth (device flow / Claude Code) and external-process CLIs (copilot-acp) are
-            # deliberate sign-ins that leave no trace in config/env; keep the rows discovery accepted.
-            (slug == "anthropic" and _anthropic_oauth_credentials_present())
-            or _external_process_signed_in(slug)
+            # External-process CLIs (copilot-acp) are deliberate sign-ins that leave no trace in
+            # config/env; keep the rows discovery accepted.
+            _external_process_signed_in(slug)
             or is_provider_explicitly_configured(slug)
         )
 

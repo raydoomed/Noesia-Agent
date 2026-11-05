@@ -776,33 +776,20 @@ def _overlay_has_creds(b: _PickerBuild, pid: str, noesia_slug: str, overlay) -> 
             has_creds = bool(_ext_status.get("logged_in") or _ext_status.get("configured"))
         except Exception as exc:
             logger.debug("External-process check failed for %s: %s", pid, exc)
-    # Auth store / credential pool cover OAuth providers AND api_key providers that also support
-    # OAuth (anthropic via Claude Code credential files).
+    # Auth store / credential pool cover providers whose key lives in auth.json or the pool.
     has_creds = has_creds or _auth_store_has_provider(pid, noesia_slug)
     if not has_creds:
-        # Full auto-seeding pool check catches external stores (Codex CLI ~/.codex/auth.json)
-        # not yet in auth.json.
+        # Full auto-seeding pool check catches credentials not yet in auth.json.
         try:
             if _credential_pool_is_usable(noesia_slug, for_picker=b.for_picker):
                 has_creds = True
         except Exception as exc:
             logger.debug("Credential pool check failed for %s: %s", noesia_slug, exc)
-    if not has_creds and noesia_slug == "anthropic":
-        # The pool gates anthropic behind is_provider_explicitly_configured() (aux tasks must not
-        # consume Claude Code tokens); the picker is discovery-oriented, so read the files directly.
-        try:
-            from agent.anthropic_credentials import read_claude_code_credentials, read_noesia_oauth_credentials
-            noesia_creds = read_noesia_oauth_credentials()
-            cc_creds = read_claude_code_credentials()
-            if (noesia_creds and noesia_creds.get("accessToken")) or (cc_creds and cc_creds.get("accessToken")):
-                has_creds = True
-        except Exception as exc:
-            logger.debug("Anthropic external creds check failed: %s", exc)
     return has_creds
 
 
 def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
-    """Section 2: Noesia-only providers (noesia, openai-codex, copilot, opencode-go, ...)."""
+    """Section 2: Noesia-only providers (noesia, copilot, opencode-go, ...)."""
     from agent.models_dev import PROVIDER_TO_MODELS_DEV
     from noesia_cli.model_switch import _declared_model_ids
     from noesia_cli.providers import NOESIA_OVERLAYS
@@ -816,12 +803,8 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
             continue
         if not _overlay_has_creds(b, pid, noesia_slug, overlay):
             continue
-        if noesia_slug in {"openai-codex", "copilot", "copilot-acp"}:
-            # 实时问出来才知道有哪些：Pro 专属的 Codex/ACP 模型本来就不在任何静态表里。
-            # 拿不到就空着（不再退回静态表）。
-            model_ids = _live_ids(noesia_slug, non_blocking=b.non_blocking_catalogs)
-        else:
-            model_ids = _live_ids(noesia_slug, non_blocking=b.non_blocking_catalogs)
+        # 实时问出来才知道有哪些：Pro 专属的 ACP 模型本来就不在任何静态表里，拿不到就空着。
+        model_ids = _live_ids(noesia_slug, non_blocking=b.non_blocking_catalogs)
         # A providers.<overlay>.models block extends the row exactly as it does for built-in rows
         # (section 1); section 3 never emits it because this row owns the slug (#27989).
         configured = user_providers.get(noesia_slug) or user_providers.get(pid) if isinstance(user_providers, dict) else None

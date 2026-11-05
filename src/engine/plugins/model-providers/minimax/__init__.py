@@ -1,4 +1,4 @@
-"""MiniMax provider profiles (international, China, OAuth).
+"""MiniMax provider profiles (international, China).
 
 Default routes use anthropic_messages (base URLs end in /anthropic). Users can
 opt MiniMax-M3 into the OpenAI-compatible https://api.minimax.io/v1 route,
@@ -48,14 +48,5 @@ minimax_cn = MiniMaxProfile(
     default_aux_model="MiniMax-M3",
 )
 
-minimax_oauth = MiniMaxProfile(
-    name="minimax-oauth", aliases=("minimax_oauth", "minimax-portal", "minimax-global", "minimax-oauth-io"), api_mode="anthropic_messages",
-    display_name="MiniMax (OAuth)", description="MiniMax via OAuth browser flow — no API key required",
-    signup_url="https://api.minimax.io/",
-    env_vars=(),  # OAuth — tokens in auth.json, not env
-    base_url="https://api.minimax.io/anthropic", auth_type="oauth_external", default_aux_model="MiniMax-M2.7",
-)
-
 register_provider(minimax)
 register_provider(minimax_cn)
-register_provider(minimax_oauth)

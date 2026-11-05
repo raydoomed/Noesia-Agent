@@ -1278,7 +1278,7 @@ def _is_openai_family_main() -> bool:
         model = (_read_main_model() or "").strip().lower()
     except Exception:
         return False
-    if provider in {"openai", "openai-chat", "openai-codex", "azure-openai", "codex"}:
+    if provider in {"openai", "openai-chat", "azure-openai", "codex"}:
         return True
     # Aggregators: the model slug carries the family.
     slug = model.split("/", 1)[-1]

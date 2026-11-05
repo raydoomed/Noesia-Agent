@@ -1,7 +1,7 @@
 """Name a callable API key's credential source without calling it.
 
 A callable ``api_key`` mints a bearer on first use (Entra ID, Vertex OAuth, a custom provider's
-``key_cmd``, MiniMax OAuth). Display paths (``/config``, the agent's key banner) must say which
+``key_cmd``). Display paths (``/config``, the agent's key banner) must say which
 kind it is, but calling it would mint a token just to mask it. Each builder tags the callable it
 returns with a source; display reads the tag through one source-to-label table. An untagged
 callable gets a neutral label, never another vendor's name.
@@ -14,7 +14,6 @@ from typing import Any, Callable, Optional, TypeVar
 ENTRA_ID = "entra-id"
 VERTEX_OAUTH = "vertex-oauth"
 KEY_CMD = "key-cmd"
-MINIMAX_OAUTH = "minimax-oauth"
 
 # Attribute read with getattr only: reading it never invokes the callable.
 SOURCE_ATTR = "noesia_credential_source"
@@ -24,7 +23,6 @@ SOURCE_LABEL_KEYS = {
     ENTRA_ID: "cli.config.microsoft_entra_id",
     VERTEX_OAUTH: "cli.config.google_vertex_oauth",
     KEY_CMD: "cli.config.key_cmd_token",
-    MINIMAX_OAUTH: "cli.config.minimax_oauth",
 }
 UNKNOWN_LABEL_KEY = "cli.config.token_provider"
 

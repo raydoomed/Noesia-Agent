@@ -1,6 +1,6 @@
 """Bounded fast-mode windows (``/fast auto`` and ``/fast cold``).
 
-``agent.service_tier``: ``None`` (normal), ``"priority"`` / ``"ultrafast"`` (static tiers,
+``agent.service_tier``: ``None`` (normal), ``"priority"`` (static tier,
 pinned into ``agent.request_overrides`` at build time), ``"auto"`` (every user turn opens a
 window of ``agent.fast_auto_seconds``) or ``"cold"`` (only a session's first turn,
 no prior history, opens it). The provider's fast override is layered onto request
@@ -20,20 +20,16 @@ DEFAULT_WINDOW_SECONDS = 60
 # Documented fast-mode rate-limit headers; a limit of 0 means the organization has no fast
 # capacity for the model (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 _FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-output-tokens-limit")
-#: Tiers sent on every request of the session (OpenAI ``service_tier`` values; ``priority`` also
-#: selects Anthropic/xAI fast mode). Ultrafast is OpenAI-only and gated per model.
-STATIC_TIERS = frozenset({"priority", "ultrafast"})
-# Codex app-server names for wire tiers it accepts (turn/start.serviceTier); a tier missing here is not sent.
-CODEX_TIER_WORDS: dict[str, str] = {"priority": "fast"}
+#: Tier sent on every request of the session (OpenAI ``service_tier`` value; ``priority`` also
+#: selects Anthropic/xAI fast mode).
+STATIC_TIERS = frozenset({"priority"})
 NORMAL_TIER_WORDS = frozenset({"", "normal", "default", "standard", "off", "none"})
 # User/config word -> agent.service_tier. The single table every surface (config loaders, /fast
 # on CLI / gateway / TUI) parses through, so a new tier is one edit.
 SERVICE_TIER_WORDS: dict[str, str] = {
     "fast": "priority", "priority": "priority", "on": "priority",
-    "ultrafast": "ultrafast", "ultra": "ultrafast", "auto": "auto", "cold": "cold",
+    "auto": "auto", "cold": "cold",
 }
-# Typed /fast shorthands -> canonical /fast word (pickers always send the canonical value).
-FAST_ARG_ALIASES: dict[str, str] = {"ultra": "ultrafast"}
 
 
 def parse_service_tier(raw: Any) -> str | None:
@@ -88,8 +84,6 @@ def effective_request_overrides(agent: Any) -> dict[str, Any]:
         )
     if "speed" in overrides and getattr(agent, "model", None) in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
         overrides.pop("speed", None)
-    from agent.codex_service_tiers import negotiate_request_tier
-    negotiate_request_tier(agent, overrides)
     return overrides
 
 

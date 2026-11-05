@@ -37,7 +37,7 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 
 # Providers that want bare names with dots preserved.
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
-    "copilot", "copilot-acp", "openai-codex"})
+    "copilot", "copilot-acp"})
 
 # Providers whose native naming is authoritative -- pass through unchanged.
 _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
@@ -57,10 +57,8 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     # See #17076.
     "kimi-coding-cn",
     "minimax",
-    "minimax-oauth",
     "minimax-cn",
     "alibaba",
-    "qwen-oauth",
     "xiaomi",
     "arcee",
     "ollama-cloud",
@@ -126,7 +124,7 @@ def _normalize_provider_alias(provider_name: str) -> str:
 def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
     """Strip ``provider/`` or ``provider:`` only when the prefix matches the target provider, so
     arbitrary slash-bearing ids aren't mangled while ``zai/glm-5.1`` is repaired for ``zai``. The colon
-    form is Noesia's own ``provider:model`` switch syntax (``-m openai-codex:gpt-5.6-sol``); left intact
+    form is Noesia's own ``provider:model`` switch syntax (``-m openrouter:z-ai/glm-5``); left intact
     it reaches the wire and the Codex backend rejects it with HTTP 400 (#64787). Only the FIRST separator
     counts, so an Ollama-style ``qwen3:8b`` tag is never split on a later colon. ``custom`` is a bucket,
     not a vendor: an alias resolving to it (``ollama``) may be a real LiteLLM-style routing prefix, so
@@ -242,7 +240,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)
         if stripped == name and name.startswith(("openai/", "openai:")):
-            return name[len("openai/"):]  # openai-codex maps openai/gpt-5.4 and openai:gpt-5.4 -> gpt-5.4
+            return name[len("openai/"):]  # openai 系别名把 openai/gpt-5.4 与 openai:gpt-5.4 都还原成 gpt-5.4
         return stripped
 
     if provider == "deepseek":

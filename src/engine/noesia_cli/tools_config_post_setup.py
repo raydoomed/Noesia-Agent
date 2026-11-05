@@ -160,98 +160,27 @@ def _post_setup_python(spec: dict) -> None:
 
 
 def _post_setup_xai_grok() -> None:
-    """Shared xAI credential bootstrap for any picker row that talks to xAI (TTS, STT, Video Gen, x_search
-    …). Accepts a SuperGrok-tier OAuth token (preferred — billed to the existing subscription) or a raw
-    XAI_API_KEY; the rows declare empty env_vars so the auth UX lives here."""
-    try:
-        from noesia_cli.auth import get_xai_oauth_auth_status
-        oauth_logged_in = bool(get_xai_oauth_auth_status().get("logged_in"))
-    except Exception:
-        oauth_logged_in = False
-    if oauth_logged_in:
-        _print_success("    xAI will use your xAI Grok OAuth (SuperGrok / Premium+) credentials")
-        return
+    """xAI 系工具（TTS / STT / 视频 / x_search）共用的凭据引导：只用 XAI_API_KEY。"""
     if get_env_value("XAI_API_KEY"):
         _print_success("    xAI will use your existing XAI_API_KEY")
         return
 
-    _print_info("    xAI needs credentials. Choose one:")
+    _print_info("    xAI needs an API key (console.x.ai).")
     try:
-        from noesia_cli.setup import prompt_choice, prompt as _setup_prompt
-        from noesia_cli.setup_tts import _run_xai_oauth_login_from_setup
+        from noesia_cli.setup import prompt as _setup_prompt
         from noesia_cli.config import save_env_value
     except Exception as exc:
         _print_warning(f"    Could not load setup helpers: {exc}")
-        _info_lines("Run later: noesia auth add xai-oauth   (or set XAI_API_KEY)")
+        _info_lines("Run later: set XAI_API_KEY")
         return
 
-    idx = prompt_choice(
-        "    How do you want xAI to authenticate?", default=0,
-        choices=["Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
-                 "Paste an xAI API key (console.x.ai)",
-                 "Skip — configure later via `noesia auth add xai-oauth`"])
-    if idx == 0:
-        if _run_xai_oauth_login_from_setup():
-            _print_success("    Logged in — xAI will use these OAuth credentials")
-        else:
-            _print_warning("    xAI Grok OAuth login did not complete. Run later: noesia auth add xai-oauth")
-    elif idx == 1:
-        api_key = _setup_prompt("    xAI API key", password=True)
-        if api_key:
-            save_env_value("XAI_API_KEY", api_key)
-            _print_success("    XAI_API_KEY saved")
-        else:
-            _print_warning("    No API key provided. Run later: noesia auth add xai-oauth")
-    else:
-        _print_info("    xAI will remain inactive until credentials are configured.")
-
-
-def _codex_credentials_present() -> bool:
-    """Cheap offline check for Codex/ChatGPT OAuth credentials (auth store + pool only)."""
-    try:
-        from noesia_cli.auth import get_codex_auth_status
-        return bool(get_codex_auth_status().get("logged_in"))
-    except Exception:
-        return False
-
-
-def _post_setup_openai_codex() -> None:
-    """Shared Codex/ChatGPT OAuth bootstrap for any picker row that talks to Codex without an API key
-    (image gen today). The rows declare empty env_vars so the sign-in UX lives here. Saves tokens only —
-    never rewrites ``model.provider``: the user picked an image backend, not a chat model (#102144)."""
-    if _codex_credentials_present():
-        _print_success("    Image generation will use your existing Codex/ChatGPT OAuth credentials")
+    api_key = _setup_prompt("    xAI API key", password=True)
+    if not api_key:
+        _print_warning("    No API key provided. Run later: set XAI_API_KEY")
+        _print_info("    xAI will remain inactive until XAI_API_KEY is configured.")
         return
-
-    relogin = "noesia auth add openai-codex"
-    _print_info("    OpenAI (Codex auth) needs credentials.")
-    try:
-        from noesia_cli.auth import _codex_device_code_login, _save_codex_tokens
-        from noesia_cli.setup import is_noninteractive, prompt_choice
-    except Exception as exc:
-        _print_warning(f"    Could not load setup helpers: {exc}")
-        _info_lines(f"Run later: {relogin}")
-        return
-
-    if is_noninteractive():
-        # Dashboard/Desktop spawn this hook with stdin=DEVNULL: nobody can finish a device-code
-        # login here, and the panel already shows the needs_auth pill.
-        _info_lines(f"No terminal to sign in from. Run: {relogin}")
-        return
-    idx = prompt_choice(
-        "    How do you want to sign in?", default=0,
-        choices=["Sign in with ChatGPT/Codex OAuth — browser login",
-                 f"Skip — configure later via `{relogin}`"])
-    if idx != 0:
-        _print_info("    Codex image generation will remain inactive until you sign in.")
-        return
-    try:
-        creds = _codex_device_code_login()
-        _save_codex_tokens(creds["tokens"], creds.get("last_refresh"), set_active=False)
-    except (Exception, KeyboardInterrupt) as exc:
-        _print_warning(f"    Codex sign-in did not complete: {exc}. Run later: {relogin}")
-        return
-    _print_success("    Logged in — image generation will use these Codex OAuth credentials")
+    save_env_value("XAI_API_KEY", api_key)
+    _print_success("    XAI_API_KEY saved")
 
 
 def _xai_credentials_ready() -> bool:
@@ -263,7 +192,6 @@ def _xai_credentials_ready() -> bool:
 # side-effect; ``provider_readiness_status`` reports them ready/needs_auth from the auth store.
 _POST_SETUP_AUTH_READY: dict = {
     "xai_grok": _xai_credentials_ready,
-    "openai_codex": _codex_credentials_present,
 }
 
 
@@ -276,7 +204,6 @@ _POST_SETUP_HOOKS: dict = {
     "camofox": _post_setup_camofox,
     "cua_driver": lambda: install_cua_driver(upgrade=False),
     "xai_grok": _post_setup_xai_grok,
-    "openai_codex": _post_setup_openai_codex,
     **{key: (lambda spec=spec: _post_setup_python(spec)) for key, spec in _PYTHON_POST_SETUP_HOOKS.items()},
 }
 
@@ -386,7 +313,7 @@ def _cloud_agent_browser_installed() -> bool:
 
 # post_setup_key -> predicate(): True when the install side-effect is satisfied. Used by
 # ``provider_readiness_status`` to mark a keyless post_setup row "ready" vs "needs_setup"; mirrors the
-# installed-checks the hooks perform. Credential bootstraps (``xai_grok``, ``openai_codex``) are absent —
+# installed-checks the hooks perform. Credential bootstraps (``xai_grok``) are absent —
 # they live in ``_POST_SETUP_AUTH_READY`` as auth checks. Late-bound lambdas so tests can monkeypatch the underlying predicates.
 _POST_SETUP_READY: dict = {
     **{key: (lambda m=spec["module"]: _module_installed(m)) for key, spec in _PYTHON_POST_SETUP_HOOKS.items()},

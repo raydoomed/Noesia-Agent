@@ -24,20 +24,16 @@ logger = logging.getLogger("noesia_cli.auth")
 # ``refresh_token_reused``.
 # Profiles must never receive a copy: ONE grant lives at the global root and named profiles read
 # it through the ``read_credential_pool`` root fallback.
-SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"anthropic", "openai-codex", "xai-oauth", "noesia"})
-
-# Singleton credential files holding the same single-use grants outside ``auth.json``. Copying one
-# into a profile re-seeds a forked pool row on the profile's next ``load_pool()``.
-SINGLE_USE_OAUTH_SINGLETON_FILES = (".anthropic_oauth.json",)
+SINGLE_USE_REFRESH_POOL_PROVIDERS = frozenset({"noesia"})
 
 # Providers whose device-code grants live under ``providers.<id>`` (not only the pool).
 # Only a block carrying a refresh token is a forkable grant: an agent_key-only ``noesia`` block is
 # not single-use and must survive.
-_DEVICE_CODE_BLOCK_PROVIDERS = ("openai-codex", "xai-oauth", "noesia")
+_DEVICE_CODE_BLOCK_PROVIDERS = ("noesia",)
 
 
 def _block_tokens(block: dict[str, Any]) -> dict[str, Any]:
-    # Codex/xAI nest the pair under ``tokens``; Noesia stores it flat on the block.
+    # Noesia 把令牌对平铺在 block 上；兼容历史 ``tokens`` 嵌套。
     tokens = block.get("tokens")
     return tokens if isinstance(tokens, dict) else block
 
@@ -54,8 +50,7 @@ def _is_oauth_pool_payload(entry: Any) -> bool:
     # refresh token is an OAuth grant.
     return (
         str(entry.get("auth_type") or "").strip().lower() == "oauth"
-        or bool(str(entry.get("refresh_token") or "").strip())
-        or str(entry.get("access_token") or "").startswith("sk-ant-oat"))
+        or bool(str(entry.get("refresh_token") or "").strip()))
 
 
 def merge_snapshot_auth_preserving_live_single_use_grants(
@@ -199,10 +194,6 @@ def merge_snapshot_auth_preserving_live_single_use_grants(
 
     return restored
 
-def _is_pkce_row(row: dict[str, Any]) -> bool:
-    return str(row.get("source") or "").endswith("noesia_pkce")
-
-
 def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> dict[str, Any]:
     """Remove forked single-use OAuth grants from a freshly cloned profile.
 
@@ -215,14 +206,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> dict[str, Any]:
     from noesia_cli.auth import _same_path, _save_auth_store
     stripped: dict[str, Any] = {"pool": [], "providers": [], "files": []}
     profile_dir = Path(profile_dir)
-    for name in SINGLE_USE_OAUTH_SINGLETON_FILES:
-        target = profile_dir / name
-        try:
-            if target.is_file() or target.is_symlink():
-                target.unlink()
-                stripped["files"].append(name)
-        except OSError:
-            logger.debug("Could not remove cloned %s from %s", name, profile_dir, exc_info=True)
+
     auth_path = profile_dir / "auth.json"
     if not auth_path.is_file():
         return stripped
@@ -462,20 +446,6 @@ def _adopt_oauth_material(target: dict[str, Any], winner: dict[str, Any]) -> dic
     return merged
 
 
-def _singleton_as_row(path: Path) -> Optional[dict[str, Any]]:
-    """Read a ``.anthropic_oauth.json`` as a pool-row-shaped dict, or None."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or not str(data.get("accessToken") or "").strip():
-        return None
-    return {
-        "access_token": data.get("accessToken"),
-        "refresh_token": data.get("refreshToken"),
-        "expires_at_ms": data.get("expiresAt")}
-
-
 def heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str, Any]]:
     """One-time heal for installs that ALREADY forked a single-use grant into a profile.
 
@@ -579,7 +549,7 @@ def _adopt_if_fresher(
 class _HealPass:
     """One heal pass over a profile store vs the root store for *provider_id*."""
 
-    def __init__(self, profile_store, root_store, provider_id, root_singleton: Optional[Path]):
+    def __init__(self, profile_store, root_store, provider_id):
         self.profile_store, self.root_store = profile_store, root_store
         self.provider_id = provider_id
         self.summary: dict[str, Any] = {
@@ -588,23 +558,12 @@ class _HealPass:
         self.lineage_proven = False  # a profile pool row matched root by copied id / shared tokens
         self.p_pool, self.p_rows = _pool_rows(profile_store, provider_id)
         self.r_pool, self.r_rows = _pool_rows(root_store, provider_id)
-        self.r_oauth = [r for r in self.r_rows if _is_oauth_pool_payload(r)]
-        self.root_singleton = root_singleton
-        self.root_singleton_row = (
-            _singleton_as_row(root_singleton)
-            if root_singleton is not None and root_singleton.exists() else None)
 
     def _adopt_root_row(self, idx: int, row: dict[str, Any]) -> None:
         merged = _adopt_if_fresher(self.r_rows[idx], row)
         if merged is not None:
             self.r_rows[idx] = merged
             self.root_changed = self.summary["adopted"] = True
-
-    def _adopt_root_singleton(self, row: dict[str, Any]) -> None:
-        merged = _adopt_if_fresher(self.root_singleton_row, row)
-        if merged is not None:
-            self.root_singleton_row = merged
-            self.summary["adopted"] = True
 
     def heal_pool_rows(self) -> None:
         kept_rows: list[Any] = []
@@ -617,11 +576,6 @@ class _HealPass:
             if match_idx is not None:
                 self.lineage_proven = True
                 self._adopt_root_row(match_idx, row)
-            # No root pool counterpart. Root's grant may live only in its .anthropic_oauth.json
-            # (the ``noesia auth`` PKCE shape); a profile ``noesia_pkce`` row is its copy. Not
-            # ``manual:noesia_pkce``: that is an ``auth add`` login the pool owns, never a copy.
-            elif row.get("source") == "noesia_pkce" and self.root_singleton_row is not None and not self.r_oauth:
-                self._adopt_root_singleton(row)
             else:
                 # Root holds no copy of this lineage (independent account, or root never had the
                 # grant): the profile's row may be the only surviving copy — leave it alone.
@@ -644,59 +598,6 @@ class _HealPass:
             self.profile_changed = self.summary["providers_block"] = True
             if block_result:
                 self.root_changed = self.summary["adopted"] = True
-
-    def heal_profile_singleton(self, profile_singleton: Optional[Path]) -> None:
-        if profile_singleton is None or not profile_singleton.exists():
-            return
-        from noesia_cli.auth import _is_same_auth_store
-        if self.root_singleton is not None and _is_same_auth_store(profile_singleton, self.root_singleton):
-            return  # an aliased singleton pair is one shared grant, not a fork: never self-compare/unlink
-        # See #101356.
-        p_single = _singleton_as_row(profile_singleton)
-        root_has_grant = bool(self.r_oauth) or self.root_singleton_row is not None
-        # Otherwise root has NO grant for this provider (or the file is not a grant): the
-        # profile's singleton may be the only surviving copy — never delete it.
-        if p_single is None or not root_has_grant:
-            return
-        if self.root_singleton_row is not None:
-            self._adopt_root_singleton(p_single)
-        else:
-            # Root only has pool rows: fold the singleton's pair into the freshest-matching
-            # root pkce row, if any.
-            idx = next(
-                (i for i, r in enumerate(self.r_rows)
-                 if _is_oauth_pool_payload(r) and _is_pkce_row(r)), None)
-            if idx is not None:
-                self._adopt_root_row(idx, p_single)
-        try:
-            profile_singleton.unlink()
-            self.summary["files"].append(profile_singleton.name)
-        except OSError:
-            logger.debug("could not remove %s", profile_singleton, exc_info=True)
-
-    def sync_root_singleton_with_pkce_row(self) -> None:
-        """Keep root's singleton and its ``noesia_pkce``-seeded pool row in step.
-
-        Root's next load_pool() re-seeds that row FROM the singleton file, so a stale file would
-        resurrect the spent pair (and a stale row would be overwritten by a fresh file).
-        """
-        if not (
-            self.summary["adopted"] and self.root_singleton is not None
-            and self.root_singleton_row is not None):
-            return
-        pkce_idx = next(
-            (i for i, r in enumerate(self.r_rows)
-             if _is_oauth_pool_payload(r) and r.get("source") == "noesia_pkce"), None)
-        if pkce_idx is None:
-            return
-        pkce_row = self.r_rows[pkce_idx]
-        row_fresh = _oauth_freshness(pkce_row)
-        single_fresh = _oauth_freshness(self.root_singleton_row)
-        if row_fresh > single_fresh:
-            self.root_singleton_row = _adopt_oauth_material(self.root_singleton_row, pkce_row)
-        elif single_fresh > row_fresh:
-            self.r_rows[pkce_idx] = _adopt_oauth_material(pkce_row, self.root_singleton_row)
-            self.root_changed = True
 
     @property
     def dirty(self) -> bool:
@@ -733,9 +634,6 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str,
             return None
     profile_path = _auth_file_path()
     profile_home = profile_path.parent
-    is_anthropic = provider_id == "anthropic"
-    profile_singleton = profile_home / ".anthropic_oauth.json" if is_anthropic else None
-    root_singleton = root_path.parent / ".anthropic_oauth.json" if is_anthropic else None
 
     # Hot-path short-circuit: load_pool() runs per model call. Once this profile's store was
     # verified clean for *provider_id*, skip the locked read-modify-write until one of the files
@@ -749,8 +647,8 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str,
     # a metadata-preserving rewrite (``rsync -t``, ``tar -p``, a restore) would otherwise leave
     # a stale mark looking current indefinitely rather than for one process.
     fingerprint = (
-        str(profile_path), _stat_sig(profile_path), _stat_sig(profile_singleton),
-        str(root_path), _stat_sig(root_path), _stat_sig(root_singleton),
+        str(profile_path), _stat_sig(profile_path),
+        str(root_path), _stat_sig(root_path),
     )
     if _oauth_heal_clean_marks.get(provider_id) == fingerprint:
         return None
@@ -780,14 +678,12 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str,
             _load_auth_store(profile_path) if profile_path.exists() else {"providers": {}})
         with _auth_store_lock(target_path=root_path):
             root_store = _load_auth_store(root_path) if root_path.exists() else {"providers": {}}
-            run = _HealPass(profile_store, root_store, provider_id, root_singleton)
+            run = _HealPass(profile_store, root_store, provider_id)
             run.heal_pool_rows()
             run.heal_provider_block()
-            run.heal_profile_singleton(profile_singleton)
             if not run.dirty:
                 _mark_oauth_heal_clean(provider_id, fingerprint)
                 return None
-            run.sync_root_singleton_with_pkce_row()
             summary = run.summary
             if run.root_changed:
                 if isinstance(run.r_pool, dict):
@@ -795,12 +691,6 @@ def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str,
                 else:
                     root_store["credential_pool"] = {provider_id: run.r_rows}
                 _save_auth_store(root_store, target_path=root_path)
-            singleton_row = run.root_singleton_row
-            if summary["adopted"] and root_singleton is not None and singleton_row is not None:
-                from agent.anthropic_credentials import _write_noesia_oauth_credentials
-                _write_noesia_oauth_credentials(
-                    singleton_row.get("access_token") or "", singleton_row.get("refresh_token"),
-                    singleton_row.get("expires_at_ms"), target=root_singleton)
             if run.profile_changed and profile_path.exists():
                 _save_auth_store(profile_store, target_path=profile_path)
     message = run.notice(profile_home.name)

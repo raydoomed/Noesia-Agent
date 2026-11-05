@@ -160,14 +160,8 @@ def clamp_effort(
 def route_supported_efforts(
     provider: Optional[str], model: Optional[str], api_mode: Optional[str] = None,
 ) -> tuple[str, ...]:
-    """Levels the (provider, model) route's ENTRY clamp accepts: the Codex/OpenAI Responses set per
-    model generation, else the widest OpenAI-compatible vocabulary (narrower providers clamp again
-    downstream, never upward). On the Codex app-server runtime ``ultra`` is codex's own harness mode,
-    accepted wherever the model's ladder reaches ``max`` (codex runs it at ``max``; a model without
-    ``max`` rejects it), so it is sent verbatim there."""
-    if (provider or "").strip().lower() == "openai-codex":
-        supported = codex_supported_efforts(model)
-        return (*supported, "ultra") if api_mode == "codex_app_server" and "max" in supported else supported
+    """Levels the (provider, model) route's ENTRY clamp accepts: the widest OpenAI-compatible
+    vocabulary (narrower providers clamp again downstream, never upward)."""
     return OPENAI_COMPAT_WIRE_EFFORTS
 
 

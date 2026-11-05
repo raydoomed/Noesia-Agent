@@ -287,13 +287,10 @@ def _clamped_number(raw: Any, cast, lo, hi):
 def _generate_xai_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     from tools.xai_http import resolve_xai_http_credentials
 
-    # TTS is API-billed: a subscription OAuth bearer can authorize chat while
-    # returning 403 for /v1/tts, so prefer an explicit XAI_API_KEY over OAuth.
-    # See #87045, #88040.
-    creds = resolve_xai_http_credentials(prefer_api_key=True)
+    creds = resolve_xai_http_credentials()
     api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
-        raise ValueError("No xAI credentials found. Configure xAI OAuth in `noesia model` or set XAI_API_KEY.")
+        raise ValueError("No xAI credentials found. Set XAI_API_KEY.")
     xai_config = tts_config.get("xai") or {}
     voice_id = str(xai_config.get("voice_id", DEFAULT_XAI_VOICE_ID)).strip() or DEFAULT_XAI_VOICE_ID
     language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
@@ -311,11 +308,8 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: dict[str, Any]) -
         int, 0, 2)
     text_normalization = _config_bool(
         xai_config.get("text_normalization"), DEFAULT_XAI_TEXT_NORMALIZATION_DEFAULT)
-    if creds.get("provider") == "xai-oauth":
-        base_url = creds.get("base_url")
-    else:
-        from noesia_cli.config import get_env_value
-        base_url = xai_config.get("base_url") or creds.get("base_url") or get_env_value("XAI_BASE_URL")
+    from noesia_cli.config import get_env_value
+    base_url = xai_config.get("base_url") or creds.get("base_url") or get_env_value("XAI_BASE_URL")
     base_url = str(base_url or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
 
     # Documented minimal POST /v1/tts shape; optional fields only when they differ from defaults.

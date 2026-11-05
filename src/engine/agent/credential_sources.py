@@ -7,46 +7,13 @@ Readers live in ``agent.credential_pool``; what is unified here is **removal**:
 dispatcher suppresses ``(provider, source_id)`` in auth.json so the seeding
 branch skips the upsert. Adding a source: wire a reader branch in
 ``_seed_from_*``, gate it behind ``is_source_suppressed``, register a step here.
-
-Also home to the one policy switch over *borrowed* CLI logins (Codex CLI's
-``~/.codex/auth.json``, Claude Code's ``~/.claude/.credentials.json``):
-``auth.adopt_external_logins`` in config.yaml.
 """
 
 from __future__ import annotations
 
-import logging
 import os
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
-
-logger = logging.getLogger(__name__)
-
-EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE = (
-    "External CLI logins (Codex CLI, Claude Code) are not adopted: auth.adopt_external_logins is false. "
-    "Noesia uses only its own logins; run `noesia auth add <provider>` to add one."
-)
-_notice_logged = False
-
-
-def adopt_external_logins_enabled() -> bool:
-    """``auth.adopt_external_logins`` (default True).
-
-    Codex and Claude OAuth refresh tokens are single-use and rotate, so once Noesia borrows a CLI's
-    token pair the two programs hold one token family and whichever refreshes first logs the other
-    out. When the user opts out, Noesia never reads or refreshes those files and says so once per
-    process (INFO) the first time it would have."""
-    global _notice_logged
-    try:
-        from noesia_cli.config import load_config_readonly
-        auth_cfg = (load_config_readonly() or {}).get("auth")
-    except Exception:
-        return True
-    enabled = not isinstance(auth_cfg, dict) or bool(auth_cfg.get("adopt_external_logins", True))
-    if not enabled and not _notice_logged:
-        _notice_logged = True
-        logger.info(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
-    return enabled
+from typing import Callable, Optional
 
 
 @dataclass
@@ -136,66 +103,6 @@ def _remove_env_source(provider: str, removed) -> RemovalResult:
     return result
 
 
-def _remove_noesia_pkce(provider: str, removed) -> RemovalResult:
-    """~/.noesia/.anthropic_oauth.json is ours — delete it outright."""
-    from noesia_constants import get_noesia_home
-
-    result = RemovalResult()
-    oauth_file = get_noesia_home() / ".anthropic_oauth.json"
-    if oauth_file.exists():
-        try:
-            oauth_file.unlink()
-            result.cleaned.append("Cleared Noesia Anthropic OAuth credentials")
-        except OSError as exc:
-            result.hints.append(f"Could not delete {oauth_file}: {exc}")
-    return result
-
-
-def _remove_auth_store_oauth(provider: str, removed) -> RemovalResult:
-    """Clear auth.json ``providers.<provider>`` (noesia, minimax-oauth, xai-oauth, openai-codex).
-
-    Suppression by the dispatcher is still required — otherwise
-    ``_seed_from_singletons`` re-seeds from any path that rewrites the block.
-    """
-    from noesia_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
-
-    result = RemovalResult()
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        providers_dict = auth_store.get("providers")
-        if isinstance(providers_dict, dict) and provider in providers_dict:
-            del providers_dict[provider]
-            _save_auth_store(auth_store)
-            result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
-    return result
-
-
-def _remove_xai_oauth_device_code(provider: str, removed) -> RemovalResult:
-    result = _remove_auth_store_oauth(provider, removed)
-    result.hints.append(
-        "Run `noesia model` → xAI Grok OAuth (SuperGrok / Premium+) to re-authenticate if needed."
-    )
-    return result
-
-
-def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
-    """Codex tokens also live in ~/.codex/auth.json (Codex CLI's file, kept).
-
-    Suppress the canonical ``device_code`` key — not just ``removed.source`` —
-    so a ``manual:device_code`` removal still blocks the re-seed path.
-    """
-    from noesia_cli.auth import suppress_credential_source
-
-    result = _remove_auth_store_oauth(provider, removed)
-    suppress_credential_source(provider, "device_code")
-    result.hints.extend([
-        "Suppressed openai-codex device_code source — it will not be re-seeded.",
-        "Note: Codex CLI credentials still live in ~/.codex/auth.json",
-        "Run `noesia auth add openai-codex` to re-enable if needed.",
-    ])
-    return result
-
-
 def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
     """The same Copilot token is seeded as gh_cli AND env:<VAR> rows, so suppress
     every variant or the duplicates resurrect the entry. gh CLI and shell state
@@ -213,9 +120,9 @@ def _remove_copilot_gh(provider: str, removed) -> RemovalResult:
 
 
 def _suppress_only(*hints: str) -> Callable[..., RemovalResult]:
-    """remove_fn for sources whose backing file/config belongs to another tool
-    (Claude Code, Qwen CLI, config.yaml): never delete it, just suppress and
-    explain. ``{source}`` in a hint is the removed entry's source string."""
+    """remove_fn for sources whose backing value belongs to the user's config.yaml:
+    never delete it, just suppress and explain. ``{source}`` in a hint is the
+    removed entry's source string."""
     def remove_fn(provider: str, removed) -> RemovalResult:
         return RemovalResult(hints=[h.format(source=removed.source) for h in hints])
     return remove_fn
@@ -236,50 +143,6 @@ _REGISTRY: list[RemovalStep] = [
         match_fn=lambda src: src.startswith("env:"),
         remove_fn=_remove_env_source,
         description="Any env-seeded credential (XAI_API_KEY, DEEPSEEK_API_KEY, etc.)",
-    ),
-    RemovalStep(
-        provider="anthropic", source_id="claude_code",
-        remove_fn=_suppress_only(
-            "Suppressed claude_code credential — it will not be re-seeded.",
-            "Note: Claude Code credentials still live in ~/.claude/.credentials.json",
-            "Run `noesia auth add anthropic` to re-enable if needed.",
-        ),
-        description="~/.claude/.credentials.json",
-    ),
-    RemovalStep(
-        provider="anthropic", source_id="noesia_pkce",
-        remove_fn=_remove_noesia_pkce,
-        description="~/.noesia/.anthropic_oauth.json",
-    ),
-    RemovalStep(
-        provider="noesia", source_id="device_code",
-        remove_fn=_remove_auth_store_oauth,
-        description="auth.json providers.noesia",
-    ),
-    RemovalStep(
-        provider="openai-codex", source_id="device_code",
-        match_fn=lambda src: src == "device_code" or src.endswith(":device_code"),
-        remove_fn=_remove_codex_device_code,
-        description="auth.json providers.openai-codex + ~/.codex/auth.json",
-    ),
-    RemovalStep(
-        provider="xai-oauth", source_id="device_code",
-        remove_fn=_remove_xai_oauth_device_code,
-        description="auth.json providers.xai-oauth",
-    ),
-    RemovalStep(
-        provider="qwen-oauth", source_id="qwen-cli",
-        remove_fn=_suppress_only(
-            "Suppressed qwen-cli credential — it will not be re-seeded.",
-            "Note: Qwen CLI credentials still live in ~/.qwen/oauth_creds.json",
-            "Run `noesia auth add qwen-oauth` to re-enable if needed.",
-        ),
-        description="~/.qwen/oauth_creds.json",
-    ),
-    RemovalStep(
-        provider="minimax-oauth", source_id="oauth",
-        remove_fn=_remove_auth_store_oauth,
-        description="auth.json providers.minimax-oauth",
     ),
     RemovalStep(
         provider="*", source_id="config:",

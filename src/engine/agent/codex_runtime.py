@@ -549,15 +549,15 @@ def _codex_model_provider(agent) -> str | None:
 
 
 def _codex_wire_model(agent, model_provider: str | None) -> str | None:
-    """The slug codex should run. ``-900k`` picker variants are Noesia-side aliases the backend rejects
-    ("not supported when using Codex with a ChatGPT account"); codex applies the catalog's extended window
-    to the base slug itself. On codex's own provider the slug is bare (``openai/gpt-5.5`` -> ``gpt-5.5``),
-    as for openai-codex; a named custom provider's model ids are its own and pass through."""
+    """The slug codex should run. ``-900k`` picker variants are Noesia-side aliases the backend rejects;
+    codex applies the catalog's extended window to the base slug itself. On codex's own provider the
+    slug is bare (``openai/gpt-5.5`` -> ``gpt-5.5``); a named custom provider's model ids are its own
+    and pass through."""
     from agent.model_metadata import strip_codex_context_variant_suffix
     model = strip_codex_context_variant_suffix(getattr(agent, "model", None)) or None
     if model and model_provider is None:
         from noesia_cli.model_normalize import normalize_model_for_provider
-        model = normalize_model_for_provider(model, "openai-codex")
+        model = normalize_model_for_provider(model, "openai")
     return model
 
 
@@ -586,14 +586,6 @@ def _codex_turn_effort(agent, model: str | None) -> str | None:
             getattr(agent, "provider", None), model, "codex_app_server"):
         return "ultra"
     return effort
-
-
-def _codex_turn_service_tier(agent) -> str | None:
-    """``turn/start.serviceTier``: the tier Noesia' own Responses path would request this turn (a static
-    ``/fast`` tier pinned in request_overrides, or an open ``auto``/``cold`` window), in codex's words: the
-    OpenAI ``priority`` tier is codex's ``fast``. A tier codex has no word for (``ultrafast``) is not sent."""
-    from agent.fast_mode import CODEX_TIER_WORDS, effective_request_overrides
-    return CODEX_TIER_WORDS.get(effective_request_overrides(agent).get("service_tier"))
 
 
 def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -> None:
@@ -738,8 +730,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         wire_model = _codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None))
         turn = agent._codex_session.run_turn(
             user_input=user_message,
-            model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model),
-            service_tier=_codex_turn_service_tier(agent))
+            model=wire_model, reasoning_effort=_codex_turn_effort(agent, wire_model))
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)
@@ -748,7 +739,7 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
             final_response=f"Codex app-server turn failed: {exc}. Fall back to default runtime with `/codex-runtime auto`.",
         )
     interrupt = _consume_user_interrupt(agent, turn.interrupted)
-    # Wedged client (turn deadline blown, OAuth refresh died, subprocess exited): retire it. Post-tool
+    # Wedged client (turn deadline blown, subprocess exited): retire it. Post-tool
     # silence alone no longer retires — it only logs a warning (#112928).
     if getattr(turn, "should_retire", False):
         logger.warning("codex app-server session retired (turn error: %s)", turn.error)
@@ -1118,30 +1109,6 @@ def _consume_codex_event_stream(
     return assembler.result()
 
 
-def _sanitize_consumer_codex_request(agent: Any, request: dict[str, Any]) -> dict[str, Any]:
-    """Drop fields the ChatGPT OAuth Codex endpoint rejects, at the final wire boundary (after Relay /
-    middleware / ``request_overrides``): a late ``prompt_cache_retention``, top-level or nested in
-    ``extra_body``, would otherwise HTTP 400 a valid follow-up."""
-    sanitized = dict(request)
-    # getattr: run_codex_stream is also driven with stand-in agents carrying only the attrs a path needs.
-    backend_predicate = getattr(agent, "_is_codex_backend", None)
-    if not (callable(backend_predicate) and bool(backend_predicate())):
-        return sanitized
-    dropped_from = ["top-level"] if "prompt_cache_retention" in sanitized else []
-    sanitized.pop("prompt_cache_retention", None)
-    # Copy before editing (caller's mapping must not mutate); drop when emptied.
-    extra_body = sanitized.get("extra_body")
-    if isinstance(extra_body, dict) and "prompt_cache_retention" in extra_body:
-        sanitized["extra_body"] = {k: v for k, v in extra_body.items() if k != "prompt_cache_retention"}
-        if not sanitized["extra_body"]:
-            sanitized.pop("extra_body")
-        dropped_from.append("extra_body")
-    if dropped_from:
-        logger.warning("Dropped unsupported prompt_cache_retention at consumer Codex wire boundary (model=%s, via %s).",
-                       sanitized.get("model", getattr(agent, "model", "unknown")), ", ".join(dropped_from))
-    return sanitized
-
-
 def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
     """One streaming Responses API request over raw ``responses.create(stream=True)`` events."""
     import httpx as _httpx
@@ -1236,7 +1203,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise ValueError(
                 "Actual requests require Chat Completions; refusing to call /responses."
             )
-        stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
+        stream_kwargs = next_api_kwargs
         stream_kwargs["stream"] = True
         return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 

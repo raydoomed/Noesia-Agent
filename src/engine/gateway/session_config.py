@@ -179,7 +179,7 @@ def _fast(connection, ref, policy, agent, cfg):
         tier = current_tier(connection, ref, policy)
     else:
         tier = getattr(agent, 'service_tier', None) or parse_service_tier(cfg.get('agent', {}).get('service_tier'))
-    return {'value': {'priority': 'fast', 'ultrafast': 'ultrafast'}.get(tier, 'normal')}
+    return {'value': {'priority': 'fast'}.get(tier, 'normal')}
 
 
 def _reasoning(agent, policy, cfg, connection=None, ref=None):

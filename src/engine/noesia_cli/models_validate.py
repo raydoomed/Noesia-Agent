@@ -403,19 +403,6 @@ def _live_catalog(normalized: str) -> list[str]:
         return []
 
 
-_STATIC_FAMILY_PREFIXES = {
-    # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists for entitlement-gated *hidden*
-    # slugs the curated listing hasn't caught up with — but those are always the provider's own family
-    # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an unrelated typed name (e.g. `qwen3.5-4b`,
-    # `llama-3.1-8b`) here turns what should be an actionable "did you mean --provider <x>?" error into a
-    # confusing success that 400s on the next turn. Only soft- accept names that share the provider's family
-    # prefix; reject the rest with guidance to pin the right provider.
-    "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
-    "xai-oauth": ("grok-",),
-}
-_STATIC_LABELS = {"openai-codex": "OpenAI Codex", "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)"}
-
-
 def _family_head(model_id: str) -> str:
     """Vendor family token of a model id: ``gpt-5.5`` → ``gpt``, ``claude-opus-5`` → ``claude``."""
     return re.split(r"[-./:]", model_id.strip().lower(), maxsplit=1)[0]
@@ -426,8 +413,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
     ``session.create``). ``None`` = coherent or undecidable — custom / aggregator / catalog-less
     providers, names in the provider's own family (a newer ``gpt-*`` the curated list lacks) and
     names no vendor lists (hidden or preview slugs) stay permissive. A conflict is a name outside
-    the provider's family that another native vendor's catalog lists — or any foreign-family name
-    on the OAuth catalogs with a strict family gate (``_STATIC_FAMILY_PREFIXES``) (#96817)."""
+    the provider's family that another native vendor's catalog lists."""
     from noesia_cli import models as _m
 
     requested = (model_name or "").strip()
@@ -439,8 +425,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
         return None
     if _family_head(requested) in {_family_head(m) for m in catalog}:
         return None
-    strict = normalized in _STATIC_FAMILY_PREFIXES
-    if not strict and next(_m._live_catalog_matches(requested, normalized), None) is None:
+    if next(_m._live_catalog_matches(requested, normalized), None) is None:
         return None
     suggestions = get_close_matches(requested, catalog, n=limit, cutoff=0.4) or catalog[:limit]
     label = _m._PROVIDER_LABELS.get(normalized, normalized)
@@ -449,52 +434,6 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
         "message": (f"Model `{requested}` is not served by provider `{normalized}` ({label}). "
                     f"Closest {label} models: " + ", ".join(f"`{s}`" for s in suggestions) + "."),
     }
-
-
-def _validate_live_catalog(req: _Request) -> Optional[dict[str, Any]]:
-    """openai-codex / xai-oauth: no /v1/models probing — validate against the curated catalog.
-    Returns None (fall through) when the catalog is empty."""
-    catalog = _live_catalog(req.normalized)
-    if req.normalized == "openai-codex":
-        from agent.model_metadata import CODEX_CONTEXT_VARIANT_SUFFIX, is_codex_context_variant
-
-        # Ineligible ``-900k`` aliases must be rejected BEFORE the hidden-slug soft-accept:
-        # the suffix is a Noesia picker convention, so an unknown `*-900k` can never be a real
-        # hidden provider slug — soft-accepting one silently runs at 272K on a different model.
-        if req.lookup.strip().lower().endswith(CODEX_CONTEXT_VARIANT_SUFFIX) and req.lookup not in set(catalog):
-            if is_codex_context_variant(req.lookup):
-                # Valid variant a stale catalog hasn't synthesized yet.
-                return _accept()
-            base_guess = req.lookup[: -len(CODEX_CONTEXT_VARIANT_SUFFIX)]
-            return _reject(
-                f"`{req.requested}` is not a valid large-context variant — `{base_guess}` enforces the "
-                "standard 272K window on Codex, so no `-900k` option exists for it. Pick the base model, "
-                "or a verified variant from the `/model` picker (e.g. `gpt-5.6-sol-900k`)."
-            )
-    if not catalog:
-        return None
-    match = _match_in_catalog(req.lookup, catalog)
-    verdict = match.verdict(req)
-    if verdict is not None:
-        return verdict
-    label = _STATIC_LABELS[req.normalized]
-    # Plausibility gate: the soft-accept exists for entitlement-gated *hidden* slugs the curated
-    # listing hasn't caught up with — always the provider's own family (gpt-* / grok-*). An
-    # unrelated name (`qwen3.5-4b`) would turn an actionable "did you mean --provider <x>?" into
-    # a confusing success that 400s on the next turn, so reject it with guidance instead.
-    prefixes = _STATIC_FAMILY_PREFIXES.get(req.normalized, ())
-    lower = req.lookup.strip().lower()
-    if prefixes and not any(lower.startswith(p) for p in prefixes):
-        return _reject(
-            f"`{req.requested}` doesn't look like a {label} model and isn't in its listing, so it was not "
-            "accepted. If it belongs to another configured provider, switch with `--provider <slug>` "
-            f"(or select it from the `/model` picker).{match.suggestion_text}"
-        )
-    return _soft_accept(
-        f"Note: `{req.requested}` was not found in the {label} model listing. "
-        "It may still work if your account has access to a newer or hidden model ID."
-        f"{match.suggestion_text}"
-    )
 
 
 def _validate_minimax(req: _Request) -> Optional[dict[str, Any]]:
@@ -734,7 +673,7 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
 # BEHAVIOR: moa → whitespace (skipped only for self-hosted providers and a user-configured
 # base_url) → OpenRouter preset parse → LM Studio → Ollama native → custom →
-# codex/xai static → MiniMax → managed local (staged library) → Anthropic native →
+# MiniMax → managed local (staged library) → Anthropic native →
 # Anthropic Messages → external process → live listing → Bedrock → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
@@ -743,7 +682,6 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (_for("lmstudio"), _validate_lmstudio),
     (lambda req: True, _validate_ollama_native),
     (_is_custom, _validate_custom),
-    (_for("openai-codex", "xai-oauth"), _validate_live_catalog),
     (_for("minimax", "minimax-cn"), _validate_minimax),
     (_for("llamacpp", "llama.cpp", "llama-cpp"), _validate_managed_local),
     (_for("anthropic"), _validate_anthropic),

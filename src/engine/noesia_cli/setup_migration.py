@@ -37,9 +37,7 @@ def _model_section_has_credentials(config: dict) -> bool:
         PROVIDER_REGISTRY = {}  # type: ignore[assignment]
 
     def _has_key(pconfig) -> bool:
-        # CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself, not by the user —
-        # mirrors is_provider_explicitly_configured in auth.py.
-        return any(get_env_value(v) for v in pconfig.api_key_env_vars if v != "CLAUDE_CODE_OAUTH_TOKEN")
+        return any(get_env_value(v) for v in pconfig.api_key_env_vars)
 
     any_openrouter_key = any(get_env_value(v) for v in _OPENROUTER_ENV_VARS)
 

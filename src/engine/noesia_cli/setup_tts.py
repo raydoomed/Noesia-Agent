@@ -68,47 +68,11 @@ def _install_kittentts_deps() -> bool:
     return _install_tts_extra("kittentts")
 
 
-def _xai_oauth_logged_in_for_setup() -> bool:
-    """True iff xAI Grok OAuth credentials are stored locally, so TTS/STT setup can skip the
-    API-key prompt for users who logged in via ``noesia model`` -> xAI Grok OAuth."""
-    try:
-        from noesia_cli.auth import get_xai_oauth_auth_status
-        return bool(get_xai_oauth_auth_status().get("logged_in"))
-    except Exception:
-        return False
-
-
-def _run_xai_oauth_login_from_setup() -> bool:
-    """Run the xAI Grok OAuth device-code login from inside the setup wizard. Saves OAuth tokens
-    only — does **not** switch the active provider or rewrite ``model.provider`` (callers only need
-    credentials for side tools). False on any failure (caller falls back)."""
-    try:
-        from noesia_cli.auth import (
-            _is_remote_session, _save_xai_oauth_tokens, _xai_oauth_device_code_login,
-            unsuppress_credential_source)
-    except Exception as exc:
-        _setup.print_warning(f"xAI Grok OAuth helpers unavailable: {exc}")
-        return False
-    _setup._info(None, "Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
-    try:
-        creds = _xai_oauth_device_code_login(open_browser=not _is_remote_session())
-        _save_xai_oauth_tokens(
-            creds["tokens"], discovery=creds.get("discovery"), redirect_uri=creds.get("redirect_uri", ""),
-            last_refresh=creds.get("last_refresh"), auth_mode="oauth_device_code", set_active=False)
-        # Mirror model/dashboard re-login: clear device_code suppression so the pool can seed
-        # from the singleton after a prior `auth remove`.
-        unsuppress_credential_source("xai-oauth", "device_code")
-        return True
-    except Exception as exc:
-        _setup.print_warning(f"xAI Grok OAuth login failed: {exc}")
-        return False
-
-
 _TTS_PROVIDER_CHOICES = [
     ("edge", "Edge TTS (free, cloud-based, no setup needed)"),
     ("elevenlabs", "ElevenLabs (premium quality, needs API key)"),
     ("openai", "OpenAI TTS (good quality, needs API key)"),
-    ("xai", "xAI TTS (Grok voices — OAuth login or API key)"),
+    ("xai", "xAI TTS (Grok voices, needs API key)"),
     ("minimax", "MiniMax TTS (high quality with voice cloning, needs API key)"),
     ("mistral", "Mistral Voxtral TTS (multilingual, native Opus, needs API key)"),
     ("gemini", "Google Gemini TTS (30 prebuilt voices, prompt-controllable, needs API key)"),
@@ -184,13 +148,6 @@ def _tts_local_install_step(selected: str) -> str:
     return selected
 
 
-def _xai_oauth_path():
-    if _run_xai_oauth_login_from_setup():
-        _setup.print_success("Logged in — xAI TTS will use these OAuth credentials")
-        return None
-    return "xAI Grok OAuth login did not complete. Falling back to Edge TTS."
-
-
 def _xai_api_key_path():
     api_key = _setup.prompt("xAI API key for TTS", password=True)
     if api_key:
@@ -203,22 +160,12 @@ def _xai_api_key_path():
 
 
 def _tts_xai_step(config: dict) -> str:
-    """xAI TTS auth. Order: existing XAI_API_KEY > existing OAuth tokens > offer both
-    paths — matches runtime, where an explicit key wins over the subscription OAuth
-    bearer (which 403s on metered /v1/tts). See #87045, #113727."""
+    """xAI TTS 认证：只用 XAI_API_KEY，缺失时提示并回退 Edge TTS。"""
     if _setup.get_env_value("XAI_API_KEY"):
-        _setup.print_success("xAI TTS will use your existing XAI_API_KEY (preferred over xAI Grok OAuth)")
-    elif _xai_oauth_logged_in_for_setup():
-        _setup.print_success("xAI TTS will use your xAI Grok OAuth (SuperGrok / Premium+) credentials")
+        _setup.print_success("xAI TTS will use your existing XAI_API_KEY")
     else:
         print()
-        choice_idx = _setup.prompt_choice(
-            "How do you want xAI TTS to authenticate?",
-            choices=["Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
-                     "Paste an xAI API key (console.x.ai)", "Skip → fallback to Edge TTS"], default=0)
-        # Each path returns the fallback warning (result is then "edge") or None on success.
-        fallback = (_xai_oauth_path, _xai_api_key_path, lambda: "xAI TTS skipped. Falling back to Edge TTS.")[
-            choice_idx if choice_idx in (0, 1) else 2]()
+        fallback = _xai_api_key_path()
         if fallback:
             _setup.print_warning(fallback)
             return "edge"

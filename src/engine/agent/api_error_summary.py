@@ -49,7 +49,7 @@ _NETWORK_RESOLUTION_MARKERS = (
     "network is unreachable",
 )
 _XAI_ENTITLEMENT_HINT = (
-    " — xAI rejected this OAuth account. NOTE: X Premium+ does NOT "
+    " — xAI rejected this account. NOTE: X Premium+ does NOT "
     "include xAI API access — only standalone SuperGrok subscribers "
     "can use this provider. Other possible causes: no Grok "
     "subscription, your tier doesn't include this model, or your "
@@ -88,7 +88,7 @@ class ApiErrorSummaryMixin:
         runs.
 
         Disambiguator for xAI (#29344): the same ``code`` text ("The caller does not have permission to
-        execute the specified operation") is returned for BOTH an unsubscribed account AND a stale OAuth
+        execute the specified operation") is returned for BOTH an unsubscribed account AND a stale
         access token.  xAI ships an explicit signal in the ``error`` field that tells the two apart: a
         ``[WKE=unauthenticated:...]`` suffix (and/or the ``OAuth2 access token could not be validated``
         phrasing) means the credentials failed validation — that's recoverable by refreshing the token, NOT
@@ -112,7 +112,7 @@ class ApiErrorSummaryMixin:
 
     @staticmethod
     def _decorate_xai_entitlement_error(detail: str) -> str:
-        """Append a neutral hint when xAI's OAuth surface returns the permission-denied 403.
+        """Append a neutral hint when xAI returns the permission-denied 403.
 
         xAI's ``/v1/responses`` uses one body for several causes (no subscription, tier lacks the model, quota
         exhausted). The least obvious: X Premium+ does NOT include API access — only SuperGrok does. Lead with

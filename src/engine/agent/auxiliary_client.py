@@ -3,9 +3,8 @@
 Text auto chain: main provider+model → OpenRouter → Noesia Portal → custom endpoint →
 native Anthropic → direct API-key providers → None. Vision auto chain: main
 provider (if a supported vision backend) → OpenRouter → Noesia → Anthropic → custom.
-``auxiliary.free_only`` restricts the OpenRouter lane to ``:free`` SKUs. Codex OAuth is
-in neither chain (undocumented, shifting allow-list): main provider or explicit
-``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
+``auxiliary.free_only`` restricts the OpenRouter lane to ``:free`` SKUs. HTTP 402 in
+call_llm() falls through the chain.
 """
 
 import contextlib
@@ -36,12 +35,6 @@ from agent.error_classifier import (
 from agent.auxiliary_managed_local import _is_managed_local_endpoint
 from agent.auxiliary_reasoning_floor import remember_reasoning_floor, with_reasoning_floor
 from agent.auxiliary_structured_output import _route_key, _without_structured_output_format, remember_structured_output_rejection
-from agent.codex_headers import (
-    CODEX_AUX_BASE_URL as _CODEX_AUX_BASE_URL,
-    apply_required_codex_headers as _apply_required_codex_headers,
-    codex_cloudflare_headers as _codex_cloudflare_headers,
-    is_official_codex_base_url as _is_official_codex_base_url,
-)
 from agent.codex_runtime import _codex_event_has_content
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 
@@ -142,7 +135,6 @@ logger = logging.getLogger(__name__)
 _LOGGED_UNKNOWN_PROVIDER_KEYS: set = set()
 _LOGGED_UNHANDLED_AUTHTYPE_KEYS: set = set()
 _LOGGED_UNSUPPORTED_EXTPROC_KEYS: set = set()
-_LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
 
 
 def _resolve_aux_verify(base_url: Optional[str]) -> Any:
@@ -187,7 +179,6 @@ def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
         # Availability probe: resolved credentials/base_url are the answer.
         return _AuxProbeClientStub(api_key=api_key, base_url=base_url)
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
-    _apply_required_codex_headers(kwargs, access_token=api_key, base_url=base_url)
     # Noesia owns aux retry/fallback policy; the SDK default (max_retries=2) would triple
     # wall time on a hung endpoint before Noesia sees one failure.
     # Noesia owns auxiliary retry + provider/model fallback policy (the same-provider transient retry in
@@ -569,8 +560,6 @@ def _normalize_aux_provider(provider: Optional[str]) -> str:
         if not suffix:
             return "custom"
         normalized = suffix
-    if normalized == "codex":
-        return "openai-codex"
     if normalized == "main":
         # Resolve to the actual main provider so named custom providers work.
         main_prov = (_read_main_provider() or "").strip().lower()
@@ -599,44 +588,6 @@ def _is_kimi_model(model: Optional[str]) -> bool:
 def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     """True for Arcee Trinity Large Thinking (direct or via OpenRouter)."""
     return _bare_model(model) == "trinity-large-thinking"
-
-
-# Codex OAuth hard-caps gpt-5.4/5.5/5.6 and gpt-6 Astra at 272K (raw API/OpenRouter expose 1.05M);
-# the default 50% trigger would compact at ~136K, so raise to 85% (~231K).
-_CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
-# gpt-5.3-codex-spark: Codex-OAuth-only, native 128K; 70% (~90K) leaves summary headroom.
-_CODEX_SPARK_COMPACTION_THRESHOLD = 0.70
-
-
-def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.4/5.5/5.6, gpt-6 Sol/Terra/Luna, gpt-6 Astra (and the Daybreak Sol alias) on the Codex OAuth route only.
-
-    Other routes expose a larger window for the same slug and keep the user's threshold.
-    Prefix-matched so ``-pro`` and dated snapshots track every 272K-capped family; ``-900k``
-    picker variants are excluded. Astra is substring-matched (any slug containing ``astra``
-    without ``900k``). Name kept for the ``compression.codex_gpt55_autoraise`` key.
-    """
-    bare = _codex_route_bare_model(model, provider)
-    if bare is None:
-        return False
-    from agent.model_metadata import is_codex_context_variant
-    if is_codex_context_variant(bare):
-        return False
-    if "astra" in bare:
-        return "900k" not in bare
-    return bare == "gpt-daybreak-blue-latest" or any(
-        bare == fam or bare.startswith(fam + "-") or bare.startswith(fam + ".")
-        for fam in ("gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-luna"))
-
-
-def _codex_route_bare_model(model: Optional[str], provider: Optional[str]) -> Optional[str]:
-    """Lowercased bare model slug when ``provider`` is the Codex OAuth route, else None."""
-    return _bare_model(model) if (provider or "").strip().lower() == "openai-codex" else None
-
-
-def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for ``gpt-5.3-codex-spark`` on the Codex OAuth route (the slug exists nowhere else)."""
-    return _codex_route_bare_model(model, provider) == "gpt-5.3-codex-spark"
 
 
 def _is_openai_default_temperature_only(model: Optional[str]) -> bool:
@@ -677,20 +628,14 @@ def _fixed_temperature_for_model(
 
 
 def _compression_threshold_for_model(
-    model: Optional[str], provider: Optional[str] = None, *,
-    allow_codex_gpt55_autoraise: bool = True,
+    model: Optional[str], provider: Optional[str] = None,
 ) -> Optional[float]:
     """Per-model/route compression threshold override (fraction of context used), or None.
 
-    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context); Codex-route gpt-5.4/5.5/5.6/Astra
-    → 0.85, gated by ``allow_codex_gpt55_autoraise``; Codex-route gpt-5.3-codex-spark → 0.70, ungated.
+    Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
-    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
-        return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
-    if _is_codex_spark(model, provider):
-        return _CODEX_SPARK_COMPACTION_THRESHOLD
     return None
 
 
@@ -1646,10 +1591,9 @@ def _translate_anthropic_response_format(anthropic_kwargs: dict[str, Any], respo
 class _AnthropicCompletionsAdapter:
     """OpenAI-client-compatible adapter for Anthropic Messages API."""
 
-    def __init__(self, real_client: Any, model: str, is_oauth: bool = False, base_url: str | None = None):
+    def __init__(self, real_client: Any, model: str, base_url: str | None = None):
         self._client = real_client
         self._model = model
-        self._is_oauth = is_oauth
         # Caller URL only: a blanket fallback to the SDK client's host would flip MiniMax/Zhipu aux
         # adapters to third-party handling (strips thinking sigs).
         self._base_url = base_url or None
@@ -1686,7 +1630,6 @@ class _AnthropicCompletionsAdapter:
         anthropic_kwargs = build_anthropic_kwargs(
             model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
             max_tokens=max_tokens, reasoning_config=reasoning_cfg, tool_choice=tool_choice,
-            is_oauth=self._is_oauth,
             # Portal routes on ``anthropic/<slug>`` ids and replays signed thinking
             # keyed off base_url; omitting it breaks Portal model resolution.
             base_url=self._base_url,
@@ -1733,7 +1676,7 @@ class _AnthropicCompletionsAdapter:
             # the fast get_final_message path.
             on_stream_event=(_anthropic_aux_stream_event_hook() if _aux_progress_active() else None),
         )
-        _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
+        _nr = get_transport("anthropic_messages").normalize_response(response)
         usage = None
         if hasattr(response, "usage") and response.usage:
             prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
@@ -1754,9 +1697,9 @@ class _AnthropicCompletionsAdapter:
 class AnthropicAuxiliaryClient:
     """OpenAI-client-compatible wrapper over a native Anthropic client."""
 
-    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str, is_oauth: bool = False):
+    def __init__(self, real_client: Any, model: str, api_key: str, base_url: str):
         self._real_client = real_client
-        self.chat = _ChatShim(_AnthropicCompletionsAdapter(real_client, model, is_oauth=is_oauth, base_url=base_url))
+        self.chat = _ChatShim(_AnthropicCompletionsAdapter(real_client, model, base_url=base_url))
         self.api_key = api_key
         self.base_url = base_url
 
@@ -1887,102 +1830,7 @@ def _maybe_wrap_anthropic(
         "(model=%s, base_url=%s, api_mode=%s)",
         model, base_url[:60] if base_url else "", api_mode or "auto-detected",
     )
-    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url, is_oauth=False)
-
-
-
-
-
-
-
-
-
-
-def _creds_pair(creds: dict[str, Any]) -> Optional[tuple[str, str]]:
-    """``(api_key, base_url)`` from a runtime-credentials dict, or None when either is missing."""
-    api_key = str(creds.get("api_key") or "").strip()
-    base_url = str(creds.get("base_url") or "").strip().rstrip("/")
-    if not api_key or not base_url:
-        return None
-    return api_key, base_url
-
-
-def _resolve_xai_oauth_for_aux() -> Optional[tuple[str, str]]:
-    """Fresh xAI OAuth (api_key, base_url) for aux clients, or None.
-
-    Pool first (some xAI OAuth logins exist only as pool entries), then the singleton auth-store resolver.
-    """
-    try:
-        from noesia_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL, _xai_validate_inference_base_url
-        pool = load_pool("xai-oauth")
-        if pool and pool.has_credentials():
-            entry = pool.select()
-            if entry is not None:
-                api_key = str(
-                    getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "") or ""
-                ).strip()
-                _url = lambda v: str(v or "").strip().rstrip("/")
-                base_url = _xai_validate_inference_base_url(
-                    _url(_scoped_key_env("NOESIA_XAI_BASE_URL"))
-                    or _url(_scoped_key_env("XAI_BASE_URL"))
-                    or _url(getattr(entry, "runtime_base_url", None))
-                    or _url(getattr(entry, "base_url", None)),
-                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
-                )
-                if api_key and base_url:
-                    return api_key, base_url
-    except Exception as exc:
-        logger.debug("Auxiliary xAI OAuth pool credential resolution failed: %s", exc)
-    try:
-        from noesia_cli.auth import resolve_xai_oauth_runtime_credentials
-        creds = resolve_xai_oauth_runtime_credentials()
-    except Exception as exc:
-        logger.debug("Auxiliary xAI OAuth runtime credential resolution failed: %s", exc)
-        return None
-    return _creds_pair(creds)
-
-
-def _resolve_codex_credential_and_base() -> tuple[Optional[str], str]:
-    """``(token, base_url)`` taken from ONE authority, so a Codex key is only ever sent to the host
-    it belongs to (#121486): the profile-scoped ``NOESIA_CODEX_BASE_URL`` wins; otherwise a pooled
-    key goes where that pool entry routes (row URL / ``model.base_url``) and the auth.json OAuth
-    token goes to the ChatGPT default. ``(None, <base>)`` without a usable token."""
-    override = _codex_base_url_override()
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            if override:
-                return token, override
-            # Same route rule as the chat path (row URL, else ``model.base_url``); never empty.
-            from noesia_cli.auth_codex import _codex_pool_route_base_url
-            return token, _codex_pool_route_base_url(_pool_runtime_base_url(entry))
-    # No usable pool token: auth.json only (re-selecting could pair another row's key with the default).
-    return _read_codex_singleton_token(), override or _CODEX_AUX_BASE_URL
-
-
-def _read_codex_singleton_token() -> Optional[str]:
-    """The profile's auth.json Codex access token (expired JWTs skipped), else None."""
-    try:
-        from noesia_cli.auth import _read_codex_tokens
-        access_token = _read_codex_tokens().get("tokens", {}).get("access_token")
-        if not isinstance(access_token, str) or not access_token.strip():
-            return None
-        # Expired JWTs would block the auto chain and prevent fallback to working providers.
-        try:
-            import base64
-            payload = access_token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp", 0)
-            if exp and time.time() > exp:
-                logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
-        except Exception:
-            pass  # Non-JWT token or decode error — use as-is
-        return access_token.strip()
-    except Exception as exc:
-        logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
-        return None
+    return AnthropicAuxiliaryClient(real_client, model, api_key, base_url)
 
 
 def _resolve_api_key_provider() -> tuple[Optional[OpenAI], Optional[str]]:
@@ -2653,8 +2501,6 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
     custom_base, custom_key, custom_mode = (*runtime, None) if len(runtime) == 2 else runtime
     if not custom_base or not custom_key:
         return None, None
-    if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
-        return None, None
     model = _read_main_model_for_aux() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     _clean_base, _dq = _extract_url_query_params(custom_base)
@@ -2667,11 +2513,8 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
         real_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
     if custom_mode == "anthropic_messages":
-        # OAuth identity only when the host is exactly api.anthropic.com (key_cmd callable included,
-        # #114967); third-party Anthropic-compatible gateways never get it.
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
         except ImportError:
             logger.warning(
@@ -2679,62 +2522,10 @@ def _try_custom_endpoint() -> tuple[Optional[Any], Optional[str]]:
                 "anthropic SDK is not installed — falling back to OpenAI-wire."
             )
             return _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra), model
-        return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base,
-                                        is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), model
+        return AnthropicAuxiliaryClient(real_client, model, custom_key, custom_base), model
     # URL-based anthropic detection for custom endpoints without explicit api_mode.
     _fallback_client = _create_openai_client(api_key=custom_key, base_url=_clean_base, **_extra)
     return _maybe_wrap_anthropic(_fallback_client, model, custom_key, custom_base, custom_mode), model
-
-
-def _build_xai_oauth_aux_client(model: str) -> tuple[Optional[Any], Optional[str]]:
-    """CodexAuxiliaryClient for xAI Grok OAuth (Responses API); (None, None) if not authed.
-
-    Caller must pass an explicit model — a pinned Grok default would rot as xAI's allowlist drifts.
-    """
-    if not model:
-        logger.warning(
-            "Auxiliary client: xai-oauth requested without a model; "
-            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
-        )
-        return None, None
-    resolved = _resolve_xai_oauth_for_aux()
-    if resolved is None:
-        return None, None
-    api_key, base_url = resolved
-    logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    from tools.xai_http import noesia_xai_default_headers
-    real_client = _create_openai_client(
-        api_key=api_key, base_url=base_url, default_headers=noesia_xai_default_headers()
-    )
-    return CodexAuxiliaryClient(real_client, model), model
-
-
-def _codex_base_url_override() -> str:
-    """Profile-scoped ``NOESIA_CODEX_BASE_URL`` (same read as the API-key env vars: under a
-    multiplexer the routed profile's .env decides the endpoint, never a sibling's process env)."""
-    return _scoped_key_env("NOESIA_CODEX_BASE_URL").rstrip("/")
-
-
-def _build_codex_client(model: str) -> tuple[Optional[Any], Optional[str]]:
-    """CodexAuxiliaryClient for an explicit model; (None, None) without a Codex OAuth token.
-
-    No auto-selected default: the Codex model allow-list is undocumented and drifts.
-    """
-    if not model:
-        logger.warning(
-            "Auxiliary client: openai-codex requested without a model; "
-            "pass model explicitly (auxiliary.<task>.model in config.yaml)."
-        )
-        return None, None
-    codex_token, base_url = _resolve_codex_credential_and_base()
-    if not codex_token:
-        return None, None
-    logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
-    real_client = _create_openai_client(
-        api_key=codex_token, base_url=base_url,
-        default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url),
-    )
-    return CodexAuxiliaryClient(real_client, model), model
 
 
 def _try_azure_foundry(
@@ -2838,18 +2629,16 @@ def _try_anthropic(explicit_api_key: Optional[str | Callable[[], str]] = None,
             )
             return None, None
         base_url = override_url
-    from agent.anthropic_credentials import _is_oauth_token
-    is_oauth = _is_oauth_token(token)
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     if _aux_probe_active():
         # Probe: token + adapter import resolved; skip real client construction.
         return _AuxProbeClientStub(api_key="", base_url=base_url), model
-    logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
+    logger.debug("Auxiliary client: Anthropic native (%s) at %s", model, base_url)
     try:
         real_client = build_anthropic_client(token, base_url)
     except ImportError:
         return None, None  # Adapter imports fine but the anthropic SDK itself is missing.
-    return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
+    return AnthropicAuxiliaryClient(real_client, model, token, base_url), model
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
@@ -2886,10 +2675,7 @@ def _normalize_main_runtime(main_runtime: Optional[dict[str, Any]]) -> dict[str,
 
 
 def _get_provider_chain() -> list[tuple]:
-    """Ordered provider detection chain, built at call time so ``_try_*`` patches are picked up.
-
-    ``openai-codex`` is deliberately absent (shifting allow-list breaks guessed-model fallback).
-    """
+    """Ordered provider detection chain, built at call time so ``_try_*`` patches are picked up."""
     return [
         ("openrouter", _try_openrouter),
         ("local/custom", _try_custom_endpoint), ("api-key", _resolve_api_key_provider),
@@ -2904,8 +2690,7 @@ _aux_unhealthy_logged_at: dict[Any, float] = {}
 _aux_unhealthy_reason: dict[Any, str] = {}
 # resolved_provider / explicit-config names → chain labels.
 _AUX_UNHEALTHY_LABEL_ALIASES = {
-    "openrouter": "openrouter", "custom": "local/custom",
-    "local/custom": "local/custom", "openai-codex": "openai-codex", "codex": "openai-codex",
+    "openrouter": "openrouter", "custom": "local/custom", "local/custom": "local/custom",
 }
 
 
@@ -3383,16 +3168,13 @@ def _pool_cache_hint(provider: str, *, main_runtime: Optional[dict[str, Any]] = 
 
 # Ordered (host, provider) tables for inferring a backend from a client base URL.
 _POOL_PROVIDER_BY_HOST = (
-    ("chatgpt.com", "openai-codex"), ("openrouter.ai", "openrouter"),
+    ("openrouter.ai", "openrouter"),
     ("api.anthropic.com", "anthropic"),
-    ("githubcopilot.com", "copilot"), ("api.kimi.com", "kimi-coding"), ("api.x.ai", "xai-oauth"),
+    ("githubcopilot.com", "copilot"), ("api.kimi.com", "kimi-coding"),
 )
 _AUTH_REFRESH_PROVIDER_BY_HOST = (
-    ("api.githubcopilot.com", "copilot"), ("chatgpt.com", "openai-codex"),
+    ("api.githubcopilot.com", "copilot"),
     ("api.anthropic.com", "anthropic"),
-    # An aux call that inherits the main xai-oauth route arrives as "auto"; without this row the
-    # 403 bad-credentials rung skipped the refresh and benched the only grant (#84845).
-    ("api.x.ai", "xai-oauth"),
 )
 
 
@@ -3481,9 +3263,6 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return True
 
     if _is_auth_error(exc):
-        if pool.try_refresh_current() is not None:
-            _evict_cached_clients(normalized)
-            return True
         return _rotate(401)
     if _is_payment_error(exc):
         return _rotate(402)
@@ -3557,10 +3336,6 @@ async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mod
     )
 
 
-def _creds_have_api_key(creds: dict[str, Any]) -> bool:
-    return bool(str(creds.get("api_key", "") or "").strip())
-
-
 def _refresh_copilot_credentials() -> bool:
     from noesia_cli.copilot_auth import _jwt_cache, _token_fingerprint, exchange_copilot_token, resolve_copilot_token
     raw_token, _source = resolve_copilot_token()
@@ -3571,38 +3346,11 @@ def _refresh_copilot_credentials() -> bool:
     return True
 
 
-def _refresh_codex_credentials() -> bool:
-    from noesia_cli.auth import resolve_codex_runtime_credentials
-    return _creds_have_api_key(resolve_codex_runtime_credentials(force_refresh=True))
-
-
-
-
 def _refresh_anthropic_credentials(failed_api_key: str = "") -> bool:
-    from agent.anthropic_credentials import read_claude_code_credentials, _refresh_oauth_token
-    token = failed_api_key
-    if not token:
-        return False
-    pool = load_pool("anthropic")
-    if pool.entry_id_for_api_key(token):
-        return pool.try_refresh_matching(api_key_hint=token) is not None
-    creds = read_claude_code_credentials()
-    # Never spend an ambient login's refresh rotation for another request's key.
-    if isinstance(creds, dict) and creds.get("accessToken") == token and creds.get("refreshToken"):
-        return bool(_refresh_oauth_token(creds))
-    return False
-
-
-def _refresh_xai_oauth_credentials() -> bool:
-    """Pool-level refresh first, then the singleton auth-store resolver."""
-    pool = load_pool("xai-oauth")
-    if pool and pool.has_credentials():
-        pool.select()
-        refreshed = pool.try_refresh_current()
-        if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
-            return True
-    from noesia_cli.auth import resolve_xai_oauth_runtime_credentials
-    return _creds_have_api_key(resolve_xai_oauth_runtime_credentials(force_refresh=True))
+    """A different key from the environment/pool counts as a refresh; the same key does not."""
+    from agent.anthropic_credentials import resolve_anthropic_token
+    token = (resolve_anthropic_token() or "").strip()
+    return bool(token) and token != (failed_api_key or "").strip()
 
 
 def _refresh_vertex_credentials() -> bool:
@@ -3615,9 +3363,9 @@ def _refresh_vertex_credentials() -> bool:
 
 # Each refresher returns True when a usable credential exists; the caller then evicts cached clients.
 _CREDENTIAL_REFRESHERS: dict[str, Callable[..., bool]] = {
-    "copilot": _refresh_copilot_credentials, "openai-codex": _refresh_codex_credentials,
+    "copilot": _refresh_copilot_credentials,
     "anthropic": _refresh_anthropic_credentials,
-    "xai-oauth": _refresh_xai_oauth_credentials, "vertex": _refresh_vertex_credentials,
+    "vertex": _refresh_vertex_credentials,
 }
 
 
@@ -3646,10 +3394,6 @@ def _auth_refresh_provider_for_route(
     if normalized and normalized != "auto":
         return normalized
     host_provider = _provider_for_host(client_base_url, _AUTH_REFRESH_PROVIDER_BY_HOST)
-    # The auto client already knows it runs on the host's API-key sibling (``xai`` on api.x.ai):
-    # an XAI_API_KEY 401 must not spend a stale ``xai-oauth`` grant's refresh and switch routes.
-    if host_provider and host_provider == f"{_normalize_aux_provider(effective_provider)}-oauth":
-        return normalized
     return host_provider or normalized
 
 
@@ -3976,7 +3720,7 @@ def _try_payment_fallback(
     """Try the auto-detection chain after a payment/credit or connection error, skipping the failed
     provider (and the main-provider path when it maps to the same backend). Returns (client, model, label) or (None, None, "")."""
     skip = failed_provider.lower().strip()
-    # The SESSION's provider decides whether discovery is allowed: a live `/model xai-oauth` session
+    # The SESSION's provider decides whether discovery is allowed: a live `/model <provider>` session
     # over a persisted ``provider: auto`` is a selection, so the disk value alone is not the answer.
     main_provider = _normalize_main_runtime(main_runtime).get("provider") or _read_main_provider()
     if not _discovery_chain_allowed(main_provider, task):
@@ -4467,8 +4211,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     async_kwargs = {"api_key": async_api_key(sync_client), "base_url": sync_base_url}
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         headers = _apply_user_default_headers(build_or_headers())
-    elif _is_official_codex_base_url(sync_base_url):
-        headers = _apply_user_default_headers(_codex_cloudflare_headers(sync_client.api_key, base_url=sync_base_url))
     else:
         # Provider for the profile-header fallback is inferred from the hostname.
         try:
@@ -4480,7 +4222,6 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
     headers = {**(headers or {}), **configured_default_headers(sync_client)}
     if headers:
         async_kwargs["default_headers"] = headers
-    _apply_required_codex_headers(async_kwargs, access_token=sync_client.api_key, base_url=sync_base_url)
     async_kwargs = {**_openai_http_client_kwargs(sync_base_url, async_mode=True), **async_kwargs}
     # Noesia owns the auxiliary retry/timeout budget; disable SDK-internal retries.
     # See #54465.
@@ -4750,39 +4491,6 @@ def _resolve_openrouter_branch(req: _ResolveRequest) -> _ResolveResult:
     return _route_client(req, client, _normalize_resolved_model(req.model or default, req.provider))
 
 
-
-
-def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
-    """OpenAI Codex (OAuth → Responses API)."""
-    model = req.model
-    if not model:
-        logger.warning("resolve_provider_client: openai-codex requested without a "
-                       "model; pass model explicitly (e.g. model.model in config.yaml "
-                       "or auxiliary.<task>.model for per-task aux routing).")
-        return None, None
-    no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: noesia model)"
-    if req.raw_codex:
-        # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token, base_url = _resolve_codex_credential_and_base()
-        if not codex_token:
-            logger.warning(no_token_msg)
-            return None, None
-        raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
-                                           default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
-        return raw_client, _normalize_resolved_model(model, req.provider)
-    client, default = _build_codex_client(model)
-    return _route_or_warn(req, client, default, no_token_msg)
-
-
-def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
-    """xAI Grok OAuth (device code → Responses API). Without this branch xai-oauth falls to the generic
-    oauth_external arm, returns (None, None), and silently re-routes every aux task to the Step-2 fallback."""
-    client, default = _build_xai_oauth_aux_client(req.model)
-    return _route_or_warn(req, client, default,
-                          "resolve_provider_client: xai-oauth requested but no xAI "
-                          "OAuth token found (run: noesia model -> xAI Grok OAuth — SuperGrok / Premium+)")
-
-
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -4926,7 +4634,6 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     if entry_api_mode == "anthropic_messages":
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            from agent.anthropic_credentials import anthropic_route_is_oauth
             real_client = build_anthropic_client(custom_key, custom_base)
             if entry_headers:
                 # Same entry headers as the two OpenAI-wire arms; ``with_options`` merges onto the
@@ -4937,8 +4644,7 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
                            "is not installed — falling back to OpenAI-wire.", provider)
             return _route_client(req, _named_custom_openai_wire_client(custom_base, custom_key, entry_headers), final_model)
         return _route_client(
-            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base,
-                                          is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), final_model)
+            req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base), final_model)
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
@@ -5122,8 +4828,6 @@ def _resolve_registry_branch(req: _ResolveRequest) -> _ResolveResult:
 _EXPLICIT_PROVIDER_BRANCHES: dict[str, Callable[[_ResolveRequest], _ResolveResult]] = {
     "auto": _resolve_auto_branch,
     "openrouter": _resolve_openrouter_branch,
-    "openai-codex": _resolve_openai_codex_branch,
-    "xai-oauth": _resolve_xai_oauth_branch,
     "custom": _resolve_custom_branch,
 }
 
@@ -5172,12 +4876,12 @@ def resolve_provider_client(
     if not model and provider != "auto":
         # ``auto`` is intentionally excluded: `_resolve_auto_route(main_runtime=...)` returns the model paired
         # with the provider it actually selected. Pre-filling an auto call from `_read_main_model()` can
-        # leak a stale process-global runtime into a different provider (for example Claude model slug on
-        # Codex OAuth) and override that correctly resolved model. 1. ``model`` argument (caller knew what
+        # leak a stale process-global runtime into a different provider (for example a Claude model slug
+        # on an OpenAI route) and override that correctly resolved model. 1. ``model`` argument (caller knew what
         # they wanted) 2. Provider's catalog default — cheap/fast model the provider registered via
         # ``ProviderProfile.default_aux_model`` or the legacy ``_API_KEY_PROVIDER_AUX_MODELS_FALLBACK``
         # dict. 3. User's main model from ``model.model`` in config.yaml. This is the load-bearing step for
-        # OAuth providers: an xai-oauth user with grok-4.3 configured gets grok-4.3 for title generation
+        # A configured main provider wins: a user with grok-4.3 configured gets grok-4.3 for title generation
         # instead of silently dropping to whatever Step-2 fallback (#31845). When the main provider is MoA,
         # ``_read_main_model_for_aux()`` substitutes the preset's aggregator model — the preset NAME is
         # never a valid wire model id, so unset aux models default to the preset's acting model instead.
@@ -5260,11 +4964,10 @@ def _deepinfra_strict_vision_backend(model: Optional[str]) -> tuple[Optional[Any
 
 # Strict (explicitly requested) vision backends by normalized provider name. noesia MUST go
 # through resolve_provider_client so anthropic/* picks wrap onto /v1/messages (a bare _try_noesia
-# client 404s). openai-codex has no safe default model; callers set auxiliary.<task>.model.
+# client 404s).
 _STRICT_VISION_BACKENDS: dict[str, Callable[[Optional[str]], tuple[Optional[Any], Optional[str]]]] = {
     "copilot": lambda model: resolve_provider_client("copilot", model, is_vision=True),
     "openrouter": lambda model: _try_openrouter(model=model),
-    "openai-codex": lambda model: resolve_provider_client("openai-codex", model, is_vision=True),
     "anthropic": lambda model: _try_anthropic(),
     "deepinfra": _deepinfra_strict_vision_backend,
     "custom": lambda model: _try_custom_endpoint(),
@@ -5801,10 +5504,6 @@ def _builtin_provider_present(name: str) -> bool:
             "anthropic",
             "copilot",
             "copilot-acp",
-            "minimax-oauth",
-            "openai-codex",
-            "qwen-oauth",
-            "xai-oauth",
         }
 
 
@@ -6151,7 +5850,7 @@ def _reset_aux_semaphores() -> None:
 
 # Anthropic-compatible endpoints reached via the OpenAI SDK wrapper; their image content blocks
 # must use Anthropic format.
-_ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-oauth", "minimax-cn"})
+_ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-cn"})
 
 
 def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
