@@ -1,5 +1,5 @@
 # Noesia vendor 清单（随包运行环境：不进仓库，只跟发布整合包走）
-# 生成 2026-11-03 18:02 (+08:00) · 11037 个文件 · 1.05 GB
+# 生成 2026-11-06 03:44 (+08:00) · 11025 个文件 · 1.05 GB
 #
 # 校验（在项目根目录跑；Windows 上用随包的 git-bash）：
 #   sha256sum -c vendor/MANIFEST.txt
@@ -9376,7 +9376,6 @@ bb13e192a77740ff5e24e36b9cffb92ef7b6c146555ef8726ea5977cec2d463a  vendor/python3
 18751c9bc8c42eeceda0fb3e4cdf10226ccba471b31a8f9e47233c3c7491e432  vendor/python314/Lib/__pycache__/base64.cpython-314.pyc
 fc4c66692b8304fadd21d5a97eda991a12d6d2849e36e4b5dd43fc2c01d6b5df  vendor/python314/Lib/__pycache__/bisect.cpython-314.pyc
 b5c90daa39e6f1276ffe4a7a27a79362160915e06195ddc093050f3fa445f03f  vendor/python314/Lib/__pycache__/bz2.cpython-314.pyc
-0549640809f2e4d97b80ca28737bb6d837b2a3d5409c01336eb5bf260debe195  vendor/python314/Lib/__pycache__/cProfile.cpython-314.pyc
 38c9e2b15855385312c154b693b66741e6f6725242a9a1481a7ecfa6f33504ab  vendor/python314/Lib/__pycache__/calendar.cpython-314.pyc
 eed20a82e069561f26696036a4ffa66cc0cc91246dc52a2469313357616c3508  vendor/python314/Lib/__pycache__/codeop.cpython-314.pyc
 99478786fb2daece8da1d824d3f8c1ffa2e2a91e33e0c66447fb54ac08826e6e  vendor/python314/Lib/__pycache__/colorsys.cpython-314.pyc
@@ -9386,7 +9385,6 @@ eed20a82e069561f26696036a4ffa66cc0cc91246dc52a2469313357616c3508  vendor/python3
 ccfae57bf0ae2ebb2cf5a9a430a45772ff5c6698f25c85269419d1213189b649  vendor/python314/Lib/__pycache__/contextvars.cpython-314.pyc
 d4a89102a7c8fac06caf84b685b053b4e83bc3d675e9e75dc9cf6c68fdadb045  vendor/python314/Lib/__pycache__/copy.cpython-314.pyc
 20e836def2d8ff5afd6adb32f09978210a7aa7b600ca02c051e216c93e39034c  vendor/python314/Lib/__pycache__/copyreg.cpython-314.pyc
-06f6ec887359f4ad1c81e7e6761d89fdf390c0585a409ef6cc52640ca2643c6d  vendor/python314/Lib/__pycache__/csv.cpython-314.pyc
 b2e175cf36209323926bf88a9a6c4b72d4be2339447d58d402003e2b127b3925  vendor/python314/Lib/__pycache__/dataclasses.cpython-314.pyc
 2b26bcf6e3b562c45082a46968e9a69b63d7814f8752f7655844074f794ed0d5  vendor/python314/Lib/__pycache__/datetime.cpython-314.pyc
 fc88930c6c6cb1d5007ec3d5e6e536c6597303fe0a9e0935c5b46fdc245818a6  vendor/python314/Lib/__pycache__/decimal.cpython-314.pyc
@@ -9397,7 +9395,6 @@ ac5a2b4d628daa45610df3558e28f4faa9aa32bb7a1d1dc425e2d26979f6cd8f  vendor/python3
 29f61f328a8c40821f4171245854f7b616070f9dfd1fd3f13db0486ca84a129a  vendor/python314/Lib/__pycache__/fnmatch.cpython-314.pyc
 7388b8dd5961c34d95a65cb868c9686783244930497ac171cbad79a906bae5c5  vendor/python314/Lib/__pycache__/fractions.cpython-314.pyc
 27e2a33a487dd51acca66a41d162a173798da452e683dd1269b7428b7e74f317  vendor/python314/Lib/__pycache__/functools.cpython-314.pyc
-8dafab75892396ac1d82fff0f81e392c19a93e8b8a8ddb065f96bf5e94ebcd1f  vendor/python314/Lib/__pycache__/getopt.cpython-314.pyc
 11dcccf1fabbb28d0865771a432f55cfc5180495b7e2ebf4c790d3bf36e961cd  vendor/python314/Lib/__pycache__/getpass.cpython-314.pyc
 b7b5484ee78fafa921979a45cbd18439311539d43a1f59c084d8d34a78ea87a0  vendor/python314/Lib/__pycache__/gettext.cpython-314.pyc
 a7f052acc6ba61f26db2b4038fed348ddab9207aa24c4bf10bc387989bbe2375  vendor/python314/Lib/__pycache__/glob.cpython-314.pyc
@@ -9417,14 +9414,11 @@ e066f178d9214302c59ec1fe858c6f5a4d60f683b7578feea6424f5bd19ee363  vendor/python3
 1d5cd26798246965bda486be3b699f9770eb261623c3c77610aa3f58e240a27e  vendor/python314/Lib/__pycache__/numbers.cpython-314.pyc
 65c0105d0812b5d2318000c51fba6e268b35ce290c39668c7254c448207a232f  vendor/python314/Lib/__pycache__/opcode.cpython-314.pyc
 a805b392408902299b21641e3c6e484a1e365ae68e22eeebd3b91ca15019b154  vendor/python314/Lib/__pycache__/operator.cpython-314.pyc
-26524fd6ba239f9254a3c9817df1b0b1fffd9d92de31b988111d4be70f67d309  vendor/python314/Lib/__pycache__/optparse.cpython-314.pyc
 059bbe03a228ce0d6547f6dd7bb93ba13b32f004148515f01abed07bc0763f14  vendor/python314/Lib/__pycache__/pickle.cpython-314.pyc
 5564fd7e9b03eb55c3239c998a7f088c18ad172aef92ba566e39217a99545e73  vendor/python314/Lib/__pycache__/pkgutil.cpython-314.pyc
 eb538899ac76a9f472a1afe2bafc4d3089bff38a919a2470463d161e7e831616  vendor/python314/Lib/__pycache__/platform.cpython-314.pyc
 308c6998d55ca6a9c4e7106188b885fb26a2de4d6d26787609c9a082086b89c8  vendor/python314/Lib/__pycache__/plistlib.cpython-314.pyc
 caa65f4cdf825de050fddb1cc34b3c27caa66b7a22eabad18a7ffb26acb84e19  vendor/python314/Lib/__pycache__/pprint.cpython-314.pyc
-5e863999f42a567f43a8914a25d0a93c580bc0e45320a6c35c3e453015668560  vendor/python314/Lib/__pycache__/profile.cpython-314.pyc
-d6e9b49e71da17f4570e4887dffa28e31b8ab4aaed5664f68601c54a03415901  vendor/python314/Lib/__pycache__/pstats.cpython-314.pyc
 bb27c2e494ed6e90af6ed3ee9fada966ce2f8086f85fe3bfb5733e7d8ea88745  vendor/python314/Lib/__pycache__/py_compile.cpython-314.pyc
 186ce59e0aa5171ec1d34394002309d748b6578631c23f1b0d8d6f26a1f15cb5  vendor/python314/Lib/__pycache__/queue.cpython-314.pyc
 d5bc2250c9434b40a5cfb98becc4fd4ad1197048246406580b2a33dbca42d4cd  vendor/python314/Lib/__pycache__/quopri.cpython-314.pyc
@@ -9668,7 +9662,6 @@ d3fadc45b971315a3bfdff51d2b6492ce40387ca56fa5375ebe7b0a180428e06  vendor/python3
 9ca46cad9a88afdfb910e019e5678c7454194a97680b748c1eb4457c162f7954  vendor/python314/Lib/email/__pycache__/encoders.cpython-314.pyc
 8a2fdd1b6ead8f27666287e0a0e3b26c1158dede4656700480bd302183b5abb4  vendor/python314/Lib/email/__pycache__/errors.cpython-314.pyc
 8aed60b35190743f17101da5b08096ad3c621251af1294ec27b6b2ab0dee1f5f  vendor/python314/Lib/email/__pycache__/feedparser.cpython-314.pyc
-9318795c83c56c7884058dc9a04e502e4740a28817e49f0a65add8394a6c23b6  vendor/python314/Lib/email/__pycache__/generator.cpython-314.pyc
 7715323f90c5d410dd0ebe472cd42ebd0886e5d05c402e60c9e9e94fa316b2a3  vendor/python314/Lib/email/__pycache__/header.cpython-314.pyc
 ae6a6ea91d35a220b6bb203b16a19e21648194427b7fa799ea46a9b53b246e4c  vendor/python314/Lib/email/__pycache__/headerregistry.cpython-314.pyc
 2f5e6d04ccfdc2d7376da8b3eb7051c09bd80d0c5ce9eaaf9e4af5134705ff77  vendor/python314/Lib/email/__pycache__/iterators.cpython-314.pyc
@@ -9839,8 +9832,6 @@ a3698a68287cc78323117d14be3b0b40f46289a850eb06aa9a5328d44b2a30ef  vendor/python3
 9b660028249bdb7e9b80af1d5432bf0c90b132a6d0dd205e2ded2a3b3275b728  vendor/python314/Lib/encodings/zlib_codec.py
 9aea80beaf8a611cf9ca5e4f476662652ff31c72a4e23c26d256382b0dfd09d3  vendor/python314/Lib/ensurepip/__init__.py
 be2dee4f4b55958aab36aebbe6d2d644065e9c36a6dd44727e955fc590501925  vendor/python314/Lib/ensurepip/__main__.py
-40166227543662602e3ec8d606c077daa7a79f87bd806f239762f8bd3233a901  vendor/python314/Lib/ensurepip/__pycache__/__init__.cpython-314.pyc
-1df4f63e9dcb6facfac374d9a621e8ef2e07e2a6d3a2d43a3cc042c5b0c3657c  vendor/python314/Lib/ensurepip/__pycache__/__main__.cpython-314.pyc
 382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab  vendor/python314/Lib/ensurepip/_bundled/pip-26.1.2-py3-none-any.whl
 f1ad81d4a32d1596c354de02f04821c4566753deb46418802f032b902b7dc450  vendor/python314/Lib/ensurepip/_uninstall.py
 1ca7df53237fb23471b60f6a7644edbf954386577a396aa2cee177fadf47a074  vendor/python314/Lib/enum.py
@@ -9938,7 +9929,6 @@ b2577f9db9f69a0a27f251776349238b17b8b214a01128e7477b0f7d8e24a186  vendor/python3
 2c279e126c60c7668604f38c13735702abf4912f9692f0ceb3c72d55403c6cc3  vendor/python314/Lib/locale.py
 7d905996477ee864b14c3fe2dc1ce5e58851c0f16160f35fb6291b3718ec3b10  vendor/python314/Lib/logging/__init__.py
 afd0d0ef14c7faf95e6de4f92ff710f6083e8818ca6bc55a4ba5ec70c4d686e6  vendor/python314/Lib/logging/__pycache__/__init__.cpython-314.pyc
-7f35b4b2f01d500b45ed5814fe85ba22da60f07fe6bedf98b81c3684af46b8ea  vendor/python314/Lib/logging/__pycache__/config.cpython-314.pyc
 7b7277920c36b134c8a6d3ee0e742856da050249aacf40d8b8799e9399ae874b  vendor/python314/Lib/logging/__pycache__/handlers.cpython-314.pyc
 2f07eb1f8fc789837bdd1888b345a5cc5e18a37ce618187c6498b4d126ef04e8  vendor/python314/Lib/logging/config.py
 0a5aa71978737183aac0cc903b346cbcecf26a9bab9d2ef2b5f2f96104c55253  vendor/python314/Lib/logging/handlers.py
@@ -10634,8 +10624,6 @@ adbeba40c859afe700f21f7e8c11df3d9557679e6c5b05dfd81229ad124ec5ee  vendor/python3
 3ec6d8e4a1414ee7c52e23a58dbcece9653021705a4d0c0aba0e96961258c5f3  vendor/python314/Lib/xml/sax/saxutils.py
 6f36e3810c9a4986f22a94617bc6bdaac9c7cf51fa8afc11246795c20aeb4c68  vendor/python314/Lib/xml/sax/xmlreader.py
 52069aeefb58dad898781d8bde183ffda18faae11f17ace8ce83368cab863fb1  vendor/python314/Lib/xmlrpc/__init__.py
-7ebf89d2a43ff1c33f25bee1b58f15fa940bc2cd806655040123c3cd8a393d6d  vendor/python314/Lib/xmlrpc/__pycache__/__init__.cpython-314.pyc
-0f2ad6e777e0258b82c292cb299af1c66b1c70ec8cad200396c815fd59c54bcd  vendor/python314/Lib/xmlrpc/__pycache__/client.cpython-314.pyc
 6d0936e80ce9073e0c488d41d4fd5f6123a0690579ebb0f7961ffc106e52f710  vendor/python314/Lib/xmlrpc/client.py
 5e0d489ac5cba53d62a6e764a9209a4b26b485054122eab629358c078ba92e01  vendor/python314/Lib/xmlrpc/server.py
 bb1fb279caa88bc728abed0967dc9b3db0815c45898a4ab2e89eb3512ae9c5e3  vendor/python314/Lib/zipapp.py
