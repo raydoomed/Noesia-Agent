@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime
 from pathlib import Path
 
 from app import env_keys
@@ -117,17 +116,9 @@ def save_image(value: str) -> dict:
     data = load()
     data["image"] = value
     data.pop("image_asset", None)
-    data["image_saved_at"] = datetime.now().isoformat(timespec="seconds")
     _write(data)
     return data
 
-
-def image_saved_at() -> datetime | None:
-    """这张图是什么时候被选进来的；读不出来返回 None（当老配置处理）。"""
-    try:
-        return datetime.fromisoformat(str(load().get("image_saved_at") or ""))
-    except ValueError:
-        return None
 
 
 def clear_image() -> dict:
@@ -139,22 +130,51 @@ def clear_image() -> dict:
     return save_image("")
 
 
-def store_image(source: str | Path) -> str:
-    """把用户选的图复制进 `data/assets/`，返回相对项目根的路径。
+_STAGING = ".pending"
 
-    先清掉这个目录里旧的 `avatar.*`：换了扩展名也不留上一份。
+_ALLOWED = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def stage_image(source: str | Path) -> Path:
+    """把选中的图先放成「待提交」文件：不动 `image`、不动现在生效的那张。
+
+    云端确认能用了才 `commit_staged()` 扶正——这样缩略图和实际生效的永远是同一张。
     """
     src = Path(source)
     suffix = src.suffix.lower()
-    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+    if suffix not in _ALLOWED:
         raise ValueError(f"形象图只认 png / jpg / jpeg / webp，这个是 {suffix or '没扩展名'}")
     folder = RESOLVER.resolve(IMAGE_DIR)
     folder.mkdir(parents=True, exist_ok=True)
-    for old in folder.glob("avatar.*"):
+    for old in folder.glob(f"avatar{_STAGING}*"):
         old.unlink(missing_ok=True)
-    target = folder / f"avatar{suffix}"
+    target = folder / f"avatar{_STAGING}{suffix}"
     shutil.copyfile(src, target)
-    return str(target.relative_to(RESOLVER.root)).replace("\\", "/")
+    return target
+
+
+def commit_staged() -> str:
+    """把待提交的那张扶正：替换 `avatar.*`、写 `image`、作废旧编号。"""
+    folder = RESOLVER.resolve(IMAGE_DIR)
+    staged = next(iter(folder.glob(f"avatar{_STAGING}*")), None)
+    if staged is None:
+        raise ValueError("没有待提交的形象图")
+    for old in folder.glob("avatar.*"):
+        if old.name.startswith(f"avatar{_STAGING}"):
+            continue
+        old.unlink(missing_ok=True)
+    target = folder / f"avatar{staged.suffix}"
+    staged.rename(target)
+    relative = str(target.relative_to(RESOLVER.root)).replace("\\", "/")
+    save_image(relative)
+    return relative
+
+
+def drop_staged() -> None:
+    """上传没成：把待提交的那张删掉，正在用的那张一个字都没动。"""
+    folder = RESOLVER.resolve(IMAGE_DIR)
+    for old in folder.glob(f"avatar{_STAGING}*"):
+        old.unlink(missing_ok=True)
 
 
 def image_asset() -> dict:

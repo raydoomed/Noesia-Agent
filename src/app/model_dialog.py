@@ -13,7 +13,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -1993,6 +1992,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
     def _avatar_uploaded_done(self, text: str, ok: bool) -> None:
         self._avatar_status.set_state(text, False, ok)
+        if ok:
+            self._refresh_avatar_image()
 
     def _pick_avatar_image(self) -> None:
         from app import avatar_prefs
@@ -2003,35 +2004,44 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if not picked:
             return
         try:
-            relative = avatar_prefs.store_image(picked)
-            avatar_prefs.save_image(relative)
+            staged = avatar_prefs.stage_image(picked)
         except (OSError, ValueError) as exc:
             self._set_avatar_note(f"没换成：{exc}")
             return
-        self._refresh_avatar_image()
-        warn = self._green_warning(avatar_prefs.RESOLVER.resolve(relative))
+        warn = self._green_warning(staged)
         self._set_avatar_note("正在更新形象…" + (f" {warn}" if warn else ""), busy=True)
-        self._warm_avatar_asset_async("形象更新成功。", "形象更新失败，每句会多花半秒。")
+        self._warm_avatar_asset_async(
+            staged, "形象更新成功。", "形象更新失败，还是用原来那张。", commit=True
+        )
 
-    def _warm_avatar_asset_async(self, done: str, failed: str) -> None:
-        """后台把形象传到云端，并**至少等满 10 秒**再报结果。
+    def _warm_avatar_asset_async(
+        self, image: Path, done: str, failed: str, commit: bool = False, reset: bool = False
+    ) -> None:
+        """后台把形象传到云端，云端报 success 才落盘。
 
-        刚传好的形象云端要这段时间才把音频管线建起来；等满了再让用户点「保存并启用」，
-        第一句话就有声音，不用等。
+        `commit=True`：传成功后把待提交的那张扶正；`reset=True`：传成功后清掉自选图。
+        两种都是失败就什么也不动，缩略图只在这之后才换。
         """
         from app import avatar_prefs, avatar_rtc
 
-        image = avatar_prefs.image_path() or avatar_prefs.DEFAULT_IMAGE
-
         def run() -> None:
-            started = time.monotonic()
             try:
                 ok = bool(avatar_rtc.warm_avatar_asset(image))
             except Exception:  # noqa: BLE001 - 传不上去不影响换图本身
                 ok = False
-            rest = 10.0 - (time.monotonic() - started)
-            if rest > 0:
-                time.sleep(rest)
+            if commit:
+                if ok:
+                    try:
+                        avatar_prefs.commit_staged()
+                    except (OSError, ValueError):
+                        ok = False
+                if not ok:
+                    avatar_prefs.drop_staged()
+            elif reset and ok:
+                try:
+                    avatar_prefs.clear_image()
+                except OSError:
+                    ok = False
             self.avatar_uploaded.emit(done if ok else failed, ok)
 
         threading.Thread(target=run, daemon=True, name="avatar-upload").start()
@@ -2039,14 +2049,13 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def _reset_avatar_image(self) -> None:
         from app import avatar_prefs
 
-        try:
-            avatar_prefs.clear_image()
-        except OSError as exc:
-            self._set_avatar_note(f"没还原成：{exc}")
-            return
-        self._refresh_avatar_image()
         self._set_avatar_note("正在还原默认形象…", busy=True)
-        self._warm_avatar_asset_async("已还原默认形象。", "已还原默认形象，云端编号暂时用不了。")
+        self._warm_avatar_asset_async(
+            avatar_prefs.DEFAULT_IMAGE,
+            "已还原默认形象。",
+            "还原失败，还是用原来那张。",
+            reset=True,
+        )
 
     @staticmethod
     def _green_warning(path: Path) -> str:

@@ -39,8 +39,6 @@ logger = logging.getLogger(__name__)
 
 # 云端形象编号（avatar_id）的保质期：平台 90 天会清，留 5 天余量提前重传
 ASSET_MAX_DAYS = 85
-# 换图后云端要这么久才把音频管线建好：这期间用编号建会话只有画面、没有声音
-ASSET_SETTLE_SECONDS = 10.0
 # 上传后云端还要生成描述（status=created/processing）：这段时间内别重复 POST，
 # 同一张图重复上传会返回同一个还在处理的资产，纯白花往返
 ASSET_PENDING_SECONDS = 60.0
@@ -238,10 +236,6 @@ class AvatarRtc(QtCore.QObject):
 
     def _cached_avatar_id(self, image: pathlib.Path, digest: str = "") -> str:
         """缓存的云端编号还能用就返回它，否则空串（= 这一句现传图）。"""
-        saved = avatar_prefs.image_saved_at()
-        # 刚换的图：云端还没把音频管线建起来，这时候用编号只有画面没有声音
-        if saved is not None and (datetime.now() - saved).total_seconds() < ASSET_SETTLE_SECONDS:
-            return ""
         asset = avatar_prefs.image_asset()
         if not asset.get("id") or asset.get("hash") != (digest or self._image_hash(image)):
             return ""
