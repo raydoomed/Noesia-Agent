@@ -31,6 +31,7 @@ from app.vidu_session import (
     FRAME_BYTES,
     SAMPLE_RATE,
     ViduSession,
+    avatar_status,
     read_token,
     upload_avatar_asset,
 )
@@ -43,32 +44,42 @@ ASSET_MAX_DAYS = 85
 # 同一张图重复上传会返回同一个还在处理的资产，纯白花往返
 ASSET_PENDING_SECONDS = 60.0
 
-def warm_avatar_asset(image: pathlib.Path, digest: str = "", wait_seconds: float = 90.0) -> str:
+def warm_avatar_asset(
+    image: pathlib.Path, digest: str = "", wait_seconds: float = 90.0, interval: float = 5.0
+) -> str:
     """把这张图存成云端资产并写缓存，返回编号；过了等待时间还没好就返回空串。
 
-    不建会话、不计费。云端收图后要几十秒才把状态从 created/processing 变成 success，
-    所以这里**一直轮询到出结果**——只查一次会把「正在处理」当失败，界面上就是
-    「形象更新失败」，其实它马上就好了。
+    不建会话、不计费。整图**只上传这一次**，之后每隔 `interval` 秒按编号查状态
+    （`avatar_status`）——重复 POST 整图会被平台判成刷接口，直接 429。
     """
     digest = digest or hashlib.sha256(image.read_bytes()).hexdigest()
     token = read_token()
     if not token:
         return ""
-    got = upload_avatar_asset(token, image)
+    try:
+        got = upload_avatar_asset(token, image)
+    except Exception as exc:  # noqa: BLE001 - 记下原因再往上抛，界面要显示它
+        logger.warning("[数字人] 形象上传失败：%s", exc)
+        raise
+    avatar_id, status = got["id"], got["status"]
     deadline = time.monotonic() + wait_seconds
-    while got["status"] != "success" and got["status"] != "failed":
+    while status != "success":
+        if status in ("failed", "missing"):
+            break
         if time.monotonic() >= deadline:
             break
-        time.sleep(5.0)   # 太密会被限流（429）
-        got = upload_avatar_asset(token, image)
-    if got["status"] != "success":
-        logger.info("[数字人] 形象还在云端处理（status=%s），先不拿它建会话", got["status"])
+        time.sleep(interval)
+        status = avatar_status(token, avatar_id)
+    if status != "success":
+        logger.warning(
+            "[数字人] 形象没成功（id=%s status=%s），先不拿它建会话", avatar_id, status
+        )
         return ""
     avatar_prefs.save_image_asset(
-        {"hash": digest, "id": got["id"], "uploaded_at": datetime.now().isoformat(timespec="seconds")}
+        {"hash": digest, "id": avatar_id, "uploaded_at": datetime.now().isoformat(timespec="seconds")}
     )
-    logger.info("[数字人] 形象已存成云端资产：id=%s status=%s", got["id"], got["status"])
-    return got["id"]
+    logger.info("[数字人] 形象已存成云端资产：id=%s status=%s", avatar_id, status)
+    return avatar_id
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]

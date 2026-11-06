@@ -2025,24 +2025,31 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         from app import avatar_prefs, avatar_rtc
 
         def run() -> None:
+            reason = ""
             try:
                 ok = bool(avatar_rtc.warm_avatar_asset(image))
-            except Exception:  # noqa: BLE001 - 传不上去不影响换图本身
+                if not ok:
+                    reason = "云端 90 秒内没处理完"
+            except Exception as exc:  # noqa: BLE001 - 传不上去不影响换图本身
                 ok = False
+                reason = str(exc) or type(exc).__name__
             if commit:
                 if ok:
                     try:
                         avatar_prefs.commit_staged()
-                    except (OSError, ValueError):
+                    except (OSError, ValueError) as exc:
                         ok = False
+                        reason = f"图片没能落地：{exc}"
                 if not ok:
                     avatar_prefs.drop_staged()
             elif reset and ok:
                 try:
                     avatar_prefs.clear_image()
-                except OSError:
+                except OSError as exc:
                     ok = False
-            self.avatar_uploaded.emit(done if ok else failed, ok)
+                    reason = f"没能清掉旧图：{exc}"
+            text = done if ok else (f"{failed}（{reason}）" if reason else failed)
+            self.avatar_uploaded.emit(text, ok)
 
         threading.Thread(target=run, daemon=True, name="avatar-upload").start()
 

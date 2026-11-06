@@ -98,14 +98,24 @@ def upload_avatar_asset(token: str, image_path: pathlib.Path) -> dict:
     green = build_green_input(
         image_path, pathlib.Path(tempfile.gettempdir()) / "noesia_vidu_asset.jpg"
     )
-    resp = requests.post(
-        f"{HTTP}/live/v1/avatars",
-        headers={"Authorization": f"Token {token}"},
-        json={
-            "image_uri": "data:image/jpeg;base64," + base64.b64encode(green.read_bytes()).decode()
-        },
-        timeout=60,
-    )
+    body = {
+        "image_uri": "data:image/jpeg;base64," + base64.b64encode(green.read_bytes()).decode()
+    }
+
+    def _post() -> requests.Response:
+        return requests.post(
+            f"{HTTP}/live/v1/avatars",
+            headers={"Authorization": f"Token {token}"},
+            json=body,
+            timeout=60,
+        )
+
+    resp = _post()
+    for _ in range(2):
+        if resp.status_code != 429:
+            break
+        time.sleep(5.0)   # 撞限流说明刚传过，等平台把计数放下来再试
+        resp = _post()
     if resp.status_code in (401, 403):
         raise RuntimeError(
             f"Vidu 不认这把 Token（{resp.status_code}）：到「设置 → 语音互动」里重新填一次"
@@ -114,6 +124,31 @@ def upload_avatar_asset(token: str, image_path: pathlib.Path) -> dict:
         raise RuntimeError(f"上传形象失败 {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
     return {"id": str(data["id"]), "status": str(data.get("status", ""))}
+
+
+def avatar_status(token: str, avatar_id: str) -> str:
+    """查一条形象资产现在处理到哪一步：created / processing / success / failed。
+
+    只读、不传图——等云端处理完就走这个，别再拿整图重复 POST（那样会被限流）。
+    429 / 5xx / 网络抽风返回 "unknown"，调用方接着等就行，不当作失败。
+    """
+    try:
+        resp = requests.get(
+            f"{HTTP}/live/v1/avatars/{avatar_id}",
+            headers={"Authorization": f"Token {token}"},
+            timeout=30,
+        )
+    except requests.RequestException:
+        return "unknown"
+    if resp.status_code in (401, 403):
+        raise RuntimeError(
+            f"Vidu 不认这把 Token（{resp.status_code}）：到「设置 → 语音互动」里重新填一次"
+        )
+    if resp.status_code == 404:
+        return "missing"
+    if resp.status_code != 200:
+        return "unknown"
+    return str(resp.json().get("status", ""))
 
 
 _ERROR_SOURCES = {
