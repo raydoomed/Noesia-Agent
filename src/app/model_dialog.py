@@ -1295,9 +1295,6 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if hasattr(self, "_text_scroller"):
             self._rebuild_models()
 
-    def _text_apply_view(self) -> None:  # 兼容旧调用点：模型设置不做搜索，直接重铺
-        self._rebuild_models()
-
     def _ensure_models(self, slug: str) -> None:
         """这一家的清单还没到手：只按现有数据重画，不去别处找。"""
         block = self._text_blocks.get(slug)

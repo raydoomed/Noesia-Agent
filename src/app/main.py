@@ -280,7 +280,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._greeted = False  # 只问一次「要不要她先开口」，别每次开窗都跑一次推理
         self._approval_dialog = None  # 最新那张（位置跟随、撤回按它认）
         self._approval_dialogs: list = []  # 同时开着的全部审批卡：并行工具会一次要好几张授权
-        self._approval_request_id = ""  # 这张卡对应引擎的哪个 request_id（撤回时按它认）
         self._name_dialog = None      # 起名卡片同时只开一张
         self.client = None  # main() 里注入，用来发消息
         # 「新会话」按钮是用户主动要换的：这种回包一定要清屏。引擎自己回来的 `session.create`
@@ -809,7 +808,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return
         self._interactive_shown = on
         if self.idle_player is not None:
-            self.idle_player.pause() if on else self.idle_player.resume()
+            # 藏起来（托盘 / Esc）时不许把解码接回来：hideEvent 刚把它停掉，
+            # 这里再 resume 就是「关到托盘风扇还转」——等 showEvent 露出来再接。
+            if on or self._hidden:
+                self.idle_player.pause()
+            else:
+                self.idle_player.resume()
 
     def _on_avatar_notice(self, text: str) -> None:
         """服务端信令失败（比如复位不被支持）：日志里记一笔，界面上说一句，别静默。
@@ -1015,11 +1019,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     def model_choices(self) -> list[dict]:
         """设置窗口要的形状：引擎的供应商全表 → 每家一张卡（变量名、配没配、有哪些模型）。"""
         return build_model_choices(self._provider_rows)
-
-    def refresh_provider_rows(self) -> None:
-        """设置页的「刷新模型」：作废引擎缓存、逐家重问线上清单。回包走 `apply_provider_rows`。"""
-        if self.client is not None:
-            self.client.request_provider_rows(refresh=True)
 
     def apply_provider_rows(self, rows: list, current: str = "") -> None:
         """引擎回的供应商全表：存下来给设置页用；设置窗口正开着就原地换内容。
@@ -1540,7 +1539,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             if dialog in self._approval_dialogs:
                 self._approval_dialogs.remove(dialog)
             self._approval_dialog = self._approval_dialogs[-1] if self._approval_dialogs else None
-            self._approval_request_id = ""
             if self.client is not None:
                 # 回帧用 reply_id（`srq-...`）；request_id 是引擎的业务 id，只能用于显示/去重
                 reply_id = getattr(ask, "reply_id", None) or getattr(ask, "request_id", "")
@@ -1918,7 +1916,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if not closed:
             return
         self._approval_dialog = self._approval_dialogs[-1] if self._approval_dialogs else None
-        self._approval_request_id = str(getattr(self._approval_dialog, "request_id", "") or "")
         if self.chat_panel is not None:
             self.chat_panel.show_tool("approval", "这张审批卡已失效（引擎撤回了这一轮）", ok=False)
 
@@ -2212,7 +2209,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             allow_permanent=params.get("allow_permanent", True),
         )
         self._ask_approval(ask)
-        self._approval_request_id = str(params.get("request_id") or "")
 
     def on_setup_beat(self, beat: dict) -> None:
         """引导流程要摆「名字」那张卡：弹输入框，回帧用 reply_id（`srq-...`）。
@@ -2465,7 +2461,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     @QtCore.Slot(bool, str)
     def _finish_takeover(self, ok: bool, note: str) -> None:
         """后台线程放行完进程，回到这里重启引擎并回话（QProcess 只能在主线程碰）。"""
-        self._takeover_busy = False
         panel = getattr(self, "chat_panel", None)
         if panel is not None:
             panel.clear_status_notice("takeover")

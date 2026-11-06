@@ -54,6 +54,10 @@ src/engine/noesia_cli/_version.py
 # 而那是技能自带的测试文件，属于技能内容，必须跟着包走。
 /tests/
 
+# 审计报告：写给人看的自查结论，不是用户能看到的项目内容，留在工作区但别入库
+/AUDIT.md
+/BACKLOG.md
+
 # 测试与工具产物
 .pytest_cache/
 .coverage

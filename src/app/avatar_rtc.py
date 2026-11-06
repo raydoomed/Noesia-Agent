@@ -185,7 +185,6 @@ class AvatarRtc(QtCore.QObject):
         self._speak_mark = 0.0     # 这一句开始的时刻（quiet 最早只从这个时刻算）
         self._recv_samples = 0   # 云端已经回传多少采样（48k 单声道；换算成 24k s16 就是字节数）
         self._rate_warned = False
-        self._last_error = ""
         self._reset_off = False       # 复位（type 15）被服务端拒过：别再每句白发一遍
         self._asset_lock = threading.Lock()  # 预加载和建会话都可能去传形象，串着来
         self._asset_pending: tuple[str, float] = ("", 0.0)  # (上次上传的图哈希, 允许再传的时刻)
@@ -426,7 +425,6 @@ class AvatarRtc(QtCore.QObject):
         with self._lock:
             self._warm_seq += 1  # 正在建的那一台也作废（它回来会自己挂掉）
             self._state = "idle"
-        self._last_error = message
         self._send_run.clear()
         self.failed.emit(message)
 

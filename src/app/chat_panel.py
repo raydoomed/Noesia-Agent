@@ -5089,7 +5089,15 @@ class ChatPanel(QtWidgets.QWidget):
         self._global_ptt.set_sequence(mods, vk)
         self._global_ptt.start()
         if not self._global_ptt.running:
+            # 探过之后还装不上（钩子被系统拒）：不能只写日志——用户按这颗键会一点反应都没有，
+            # 还以为自己按错了。说清楚「后台用不了、窗口里照常」。
             logger.warning("[语音] 系统级快捷键装不上（错误码 %s）", self._global_ptt._last_error)
+            self.show_notice(
+                "voice-input",
+                f"系统级 {self._global_ptt_label()} 没装上：窗口在后台时按它不会开始说话（在窗口里照常）",
+                ttl_ms=8000,
+                level="warn",
+            )
 
     def _refresh_ptt_button(self) -> None:
         """外形永远是那颗键盘图标，只换提示文字。"""
