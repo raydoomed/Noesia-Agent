@@ -1,6 +1,6 @@
-"""可折叠的一段：一行抬头 + 藏在它下面的若干段（照桌面端 `DisclosureRow` / `ScaffoldRow`）。
+"""可折叠的一段：一行抬头 + 藏在它下面的若干段。
 
-桌面端一条脚手架行——「思考中」、「读取 config.py」——永远是同一副样子：一行暗色小字，
+一条过程行——「思考中」、「读取 config.py」——永远是同一副样子：一行暗色小字，
 点一下才展开底下的内容。Qt 的文档流里没有「折叠」这种东西，但段落能单独隐藏
 （`QTextBlock.setVisible(False)`，实测 106px 的正文藏起来后只剩 8px 的抬头），
 于是抬头占一段、正文是紧接着的若干段，点抬头就切换那些段的可见性。
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6 import QtCore, QtGui
+from PySide6 import QtCore, QtGui, QtWidgets
 
 CARET_OPEN = "▾"
 CARET_CLOSED = "▸"
@@ -40,13 +40,15 @@ class _BodyMark(QtGui.QTextBlockUserData):
 
 
 def _inherit_clean(fmt: QtGui.QTextBlockFormat) -> QtGui.QTextBlockFormat:
-    """新块只继承字号行距，不继承对齐和左右缩进。
+    """新块只继承字号行距，不继承对齐、左右缩进和行高。
 
-    用户那条是右对齐带左缩进的，工具行、思考段跟着借来的格式就会一起跑到右边去。
+    用户那条是右对齐带左缩进的，工具行、思考段跟着借来的格式就会一起跑到右边去；
+    长内容那块空位是固定行高，后面的块继承过去就变成一块凭空高出来的空白。
     """
     fmt.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
     fmt.setLeftMargin(0)
     fmt.setRightMargin(0)
+    fmt.setLineHeight(100, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
     return fmt
 
 
@@ -60,6 +62,10 @@ class Fold:
     has_body: bool = False
     pinned: bool = False  # 用户自己点过开合：别再替他自动收起/展开
     glyph: object | None = field(default=None, repr=False)  # 抬头左边的小图标（QTextImageFormat）
+    scroll: QtWidgets.QTextBrowser | None = field(default=None, repr=False)  # 长内容的独立滚动块
+    slot: QtGui.QTextBlock | None = field(default=None, repr=False)  # 它在正文里占的那块空位
+    chunks: list[tuple[str, QtGui.QColor | None, QtGui.QColor | None]] = field(default_factory=list, repr=False)  # 已经收进来的行（文字 + 前景 + 底色）
+    drawn: int = 0  # 已经铺到控件里的行数：只补新增的那几行，不整段重铺
 
 
 class Folds:
@@ -72,11 +78,13 @@ class Folds:
         body_format: QtGui.QTextCharFormat,
         *,
         gap: int = 5,
+        host: QtWidgets.QWidget | None = None,
     ) -> None:
         self._doc = doc
         self._head_format = head_format
         self._body_format = body_format
         self._gap = gap
+        self._host = host
         self._items: dict[int, Fold] = {}
         self._marks: list[_BodyMark] = []  # 保住 Python 侧引用：块只存指针
         self._seq = 0
@@ -91,7 +99,12 @@ class Folds:
         return list(self._items.values())
 
     def reset(self) -> None:
-        """会话清空：文档已经没了，标记跟着作废。"""
+        """会话清空：文档已经没了，标记跟着作废，长内容控件一并收掉。"""
+        for fold in self._items.values():
+            if fold.scroll is not None:
+                fold.scroll.setParent(None)
+                fold.scroll.deleteLater()
+                fold.scroll = None
         self._items.clear()
         self._marks.clear()
 
@@ -133,6 +146,11 @@ class Folds:
             cursor.insertText(" ")
         cursor.insertText(head_text(label, fold.open), self._head_link(fold))
         fold.head_block = self._doc.findBlock(head_pos)  # 插入后再取：句柄跟着块走，不怕位置变
+        # 抬头这一行按固定行高走：不给的话这行高度跟着图标走（14px），
+        # 字挤在里面对着图标也看不出居中
+        head_format = fold.head_block.blockFormat()
+        head_format.setLineHeight(18, QtGui.QTextBlockFormat.LineHeightTypes.FixedHeight.value)
+        QtGui.QTextCursor(fold.head_block).setBlockFormat(head_format)
         self._items[fold.key] = fold
         return fold
 
@@ -156,8 +174,15 @@ class Folds:
         return cursor
 
     def append(self, fold: Fold, text: str, *, body_format: QtGui.QTextCharFormat | None = None) -> None:
-        """往折叠段下面加一段（折叠着加进去的段落一样是藏着的）。"""
+        """往折叠段下面加一段（折叠着加进去的段落一样是藏着的）。
+
+        工具输出走另一条路：它可能几百行，铺进正文会把整屏顶穿，所以只留一块
+        等高的空位，字放进独立控件里自己滚（`_append_scroll`）。
+        """
         if not text:
+            return
+        if fold.kind == "tool" and self._host is not None:
+            self._append_scroll(fold, text)
             return
         cursor = self._body_cursor(fold)
         start = cursor.position()
@@ -213,6 +238,78 @@ class Folds:
         cursor.setPosition(block.position() + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.insertText(text, body_format or self._body_format)
         self._doc.markContentsDirty(0, self._doc.characterCount())
+
+    def _append_scroll(self, fold: Fold, text: str) -> None:
+        """长内容不进文档流：正文里留一块等高的空位，字交给独立控件自己滚。"""
+        for line in text.split("\n"):
+            fold.chunks.append((line, None, None))
+        self._refresh_scroll(fold)
+
+    def _append_scroll_runs(
+        self, fold: Fold, rows: list[list[tuple[str, QtGui.QTextCharFormat]]]
+    ) -> None:
+        """同上，但每行自带颜色（diff、ANSI 输出）。"""
+        for row in rows:
+            text = "".join(piece for piece, _fmt in row)
+            color = None
+            bg = None
+            for piece, fmt in row:
+                if not piece.strip():
+                    continue
+                if color is None and fmt.foreground().style() != QtCore.Qt.BrushStyle.NoBrush:
+                    color = fmt.foreground().color()
+                if bg is None and fmt.background().style() != QtCore.Qt.BrushStyle.NoBrush:
+                    bg = fmt.background().color()
+            fold.chunks.append((text, color, bg))
+        self._refresh_scroll(fold)
+
+    def _refresh_scroll(self, fold: Fold) -> None:
+        from .tool_scroll import ToolScroll
+
+        scroll = fold.scroll
+        if scroll is None:
+            scroll = fold.scroll = ToolScroll(self._host)
+            scroll.set_rows(fold.chunks)
+            fold.drawn = len(fold.chunks)
+        elif len(fold.chunks) > fold.drawn:
+            scroll.add_rows(fold.chunks[fold.drawn :])  # 只补新来的，前面那些不动
+            fold.drawn = len(fold.chunks)
+        scroll.setVisible(fold.open)  # 这块是刚建的时候也要按当前开合摆好
+        fold.has_body = True
+        self._sync_slot(fold)
+
+    def relayout(self) -> None:
+        """窗口宽度变了：滚动的那些按新宽度重新量高度，正文里留的空位跟着改。"""
+        for fold in self._items.values():
+            if fold.scroll is not None:
+                self._sync_slot(fold)
+
+    def _sync_slot(self, fold: Fold) -> None:
+        """让正文里那块空位和控件一样高——版面按空位算，滚到它时才对得上。"""
+        width = max(1, int(self._doc.pageSize().width()))
+        scroll = fold.scroll
+        if scroll is None:
+            return
+        height = scroll.fit(width)
+        block = fold.slot
+        if block is None or not block.isValid():
+            cursor = self._body_cursor(fold)
+            start = cursor.position()
+            cursor.insertText("\u200b", self._body_format)
+            block = self._doc.findBlock(start)
+        cursor = QtGui.QTextCursor(block)
+        fmt = _inherit_clean(block.blockFormat())
+        fmt.setTopMargin(6)  # 上面可能是图片或一行说明，紧贴着会糊成一块
+        fmt.setBottomMargin(0)
+        fmt.setLineHeight(height, QtGui.QTextBlockFormat.LineHeightTypes.FixedHeight.value)
+        cursor.setBlockFormat(fmt)
+        # 设格式之后旧的那个 block 句柄就作废了，得按位置重新拿一次
+        block = self._doc.findBlock(cursor.block().position())
+        if not isinstance(block.userData(), _BodyMark):
+            block.setUserData(self._mark(fold))  # 只标一次：每次都标会一直往 _marks 里堆
+        block.setVisible(fold.open)
+        fold.slot = block
+        self._doc.markContentsDirty(block.position(), block.length())
 
     def _mark(self, fold: Fold) -> _BodyMark:
         self._uid += 1
@@ -286,6 +383,18 @@ class Folds:
         """
         if not rows:
             return
+        if fold.kind == "tool" and self._host is not None:
+            # 带图的段不能进那个滚动区：那里只排文字，图会整张不见。
+            # 抬头的小图标也是图片字符，但它不是图，不该把整段赶回正文。
+            has_image = any(
+                isinstance(fmt, QtGui.QTextImageFormat)
+                and not fmt.name().startswith("noesia-icon://")
+                for row in rows
+                for _text, fmt in row
+            )
+            if not has_image:
+                self._append_scroll_runs(fold, rows)
+                return
         # `start` 必须取**另起一段之后**的位置：取在那之前，`findBlock(start)` 落在抬头块
         # 的末尾，抬头会被一起标成正文块——折叠着的时候整行（连标题）跟着消失。
         cursor = self._body_cursor(fold)
@@ -324,6 +433,8 @@ class Folds:
             return  # 还没正文：只影响箭头
         for block in self.body_blocks(fold):
             block.setVisible(fold.open)
+        if fold.scroll is not None:
+            fold.scroll.setVisible(fold.open)
         self._doc.markContentsDirty(0, self._doc.characterCount())
 
     def retitle(self, fold: Fold, label: str) -> None:

@@ -58,6 +58,13 @@ class HoverActionButton(QtWidgets.QToolButton):
     IDLE_COLOR = "#8b8492"
     HOVER_COLOR = "#f6dfea"
     DONE_COLOR = "#98c379"
+    #: 摆进气泡里的那颗要盖住字尾：垫一层和气泡同色的底
+    BACKDROP_QSS = """
+QToolButton {
+    background: rgba(62, 47, 62, 245);
+    border-radius: 6px;
+}
+"""
 
     def __init__(
         self,
@@ -112,13 +119,17 @@ class HoverActionButton(QtWidgets.QToolButton):
         self._back_to_idle()
 
     def set_enabled(self, flag: bool) -> None:
-        """能不能点：桌面端那条「刷新」在非末尾回答上照样摆着，只是灰掉点不动。"""
+        """能不能点：非末尾回答上的「刷新」照样摆着，只是灰掉点不动。"""
         self._enabled = bool(flag)
         self.setEnabled(self._enabled)
         self.setCursor(
             QtCore.Qt.CursorShape.PointingHandCursor if self._enabled
             else QtCore.Qt.CursorShape.ArrowCursor
         )
+
+    def set_backdrop(self, on: bool) -> None:
+        """要不要垫一层底。摆进气泡里的那颗要——它压在最后一行字上，得把字尾盖住。"""
+        self.setStyleSheet(self.BACKDROP_QSS if on else "")
 
     def place_at(self, rect: QtCore.QRect, offset_x: int = 0, below: bool = False,
                  bottom_align: bool = False, anchor_right: bool = False) -> None:
@@ -134,7 +145,7 @@ class HoverActionButton(QtWidgets.QToolButton):
         x = max(0, min(right, parent.width() - self.BUTTON_PX))
         if below:
             # 挂在块下沿：回答贴左起，像那句话自己的注脚；用户那条贴右边，和自己的话一列
-            x = (max(0, parent.width() - self.BUTTON_PX - 6 + offset_x) if anchor_right
+            x = (max(0, rect.right() - self.BUTTON_PX - 6 + offset_x) if anchor_right
                  else max(0, rect.left() + 2 + offset_x))
             y = min(rect.bottom() + 6, parent.height() - self.BUTTON_PX - 4)
         elif bottom_align:
@@ -172,9 +183,9 @@ class HoverActionButton(QtWidgets.QToolButton):
         先收掉旧提示、给了超时自收、按钮自己 hide 的时候也收。
         """
         QtWidgets.QToolTip.hideText()  # 先收旧的：一次只留一行
-        # 挂在按钮**正上方**：以前是往左 48px、往下落，正好压在按钮排自己和气泡正文上
+        # 挂在按钮**正下方**：往上会压在它上面那行正文上
         QtWidgets.QToolTip.showText(
-            self.mapToGlobal(QtCore.QPoint(0, -self.height() - 18)),
+            self.mapToGlobal(QtCore.QPoint(0, self.height() + 4)),
             self.toolTip(),
             self,
             self.rect(),

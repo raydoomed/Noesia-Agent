@@ -198,9 +198,9 @@ TOOL_META: dict[str, ToolMetaSpec] = {
     "browser_take_screenshot": ToolMetaSpec(icon="file-media", tone="browser"),
     "browser_type": ToolMetaSpec(icon="globe", tone="browser"),
     "clarify": ToolMetaSpec(icon="question", tone="agent"),
-    # 钟（watch）专门表示「这一行还在跑」，别的工具别借它——不然跑完的行看着像还在跑。
-    "cronjob": ToolMetaSpec(icon="tools", tone="agent"),
-    "cronjob_manage": ToolMetaSpec(icon="tools", tone="agent"),
+    # 时钟是定时任务（cron）的标记。跑没跑看颜色和标题，别的工具别借这个钟
+    "cronjob": ToolMetaSpec(icon="watch", tone="agent"),
+    "cronjob_manage": ToolMetaSpec(icon="watch", tone="agent"),
     "edit_file": ToolMetaSpec(icon="edit", tone="file"),
     "execute_code": ToolMetaSpec(icon="terminal", tone="terminal"),
     "image_generate": ToolMetaSpec(icon="file-media", tone="image"),
@@ -1338,6 +1338,7 @@ def tool_copy_payload(part: ToolPart, view: ToolView) -> dict[str, str]:
     copy = {
         "command": tr("assistant.tool.copyCommand"),
         "content": tr("assistant.tool.copyContent"),
+        "code": tr("assistant.tool.copyCode"),
         "file": tr("assistant.tool.copyFile"),
         "output": tr("assistant.tool.copyOutput"),
         "path": tr("assistant.tool.copyPath"),
@@ -1400,7 +1401,8 @@ def tool_copy_payload(part: ToolPart, view: ToolView) -> dict[str, str]:
 
     if is_file_edit_tool(part.tool_name):
         if view.inline_diff.strip():
-            return {"label": copy["file"], "text": view.inline_diff}
+            # 复制的是这段改动，不是整个文件——写「复制文件」会让人以为拷走了整份
+            return {"label": copy["code"], "text": view.inline_diff}
 
         path = file_edit_path(args, result)
 

@@ -42,6 +42,18 @@ QMenu::item:selected { background-color: rgba(240, 178, 210, 52); color: #ffffff
 QMenu::separator { height: 1px; background: rgba(255, 255, 255, 20); margin: 5px 10px; }
 """
 
+# 悬停提示（贴在按钮旁边的那个小气泡）：跟着深紫走，不要系统白底
+_TIP_QSS = """
+QToolTip {
+    background-color: #241f2e;
+    color: #f2e6ee;
+    border: 1px solid rgba(255, 255, 255, 34);
+    border-radius: 6px;
+    padding: 3px 7px;
+    font-size: 11px;
+}
+"""
+
 def say(message: str) -> None:
     """启动期的一句话，写进日志，控制台在时也照旧打印。
 
@@ -2804,6 +2816,7 @@ def main() -> int:
     _setup_gui_log(resolver.root)  # 配置里若指了别的 root，换到那边；同一路径则什么都不做
 
     app = QtWidgets.QApplication(sys.argv)
+    app.setStyleSheet(_TIP_QSS)  # 悬停提示：标在按钮旁边的那个小气泡，不该是系统白底
     # 主界面是无边框的 `Qt.Tool` 窗（工具窗默认不参与「最后一个窗口关闭就退出」），聊天窗是它的
     # 子控件。于是任何一个真窗口关掉（比如「设置模型」对话框点了保存/取消）都会被算成
     # 「最后一个窗口关了」→ 整个程序退出。退出只有一条路：右键 → 退出 Noesia Agent。

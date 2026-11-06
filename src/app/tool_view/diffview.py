@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-import re
-
 ADD = "add"
 DEL = "del"
 HUNK = "hunk"
@@ -28,12 +26,15 @@ DIFF_HEADER_PREFIXES = (
     "new file",
     "deleted file",
 )
-_ARROW_HEADER_RE = re.compile(r"^\S.*→\s*\S+$")
 
 
 def _is_arrow_header_line(line: str) -> bool:
     trimmed = line.strip()
-    return "→" in trimmed and bool(_ARROW_HEADER_RE.match(trimmed)) and not trimmed[:1] in "+-@"
+    if trimmed[:1] in "+-@":
+        return False
+    # `a/<旧> → b/<新>`。路径里可能带空格（Windows 绝对路径就带），
+    # 按「一整个非空白串」去卡正则会漏掉，所以只认两端的 a/ 和 b/ 标记。
+    return "→" in trimmed and trimmed.startswith(("a/", "b/", "a\\", "b\\"))
 
 
 def strip_diff_file_headers(text: str) -> str:

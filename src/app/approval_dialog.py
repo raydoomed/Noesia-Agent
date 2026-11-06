@@ -37,6 +37,11 @@ _CARD_STYLE = """
     color: rgba(232,225,236,200); font-size: 12px; background: rgba(0,0,0,110);
     border: 1px solid rgba(255,255,255,20); border-radius: 8px; padding: 8px;
 }
+#cmd QScrollBar:vertical { background: transparent; width: 6px; margin: 2px 1px 2px 0; }
+#cmd QScrollBar::handle:vertical { background: rgba(255,255,255,48); border-radius: 3px; min-height: 20px; }
+#cmd QScrollBar::handle:vertical:hover { background: rgba(255,255,255,86); }
+#cmd QScrollBar::add-line:vertical, #cmd QScrollBar::sub-line:vertical { height: 0; }
+#cmd QScrollBar::add-page:vertical, #cmd QScrollBar::sub-page:vertical { background: transparent; }
 QPushButton {
     color: rgba(246,223,234,180); background: rgba(255,255,255,16); border: 1px solid rgba(255,255,255,26);
     border-radius: 8px; padding: 7px 14px; font-size: 13px;
@@ -101,6 +106,7 @@ class ApprovalDialog(QtWidgets.QDialog):
             sub.setTextFormat(QtCore.Qt.TextFormat.PlainText)
             lay.addWidget(sub)
 
+        command_box = None
         if command:
             # 整条命令原样给出，不截断：`python -c "…"`、heredoc、批量脚本、ffmpeg 长参数
             # 轻松超过 400 字，截掉一半等于让人凭前半句批准整条命令；手选也选不到被砍掉的部分。
@@ -111,12 +117,13 @@ class ApprovalDialog(QtWidgets.QDialog):
             box.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
             box.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
             lines = command.count("\n") + 1
-            box.setFixedHeight(min(240, 20 * lines + 12))
+            box.setFixedHeight(min(240, 20 * lines + 12))  # 初值：真高度等宽度定了再量
             # 别用控件级样式表（会盖掉 `#cmd` 那条边框/配色）：只把底色设成透明
             pal = box.palette()
             pal.setColor(box.backgroundRole(), QtCore.Qt.GlobalColor.transparent)
             box.setPalette(pal)
             lay.addWidget(box)
+            command_box = box
 
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(8)
@@ -135,6 +142,28 @@ class ApprovalDialog(QtWidgets.QDialog):
 
         self.adjustSize()
         self.setFixedWidth(max(320, min(460, self.sizeHint().width())))
+        if command_box is not None:
+            # 宽度定下来了才知道那条命令会折成几行，等这一轮布局走完再校正高度
+            QtCore.QTimer.singleShot(0, lambda: self._fit_command(command_box))
+
+    @staticmethod
+    def _fit_command(box: QtWidgets.QPlainTextEdit) -> None:
+        """按折行后的实际高度定高。
+
+        命令里完全可以一个换行符都没有，但几百字塞在窄卡片里会折成五六行；
+        照换行符个数只给一行高，第二行往后就全被裁掉了。
+        """
+        metrics = box.fontMetrics()
+        inner = max(1, box.viewport().width() - 4)
+        rect = metrics.boundingRect(
+            QtCore.QRect(0, 0, inner, 100000),
+            int(QtCore.Qt.TextFlag.TextWordWrap),
+            box.toPlainText(),
+        )
+        box.setFixedHeight(max(34, min(240, rect.height() + 20)))
+        # 按字体量出来的高度总差那一两像素：真冒出滚动条就再放一点，放到装得下为止
+        while box.height() < 240 and box.verticalScrollBar().maximum() > 0:
+            box.setFixedHeight(box.height() + 4)
 
     def _add_button(self, row, text: str, kind: str, choice: str, parent) -> None:
         btn = QtWidgets.QPushButton(text, parent)

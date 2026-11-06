@@ -29,6 +29,7 @@ from app import (
     media_links,
     voice_input_prefs,
 )
+from app.chat_view import ChatView
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap
 from app.approval_dialog import ConfirmDialog
 from app.photo_view import PhotoView
@@ -208,8 +209,8 @@ def _plain_block_format() -> QtGui.QTextBlockFormat:
     """普通段落：只留 5px 上间距，不带上一段的底色/缩进（代码块的底色否则会渗下来）。"""
     block_format = QtGui.QTextBlockFormat()
     block_format.setTopMargin(5)
-    # 行距放宽到 1.9：她的正文 15px，按默认行距一行挨一行读着累
-    block_format.setLineHeight(165, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
+    # 行距 1.3：13px 的字配上这个松紧，一行一行读着不挤也不散
+    block_format.setLineHeight(130, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
     return block_format
 
 
@@ -289,6 +290,7 @@ from app.tool_view import delegate as delegate_view
 from app.tool_view.fmt import format_duration_seconds
 from app.tool_view.helpers import is_file_edit_tool, strip_ansi
 from app.tool_view.icons import icon_svg
+from app.tool_view.codicon_icons import codicon_for_filename
 from app.tool_view.model import count_diff_line_stats, looks_redundant, tool_meta
 from app.model_menu import current_label, fill_menu, group_models
 from app.window_geometry import (
@@ -419,7 +421,26 @@ QMenu::indicator { width: 14px; height: 14px; }
     background: transparent;
     border: none;
     color: #ece6ef;
-    font-size: 15px;
+    font-size: 13px;
+}
+#view QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0px;
+}
+#view QScrollBar::handle:vertical {
+    background: rgba(236, 230, 239, 38);
+    border-radius: 4px;
+    min-height: 28px;
+}
+#view QScrollBar::handle:vertical:hover {
+    background: rgba(236, 230, 239, 72);
+}
+#view QScrollBar::add-line:vertical, #view QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+#view QScrollBar::add-page:vertical, #view QScrollBar::sub-page:vertical {
+    background: transparent;
 }
 /* 输入框外壳：审批/思考两个图标在框里面，窗口拉窄也不会把输入框挤没 */
 #inputbox {
@@ -690,7 +711,7 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
 # 输入框那排的语音三档：静音（不念）/ 纯语音（现在的朗读）/ 语音互动（数字人实时说话）。
 # 纯语音和语音互动是同一档位里的两个选项，永远互斥。
 _VOICE_MODES = (("muted", "静音"), ("plain", "纯语音"), ("interactive", "语音互动"))
-_VOICE_TINT = {"muted": "#6b6b76", "plain": "#9ad0ff", "interactive": "#b39dff"}
+_VOICE_TINT = {"muted": "#c9c3d4", "plain": "#9ad0ff", "interactive": "#b39dff"}
 
 
 def _voice_mode() -> str:
@@ -1488,12 +1509,14 @@ class ChatPanel(QtWidgets.QWidget):
         self._provider_wait = ""  # 引擎在等供应商时那句中英文提示（底部状态行）
 
         # QTextBrowser 而不是 QTextEdit：附件行是 <a href="file://...">，只有它会在点击时发 anchorClicked
-        self.view = QtWidgets.QTextBrowser(frame)
+        self.view = ChatView(frame)
         self.view.setObjectName("view")
         self.view.setReadOnly(True)
         self.view.setOpenLinks(False)  # 不自己跳转：点开是「用默认程序打开文件」，不是窗口内导航
         self.view.setOpenExternalLinks(False)
         self.view.anchorClicked.connect(self._on_anchor)
+        # 正文一滚，贴在某一行上的按钮就对不上字了：直接收掉，鼠标再过来时重摆
+        self.view.scrolled.connect(self._hide_hover)
         self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
         # 横向不出条：正文一律按视口宽折行（代码块也是，见 markdown_render._unwrap_pre），
         # 差一两像素的取整误差也不许在底下弹一条——这个位置以前就因为这个被嫌弃过。
@@ -1502,7 +1525,7 @@ class ChatPanel(QtWidgets.QWidget):
 
         # 折叠段的字体：抬头是一行暗色小字（可点），正文再暗一档；工具正文用等宽
         head_format = QtGui.QTextCharFormat()
-        head_format.setForeground(QtGui.QColor("#8f9bb0"))
+        head_format.setForeground(ChatView.SCAFFOLD_IDLE)
         head_format.setFontPointSize(9)
         body_format = QtGui.QTextCharFormat()
         body_format.setForeground(QtGui.QColor("#6f7a8c"))
@@ -1512,11 +1535,15 @@ class ChatPanel(QtWidgets.QWidget):
         self._tool_body_format.setFontFamilies(["Consolas", "Cascadia Mono", "Courier New"])
         self._tool_body_format.setFontPointSize(8.5)
         self._tool_body_format.setForeground(QtGui.QColor("#7c8798"))
-        self._folds = disclosure.Folds(self.view.document(), head_format, body_format)
+        self._folds = disclosure.Folds(
+            self.view.document(), head_format, body_format, host=self.view.viewport()
+        )
+        self.view.attach_folds(self._folds)
 
         # 悬停才出现的小动作：两个**各自独立**的按钮——复制（点完换 ✓）与「看完整 diff」
         # （只开窗，不冒充复制成功）。靠 CSS 的 group-hover，Qt 没有，所以自己盯鼠标摆位。
         self._hover_copy: HoverActionButton | None = None
+        self._zone: tuple | None = None  # 鼠标当前在哪个区域，换区才换按钮
         self._hover_expand: HoverActionButton | None = None
         self._hover_download: HoverActionButton | None = None
         # 消息级悬停条：复制整段 / 引用 / 编辑重发 / 重新生成（按角色与位置决定露哪几个）
@@ -1813,7 +1840,7 @@ class ChatPanel(QtWidgets.QWidget):
         frame = self._bg.parentWidget()
         if frame is None or frame.width() <= 0 or frame.height() <= 0:
             return
-        height = int(frame.height() * 0.52)
+        height = int(frame.height() * 0.42)
         width = int(height * self._bg_pixmap.width() / self._bg_pixmap.height())
         limit = int(frame.width() * 0.72)
         if width > limit:
@@ -2395,9 +2422,19 @@ class ChatPanel(QtWidgets.QWidget):
     def _image_at(self, pos: QtCore.QPoint) -> str:
         """这一点落在哪张图上？返回资源名，不是图就返回空。"""
         fmt = self.view.cursorForPosition(pos).charFormat()
+        return fmt.toImageFormat().name() if self._is_photo_format(fmt) else ""
+
+    @staticmethod
+    def _is_photo_format(fmt: QtGui.QTextCharFormat) -> bool:
+        """是不是一张能看、能下载的原图。
+
+        抬头和按钮上的小图标也是图片字符（`noesia-icon://`），但它们不是原图；
+        一律当成图片算，鼠标扫过一行工具抬头就会冒出下载按钮。
+        """
         if not fmt.isImageFormat():
-            return ""
-        return fmt.toImageFormat().name()
+            return False
+        name = fmt.toImageFormat().name()
+        return name.startswith("noesia-image://") or name.startswith("noesia-photo://")
 
     def _point_at_photo(self, pos: QtCore.QPoint) -> None:
         """鼠标压在能点的地方给手型：图片、链接、折叠段抬头都是。
@@ -3036,7 +3073,7 @@ class ChatPanel(QtWidgets.QWidget):
                     self._folds.retitle(stuck, label)
             return
 
-        glyph = self._tool_glyph(view, pending=pending)
+        glyph = self._tool_glyph(view, pending=pending, file_edit=is_file_edit)
         fold = self._tool_folds.get(tool_id) if tool_id else None
         if fold is None:
             # 子代理卡片默认展开：正要「看清它在跑什么」的时候，收着等于没有
@@ -3123,9 +3160,11 @@ class ChatPanel(QtWidgets.QWidget):
         "bright-cyan": "#6fcbd6",
         "bright-white": "#f2f4f8",
     }
+    # 增删靠底色认。深绿深红那种实色在这个底上跟背景几乎没差别，等于没标；
+    # 改成高饱和色淡一层叠上去（`#AARRGGBB`，前两位是不透明度），一眼能分出加还是删。
     DIFF_COLORS = {
-        "add": ("#9ed07f", "#16281a"),
-        "del": ("#e08a92", "#2b1618"),
+        "add": ("#55a583", "#2c55a583"),
+        "del": ("#e75e78", "#2ce75e78"),
         "hunk": ("#7fb0d8", "#141d28"),
         "meta": ("#7c8798", "#101214"),
         "context": (None, None),
@@ -3190,7 +3229,7 @@ class ChatPanel(QtWidgets.QWidget):
         """diff 一段：新增/删除/段落头各一种底色，代码正文过 pygments 上色。
 
         （shiki 高亮 + 行底色）。`path` 用来挑词法分析器；
-        diff 行首那个 `+`/`-`/空格保留，并按类别上色。
+        段落头不画，行首那个 `+`/`-`/空格也一并去掉，增删只看行底色。
         `numbers=True` 时左侧补双列行号，
         聊天窗里的收缩版不带行号。
         """
@@ -3208,6 +3247,7 @@ class ChatPanel(QtWidgets.QWidget):
                 if match:
                     old_no = int(match.group(1)) - 1
                     new_no = int(match.group(2)) - 1
+                continue
             if kind == "add":
                 new_no += 1
             elif kind == "del":
@@ -3237,10 +3277,12 @@ class ChatPanel(QtWidgets.QWidget):
                 rows.append([*gutter, (" ", base)])
                 continue
 
-            marker, code = stripped[0], stripped[1:]
-            if kind in ("add", "del", "context") and code.strip():
+            # 行首那个 `+`/`-`/空格是给解析器看的记号，不是内容：
+            # 去掉，增删靠行底色认，左边不留一列加减号。
+            code = stripped[1:] if kind in ("add", "del", "context") else stripped
+            if kind in ("add", "del", "context") and code.strip() and numbers:
                 highlighted = code_highlight(code, path)[0]
-                row = [*gutter, (marker, base)]
+                row = [*gutter]
                 for chunk, color, bold in highlighted:
                     fmt = QtGui.QTextCharFormat(base)
                     if color:
@@ -3250,13 +3292,15 @@ class ChatPanel(QtWidgets.QWidget):
                     row.append((chunk, fmt))
                 rows.append(row)
             else:
-                rows.append([*gutter, (stripped, base)])
+                # 聊天窗这条路每行只能上一种颜色（内容排在独立滚动区里，按行排版），
+                # 语法色在这里只会让整行偏一个色，看不出增删——整行直接给 diff 色。
+                rows.append([*gutter, (code or " ", base)])
         return rows
 
     # ---- 抬头左边的小图标 ----
 
-    def _icon_pixmap(self, name: str | None, color: str, px: int = 13) -> QtGui.QPixmap | None:
-        """把 Phosphor path 渲成小图（同一个图标同一颜色只渲一次）。"""
+    def _icon_pixmap(self, name: str | None, color: str, px: int = 14) -> QtGui.QPixmap | None:
+        """把图标名字渲成小图（同一个图标同一颜色只渲一次）。"""
         key = (name, color, px)
         cached = self._icon_cache.get(key)
         if cached is not None:
@@ -3339,8 +3383,10 @@ class ChatPanel(QtWidgets.QWidget):
             self._icon_registered.add(url.toString())
         fmt = QtGui.QTextImageFormat()
         fmt.setName(url.toString())
-        fmt.setWidth(13)
-        fmt.setHeight(13)
+        fmt.setWidth(14)
+        fmt.setHeight(14)
+        # 图默认按基线摆，整块会吊在文字上方；改成按行居中，和文字落在一条线上
+        fmt.setVerticalAlignment(QtGui.QTextCharFormat.VerticalAlignment.AlignMiddle)
         return fmt
 
     def _tool_icon_glyph(self, tool_name: str, *, ok: bool = True):
@@ -3351,12 +3397,16 @@ class ChatPanel(QtWidgets.QWidget):
         color = self.GLYPH_COLORS["success"] if ok else self.GLYPH_COLORS["error"]
         return self._glyph_format(tool_meta(tool_name).icon or "tools", color)
 
-    def _tool_glyph(self, view, *, pending: bool):
-        """抬头图标：跑着是「进行中」的钟，出错是红的，其余是工具自己的图标。"""
+    def _tool_glyph(self, view, *, pending: bool, file_edit: bool = False):
+        """抬头图标：跑着只是颜色变蓝，图标还是它自己的；出错是红的。
+
+        改文件、打补丁、写文件这三种换成按文件后缀取的图标：改 .yaml 显示齿轮，
+        改 .css 显示调色板，认不出的后缀给尖括号。读文件那条不换——它本来就是文件图标。
+        """
         status = "running" if pending else (view.status or "success")
         color = self.GLYPH_COLORS.get(status, self.GLYPH_COLORS["success"])
-        name = "watch" if status == "running" else (view.icon or "tools")
-        return self._glyph_format(name, color)
+        name = codicon_for_filename(view.subtitle) if file_edit else None
+        return self._glyph_format(name or view.icon or "tools", color)
 
     def _label_format(self) -> QtGui.QTextCharFormat:
         fmt = QtGui.QTextCharFormat(self._tool_body_format)
@@ -3785,8 +3835,12 @@ class ChatPanel(QtWidgets.QWidget):
         block_format.setBackground(QtGui.QColor(markdown_render.CODE_BACKGROUND))
         block_format.setLeftMargin(10)
         block_format.setRightMargin(8)
-        block_format.setTopMargin(4)
-        block_format.setBottomMargin(4)
+        # 上下边距只留给首尾两块：每块都带的话，块与块之间那段留白不画底色，
+        # 一整段代码就断成一条一条的色带。
+        block_format.setTopMargin(0)
+        block_format.setBottomMargin(0)
+        head_format = QtGui.QTextBlockFormat(block_format)
+        head_format.setTopMargin(4)
         base = QtGui.QTextCharFormat()
         base.setFontFamilies(["Consolas", "Cascadia Mono", "Courier New"])
         base.setFontPointSize(9)
@@ -3798,7 +3852,7 @@ class ChatPanel(QtWidgets.QWidget):
         if not self.view.document().isEmpty():
             cursor.insertBlock()
         cursor.setCharFormat(base)
-        cursor.setBlockFormat(block_format)
+        cursor.setBlockFormat(head_format)
         anchor = cursor.position()
 
         lines = code.split("\n")
@@ -3823,6 +3877,10 @@ class ChatPanel(QtWidgets.QWidget):
                 if bold:
                     fmt.setFontWeight(QtGui.QFont.Weight.Bold)
                 cursor.insertText(text, fmt)
+
+        tail_format = cursor.blockFormat()
+        tail_format.setBottomMargin(4)
+        cursor.setBlockFormat(tail_format)
 
         block = cursor.block()
         while block.isValid() and block.position() >= anchor:
@@ -5360,60 +5418,85 @@ class ChatPanel(QtWidgets.QWidget):
     # ---- 悬停小动作：代码块复制 / 工具行看完整 diff ----
 
     def _hover_at(self, pos: QtCore.QPoint) -> None:
-        """鼠标在正文里移动：代码块（或工具正文）给复制按钮，工具 diff 另给「看完整 diff」。
+        """鼠标在正文里移动：先判出它落在哪个区域，换了区域才换按钮。
 
-        两个按钮各管各的：复制点完换 ✓，放大只开窗。以前共用一个小部件，结果放大也换成 ✓、
-        再也看不到复制——那是错的。
+        区域判定和按钮摆放分成两件事：这里只问「在哪」，下面 _open_zone 只负责
+        「那个区域该亮哪颗」。所以每条分支里都没有「收掉」这种补救动作——
+        上一个区域的按钮在换区时整体收掉，一次。
         """
         if self._over_hover_button():
             return  # 鼠标压在悬停条上：别在它下面把按钮收掉（那一下连提示都弹不出来）
         if self._in_msg_band(pos):
             return  # 走到这条消息末尾下方那一格（按钮就停在那儿）：保持不动，一收就永远点不到
+        zone, block = self._zone_at(pos)
+        if zone == self._zone:
+            return  # 没换区域：按钮就在原地，鼠标动一下不必重做
+        self._hide_hover()  # 换区：上一个区域的按钮一次收干净
+        self._zone = zone
+        if zone is not None and block is not None:
+            self._open_zone(zone, block)
+
+    def _zone_at(self, pos: QtCore.QPoint) -> tuple[tuple | None, QtGui.QTextBlock | None]:
+        """鼠标此刻落在哪个区域。只认区域，不碰按钮。"""
         block = self._block_at(pos)
         if block is None or not block.isValid():
-            self._hide_hover()
-            return
-        self._hide_msg_actions()
-
-        fence = self._code_fence_at(block)
-        if fence is not None:
-            first, last, text = fence
-            self._show_hover_copy(text, tool_tr("assistant.tool.copyCode"), first, last)
-            self._hide_expand()
-            return
-
+            return None, None
+        if self._code_fence_at(block) is not None:
+            return ("code", block.blockNumber()), block
+        # 图片块带着工具正文的标记，但它自己是一张图：先按图片处理
+        if self._block_has_image(block):
+            hit = self._photo_at(pos)
+            return (("photo",) + hit) if hit else None, block
         mark = block.userData()
         if isinstance(mark, disclosure._BodyMark):
-            first, last = self._marked_run(block, mark.key)
-            payload = self._tool_payloads.get(mark.key)
-            if payload is None and mark.key in self._diff_texts:
-                # 没算出 payload（例如只有 diff）就拿 diff 当复制内容，文案用「复制内容」
-                payload = (tool_tr("assistant.tool.copyContent"), self._diff_texts[mark.key][1])
-            if payload and payload[1].strip():
-                self._show_hover_copy(payload[1], payload[0], first, last)
-            else:
-                self._hide_copy()
-            if mark.key in self._diff_texts:
-                self._show_hover_expand(mark.key, first, last)
-            else:
-                self._hide_expand()
-            return
-
-        # 正文里的网络图片：右上角给个下载按钮，不必先点开看原图
-        hit = self._photo_at(pos)
-        if hit:
-            self._show_hover_download(*hit)
-            return
-
+            return ("body", mark.key), block
         msg = self._message_at(block)
         if msg is not None:
-            self._hide_copy()
-            self._hide_expand()
-            self._hide_download()
-            self._show_msg_actions(msg, block)
-            return
+            # 一条消息占好几段，用消息本身认，别用块号——那样在一条里上下挪会一直换区、按钮直闪
+            return ("msg", id(msg)), block
+        return None, block
 
-        self._hide_hover()
+    def _open_zone(self, zone: tuple, block: QtGui.QTextBlock) -> None:
+        """给当前区域亮它自己那颗按钮。别的区域的按钮在这条路径上根本不出现。"""
+        kind = zone[0]
+        if kind == "code":
+            fence = self._code_fence_at(block)
+            if fence is not None:
+                first, last, text = fence
+                self._show_hover_copy(text, tool_tr("assistant.tool.copyCode"), first, last, edge=True)
+        elif kind == "photo":
+            self._show_hover_download(zone[1], zone[2])
+        elif kind == "body":
+            mark = block.userData()
+            if isinstance(mark, disclosure._BodyMark):
+                self._open_body_zone(block, mark.key)
+        elif kind == "msg":
+            msg = self._message_at(block)
+            if msg is not None:
+                self._show_msg_actions(msg, block)
+
+    def _open_body_zone(self, block: QtGui.QTextBlock, key: int) -> None:
+        """工具输出正文：能复制就给复制，另外有 diff 才给「看完整 diff」。"""
+        first, last = self._marked_run(block, key)
+        payload = self._tool_payloads.get(key)
+        if payload is None and key in self._diff_texts:
+            # 没算出 payload（例如只有 diff）就拿 diff 当复制内容，文案用「复制内容」
+            payload = (tool_tr("assistant.tool.copyContent"), self._diff_texts[key][1])
+        if payload and payload[1].strip():
+            self._show_hover_copy(payload[1], payload[0], first, last, edge=True)
+        if key in self._diff_texts:
+            self._show_hover_expand(key, first, last)
+
+    @classmethod
+    def _block_has_image(cls, block: QtGui.QTextBlock) -> bool:
+        """这一块里有没有原图字符。没有就不去问图片区域，普通正文不跑图片的代码。"""
+        it = block.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            if frag.isValid() and cls._is_photo_format(frag.charFormat()):
+                return True
+            it += 1
+        return False
 
     def _in_msg_band(self, pos: QtCore.QPoint) -> bool:
         """鼠标是否还在这条消息末尾那一带（最后一行 + 下面留给按钮的那一格）。"""
@@ -5496,7 +5579,7 @@ class ChatPanel(QtWidgets.QWidget):
         rect.translate(-self.view.horizontalScrollBar().value(), -self.view.verticalScrollBar().value())
         return rect
 
-    def _show_hover_copy(self, text: str, tooltip: str, first, last) -> None:
+    def _show_hover_copy(self, text: str, tooltip: str, first, last, edge: bool = False) -> None:
         """复制按钮：点完写剪贴板、换 ✓、1.5 秒还原。"""
         if self._hover_copy is None:
             self._hover_copy = HoverActionButton(
@@ -5512,7 +5595,7 @@ class ChatPanel(QtWidgets.QWidget):
             lambda value=text: self._copy_to_clipboard(value),
             tool_tr("common.copied"),
         )
-        self._place_hover(self._hover_copy, first, last)
+        self._place_hover(self._hover_copy, first, last, edge=edge)
 
     def _show_hover_expand(self, key: int, first, last) -> None:
         """放大按钮：只开预览窗，不换 ✓（那不是一次复制）。放在复制按钮左边。"""
@@ -5529,7 +5612,8 @@ class ChatPanel(QtWidgets.QWidget):
             DIFF_PREVIEW_LABEL,
             lambda target=key: self._open_diff_preview(target),
         )
-        self._place_hover(self._hover_expand, first, last, offset_x=-(HoverActionButton.BUTTON_PX + 2))
+        self._place_hover(self._hover_expand, first, last,
+                          offset_x=-(HoverActionButton.BUTTON_PX + 2), edge=True)
 
     # ---- 消息级动作：复制整段 / 引用 / 编辑重发 / 重新生成 ----
 
@@ -5553,12 +5637,13 @@ class ChatPanel(QtWidgets.QWidget):
             head_format.setTopMargin(HoverActionButton.BUTTON_PX + 10)
             QtGui.QTextCursor(block).setBlockFormat(head_format)
         if role == "user":
-            # 你说的话靠右：和她那段左起正文分列两边，一眼分得清谁在说
+            # 你说的话和她在同一列左起：靠气泡和字号分出谁在说，不靠左右分栏
             user_format = block.blockFormat()
-            user_format.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
-            user_format.setLeftMargin(96)
-            user_format.setRightMargin(6)
-            user_format.setBottomMargin(6)
+            user_format.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+            user_format.setLeftMargin(ChatView.BUBBLE_PAD_X)
+            user_format.setRightMargin(ChatView.BUBBLE_PAD_X)
+            # 下边距留够：气泡往下画 8px，下面那行（「思考中」之类）还要再让 8px 才不贴脸
+            user_format.setBottomMargin(ChatView.BUBBLE_PAD_Y + 10)
             # topMargin 留着不动：上一条是回答时，这块里已经有 34px 的按钮位，盖掉按钮就压字上了
             QtGui.QTextCursor(block).setBlockFormat(user_format)
         self._msgs.append(msg)
@@ -5731,21 +5816,28 @@ class ChatPanel(QtWidgets.QWidget):
         buttons = self._msg_buttons[: len(specs)]
         if len(buttons) < len(specs):  # _ensure_msg_buttons() 刚建过，这里只是让类型检查看得见
             return
-        # 用户那条贴右边 → 从右往左排；回答挂在左下 → 从左往右排，顺序不能反
+        # 按钮簇：你说的那条摆进气泡右下角（垫一层气泡色把字尾盖住）；
+        # 她的回答另起一行贴右侧。都右对齐、从右往左排。
         step = HoverActionButton.BUTTON_PX + 12
-        order = list(enumerate(specs))
-        if inline:
-            order.reverse()
-        for index, (slot_index, (icon, tip, slot, usable)) in enumerate(order):
-            button = buttons[slot_index]
+        bubble = self.view.bubble_rect(head) if inline else None
+        for index, (icon, tip, slot, usable) in enumerate(specs):
+            button = buttons[index]
             button.retarget(icon, tip, lambda m=msg, s=slot: s(m))
             button.set_enabled(usable)
+            button.set_backdrop(bubble is not None)
+            if bubble is not None:
+                button.place_at(bubble.toRect(), offset_x=-index * step, bottom_align=True)
+                button.show()
+                button.raise_()
+                continue
             self._place_hover(
-                button, tail, tail, offset_x=(-index * step) if inline else (index * step),
-                below=True, anchor_right=inline,
+                button, tail, tail, offset_x=-index * step, below=True, anchor_right=True
             )
 
     def _hide_msg_actions(self) -> None:
+        # 内容重铺、历史变动时都会从这里收掉悬停条：区域记忆一并作废，
+        # 否则鼠标还停在同一条消息里，再动也不会重新亮出来
+        self._zone = None
         self._msg_band = None
         self._msg_shown = None
         for button in self._msg_buttons:
@@ -5938,11 +6030,19 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _place_hover(self, button: HoverActionButton, first, last, offset_x: int = 0,
                      below: bool = False, bottom_align: bool = False,
-                     anchor_right: bool = False) -> None:
+                     anchor_right: bool = False, edge: bool = False) -> None:
         rect = self._block_rect(first, last)
         if rect.height() <= 0:
             button.hide()
             return
+        # 按钮不压滚动条：右边界一律收到可用宽度以内
+        bar = self.view.verticalScrollBar()
+        usable = self.view.viewport().width() - (bar.width() if bar.isVisible() else 0)
+        if edge:
+            # 代码块、工具输出的底色整行铺满：贴内容的右边界，不是字的末尾
+            rect.setRight(usable)
+        else:
+            rect.setRight(min(rect.right(), usable))
         button.place_at(rect, offset_x=offset_x, below=below, bottom_align=bottom_align,
                         anchor_right=anchor_right)
         button.show()
