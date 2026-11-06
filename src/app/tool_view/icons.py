@@ -85,6 +85,7 @@ UI_PATHS: dict[str, str | tuple[str, str, str]] = {
         '<line x1="12" x2="12" y1="15" y2="3" />'
     ),
     "arrow-down": '<line x1="12" y1="5" x2="12" y2="19" /><polyline points="19 12 12 19 5 12" />',
+    "arrow-up": '<line x1="12" y1="19" x2="12" y2="5" /><polyline points="5 12 12 5 19 12" />',
     # 消息悬停条上的动作（对齐桌面端）：用户气泡那颗是回转箭头（restore/discard），
     # 回答末尾那颗是刷新（RefreshCw）——两种角色各一颗，没有第二套。
     # 桌面端这颗用的是 codicon 的 discard：16 格、实心、一条回转的箭头——

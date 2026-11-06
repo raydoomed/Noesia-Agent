@@ -27,6 +27,21 @@ logger = logging.getLogger(__name__)
 
 _CRASH_LOGGING_INSTALLED = False  # 崩溃记录只装一次（重复装会把每条日志写两遍）
 
+# 主窗口这层没有别的地方 setStyleSheet，菜单得自己带一套：不然托盘/右键弹出来是系统浅色块
+_MENU_QSS = """
+QMenu {
+    background-color: #241f2e;
+    border: 1px solid rgba(255, 255, 255, 30);
+    border-radius: 10px;
+    padding: 6px;
+    color: #ece6ef;
+    font-size: 12px;
+}
+QMenu::item { padding: 7px 26px 7px 12px; border-radius: 6px; }
+QMenu::item:selected { background-color: rgba(240, 178, 210, 52); color: #ffffff; }
+QMenu::separator { height: 1px; background: rgba(255, 255, 255, 20); margin: 5px 10px; }
+"""
+
 def say(message: str) -> None:
     """启动期的一句话，写进日志，控制台在时也照旧打印。
 
@@ -416,6 +431,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         tray.setToolTip("Noesia Agent：左键显示/隐藏，右键菜单退出")
 
         menu = QtWidgets.QMenu()
+        menu.setStyleSheet(_MENU_QSS)
         self._toggle_action = menu.addAction("隐藏")
         self._toggle_action.triggered.connect(self.toggle_visible)
         menu.addAction("退出 Noesia Agent", QtWidgets.QApplication.quit)
@@ -449,6 +465,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     def build_menu(self) -> QtWidgets.QMenu:
         """右键菜单（单独成方法，便于测试而不真的弹窗）。"""
         menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet(_MENU_QSS)
         menu.addAction("聊天", self.open_chat)
         menu.addAction("隐藏" if self.isVisible() else "显示", self.toggle_visible)
         menu.addAction("恢复默认大小", self.reset_size)

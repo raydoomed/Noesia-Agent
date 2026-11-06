@@ -30,22 +30,25 @@ _FRIENDLY = {
 }
 
 _CARD_STYLE = """
-#card { background: #23273a; border: 1px solid rgba(255,255,255,40); border-radius: 14px; }
-#title { color: #f2f4fb; font-size: 15px; font-weight: 600; }
-#desc { color: #cfd6e6; font-size: 13px; }
+#card { background: rgba(25, 21, 32, 252); border: 1px solid rgba(255,255,255,26); border-radius: 14px; }
+#title { color: #f4eaf1; font-size: 15px; font-weight: 600; }
+#desc { color: rgba(246,223,234,110); font-size: 13px; }
 #cmd {
-    color: #9fb3c8; font-size: 12px; background: rgba(0,0,0,60);
-    border: 1px solid rgba(255,255,255,25); border-radius: 8px; padding: 8px;
+    color: rgba(232,225,236,200); font-size: 12px; background: rgba(0,0,0,110);
+    border: 1px solid rgba(255,255,255,20); border-radius: 8px; padding: 8px;
 }
 QPushButton {
-    color: #e9ecf4; background: rgba(255,255,255,20); border: 1px solid rgba(255,255,255,30);
+    color: rgba(246,223,234,180); background: rgba(255,255,255,16); border: 1px solid rgba(255,255,255,26);
     border-radius: 8px; padding: 7px 14px; font-size: 13px;
 }
-QPushButton:hover { background: rgba(255,255,255,34); }
-QPushButton#primary { background: #3d6f5b; border-color: #4f8a71; }
-QPushButton#primary:hover { background: #4a8369; }
-QPushButton#deny { background: #5a3340; border-color: #7d465a; }
-QPushButton#deny:hover { background: #6d3d4d; }
+QPushButton:hover { background: rgba(255,255,255,30); }
+QPushButton#primary {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f7b6d2, stop:1 #c37ba6);
+    border-color: transparent; color: #2b1520; font-weight: 600;
+}
+QPushButton#primary:hover { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffc9de, stop:1 #d18db5); }
+QPushButton#deny { background: rgba(255,107,107,14); border-color: rgba(255,107,107,50); color: #ff9a9a; }
+QPushButton#deny:hover { background: rgba(255,107,107,34); }
 """
 
 

@@ -208,6 +208,8 @@ def _plain_block_format() -> QtGui.QTextBlockFormat:
     """普通段落：只留 5px 上间距，不带上一段的底色/缩进（代码块的底色否则会渗下来）。"""
     block_format = QtGui.QTextBlockFormat()
     block_format.setTopMargin(5)
+    # 行距放宽到 1.9：她的正文 15px，按默认行距一行挨一行读着累
+    block_format.setLineHeight(165, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
     return block_format
 
 
@@ -344,13 +346,14 @@ SNAP_DISTANCE = 24  # 拖到离她下缘这么近就自动吸过去
 
 STYLE = """
 #frame {
-    background-color: rgba(22, 22, 28, 235);
-    border: 1px solid rgba(255, 255, 255, 30);
-    border-radius: 14px;
+    background-color: rgba(25, 21, 32, 242);
+    border: 1px solid rgba(255, 255, 255, 22);
+    border-radius: 16px;
 }
-#title { color: #ffd7e6; font-size: 14px; font-weight: 600; }
-#hint  { color: rgba(255, 255, 255, 110); font-size: 11px; }
-#state { color: #9ad0ff; font-size: 11px; }
+#title { color: #f6dfea; font-size: 13px; font-weight: 600; letter-spacing: 0.6px; }
+#hint  { color: rgba(255, 255, 255, 90); font-size: 10.5px; }
+#state { color: rgba(240, 178, 210, 200); font-size: 11px; }
+#dot { color: #7fe0ac; font-size: 9px; }
 /* 输入框上方那一叠状态（引擎提示 / 后台进程 / 正在调用）：一行一个，暗底小字 */
 #statusrow {
     background-color: rgba(255, 255, 255, 12);
@@ -359,7 +362,7 @@ STYLE = """
 }
 #statusnote { color: #cfd6e4; font-size: 11px; }
 #statuswarn { color: #ffd166; font-size: 11px; }
-#statusbusy { color: #9ad0ff; font-size: 11px; }
+#statusbusy { color: rgba(240, 178, 210, 210); font-size: 11px; }
 #statusdone { color: #8fd8a8; font-size: 11px; }
 #statusfailed { color: #ff6b6b; font-size: 11px; }  /* 真报错用他定的红；设置页 FAIL_STYLE 也是这个值 */
 /* 后台任务那张卡的标题：默认字色太暗（在深色底上几乎看不见），提亮 + 拉开一点间距 */
@@ -397,33 +400,34 @@ STYLE = """
     padding: 2px 6px;
     text-align: left;
 }
-#model:hover { border: 1px solid rgba(154, 208, 255, 140); }
+#model:hover { border: 1px solid rgba(240, 178, 210, 120); }
 #model:disabled { color: rgba(255, 255, 255, 90); }
-#modelmenu {
-    background-color: #1b1b22;
-    border: 1px solid rgba(255, 255, 255, 40);
-    color: #e8e8ef;
+QMenu {
+    background-color: #241f2e;
+    border: 1px solid rgba(255, 255, 255, 30);
+    border-radius: 10px;
+    padding: 6px;
+    color: #ece6ef;
     font-size: 12px;
 }
-#modelmenu::item { padding: 4px 22px 4px 10px; }
-#modelmenu::item:selected { background-color: rgba(154, 208, 255, 60); }
-#modelmenu::item:disabled { color: #6b6b76; }
-/* 菜单项的颜色也得写在 ::item 上，写在 QMenu 上会盖掉 setForeground 的灰 */
-#modelmenu QMenu::item { color: #e8e8ef; }
-#modelmenu QMenu::item:disabled { color: #6b6b76; }
+QMenu::item { padding: 7px 26px 7px 12px; border-radius: 6px; }
+QMenu::item:selected { background-color: rgba(240, 178, 210, 52); color: #ffffff; }
+QMenu::item:disabled { color: #6b6b76; }
+QMenu::separator { height: 1px; background: rgba(255, 255, 255, 20); margin: 5px 10px; }
+QMenu::indicator { width: 14px; height: 14px; }
 #view {
     background: transparent;
     border: none;
-    color: #e8e8ef;
-    font-size: 13px;
+    color: #ece6ef;
+    font-size: 15px;
 }
 /* 输入框外壳：审批/思考两个图标在框里面，窗口拉窄也不会把输入框挤没 */
 #inputbox {
-    background-color: rgba(255, 255, 255, 18);
-    border: 1px solid rgba(255, 255, 255, 40);
-    border-radius: 8px;
+    background-color: rgba(255, 255, 255, 22);
+    border: 1px solid rgba(255, 255, 255, 38);
+    border-radius: 17px;
 }
-#inputbox[focused="true"] { border: 1px solid rgba(154, 208, 255, 160); }
+#inputbox[focused="true"] { border: 1px solid rgba(240, 178, 210, 150); }
 /* 语音模式：整条输入区就是这一颗球，不要框、不要底——有框就像「球被装在一个盒子里」 */
 #inputbox[voice="true"] {
     background-color: transparent;
@@ -464,25 +468,29 @@ STYLE = """
 #input QScrollBar::add-page:vertical,
 #input QScrollBar::sub-page:vertical { background: transparent; }
 #send {
-    background-color: rgba(154, 208, 255, 60);
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f7b6d2, stop:1 #c37ba6);
     border: none;
-    border-radius: 8px;
-    color: #ffffff;
-    padding: 7px 14px;
-    font-size: 13px;
+    border-radius: 16px;
+    padding: 0px;
+    color: #2b1520;
+    font-size: 11px;
+    font-weight: 600;
+    min-width: 32px;
+    max-height: 32px;
+    min-height: 32px;
 }
-#send:hover { background-color: rgba(154, 208, 255, 110); }
+#send:hover { background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffc9de, stop:1 #d18db5); }
 /* 念出来那条进度：浅蓝细条，和输入框一个调子；没人念的时候整条藏起来不占地方 */
 #speechbar {
-    background: rgba(154, 208, 255, 22);
-    border: 1px solid rgba(154, 208, 255, 60);
-    border-radius: 8px;
+    background: rgba(240, 178, 210, 16);
+    border: 1px solid rgba(240, 178, 210, 44);
+    border-radius: 9px;
 }
-#speechtitle { color: #cfe6ff; font-size: 12px; }
-#speechclock { color: rgba(207, 230, 255, 150); font-size: 11px; }
-#speechprogress { background: rgba(255, 255, 255, 25); border: none; border-radius: 2px; }
-#speechprogress::chunk { background: rgba(154, 208, 255, 200); border-radius: 2px; }
-#speechbar QToolButton { color: rgba(207, 230, 255, 200); font-size: 11px; }
+#speechtitle { color: #f0dde8; font-size: 12px; }
+#speechclock { color: rgba(240, 221, 232, 140); font-size: 11px; }
+#speechprogress { background: rgba(255, 255, 255, 22); border: none; border-radius: 2px; }
+#speechprogress::chunk { background: rgba(247, 182, 210, 210); border-radius: 2px; }
+#speechbar QToolButton { color: rgba(240, 221, 232, 190); font-size: 11px; }
 /* 输入框里的图标键：审批盾牌 / 思考火花，低调，别跟「发送」抢眼 */
 #icon {
     background: transparent;
@@ -490,7 +498,8 @@ STYLE = """
     border-radius: 5px;
     padding: 0px;
 }
-#icon:hover { background-color: rgba(154, 208, 255, 60); }
+#icon:hover { background-color: rgba(240, 178, 210, 40); border-radius: 7px; }
+#icon:checked { background-color: rgba(240, 178, 210, 66); border-radius: 7px; }
 #icon::menu-indicator { image: none; }
 #mini {
     background-color: rgba(255, 255, 255, 14);
@@ -500,7 +509,7 @@ STYLE = """
     font-size: 11px;
     padding: 2px 8px;
 }
-#mini:hover { border: 1px solid rgba(154, 208, 255, 140); color: #ffffff; }
+#mini:hover { border: 1px solid rgba(240, 178, 210, 120); color: #ffffff; }
 """
 
 
@@ -1384,9 +1393,13 @@ class ChatPanel(QtWidgets.QWidget):
         title.setObjectName("title")
         state = QtWidgets.QLabel("", frame)
         state.setObjectName("state")
-        hint = QtWidgets.QLabel("Enter 发送 · Esc 收起", frame)
-        hint.setObjectName("hint")
+        dot = QtWidgets.QLabel("●", frame)
+        dot.setObjectName("dot")
+        dot.setToolTip("在线")
+        hint_label = QtWidgets.QLabel("Enter 发送 · Esc 收起", frame)
+        hint_label.setObjectName("hint")
         header.addWidget(title)
+        header.addWidget(dot)
         header.addWidget(state)
         header.addStretch(1)
         new_session = QtWidgets.QPushButton("新会话", frame)
@@ -1394,39 +1407,30 @@ class ChatPanel(QtWidgets.QWidget):
         new_session.setToolTip("开一段新对话：换回历史里不带的干净上下文（改了人设、SOUL.md 之后用它生效）")
         new_session.setCursor(QtCore.Qt.PointingHandCursor)
         new_session.clicked.connect(self.new_session_requested.emit)
-        header.addWidget(new_session)
-        header.addWidget(hint)
         layout.addLayout(header)
         self._state_label = state
 
-        # 模型切换：这里必须是「能点、能选」的真控件，不能只是一行状态文字
-        model_row = QtWidgets.QHBoxLayout()
-        model_row.setContentsMargins(0, 0, 0, 0)
-        model_row.setSpacing(6)
-        model_caption = QtWidgets.QLabel("模型", frame)
-        model_caption.setObjectName("modelrow")
-        model_row.addWidget(model_caption)
-
+        # 模型切换：并进顶栏一行（名字 · 在 ······ 模型胶囊 · 设置），不再单独占一行
         combo = QtWidgets.QToolButton(frame)
         combo.setObjectName("model")
         combo.setToolTip("点开按供应商分组选模型（右键头像 → 模型 也能选）；「设置」里填密钥")
         combo.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         combo.setCursor(QtCore.Qt.PointingHandCursor)
         combo.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-        combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
+        combo.setText("模型")  # 引擎还没回报清单时的占位，有值后会被覆盖；空着就是个没字的方块
+        combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed)
         menu = QtWidgets.QMenu(combo)
         menu.setObjectName("modelmenu")
         menu.setToolTipsVisible(True)
         menu.setStyleSheet(STYLE)
         combo.setMenu(menu)
-        model_row.addWidget(combo, 1)
+        header.addWidget(combo)
         set_model = QtWidgets.QPushButton("设置", frame)
         set_model.setObjectName("mini")
         set_model.setToolTip("选模型；没有可用的就告诉你密钥该放在哪个文件")
         set_model.setCursor(QtCore.Qt.PointingHandCursor)
         set_model.clicked.connect(self.model_settings_requested.emit)
-        model_row.addWidget(set_model)
-        layout.addLayout(model_row)
+        header.addWidget(set_model)
         self._model_button = combo
         self._model_menu = menu
         self._models: list[dict] = []
@@ -1719,7 +1723,17 @@ class ChatPanel(QtWidgets.QWidget):
         box_row.addWidget(self._mic_button)
         self._init_voice_input()
 
-        self._send_button = send = QtWidgets.QPushButton("发送", frame)
+        self._send_button = send = QtWidgets.QPushButton(frame)
+        send.setFixedSize(32, 32)
+        send.setIconSize(QtCore.QSize(15, 15))
+        send.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        send.setFlat(True)
+        # 粉紫钮下面一层柔光：设计稿里的 box-shadow，Qt 只能靠图形效果给
+        glow = QtWidgets.QGraphicsDropShadowEffect(send)
+        glow.setBlurRadius(11)
+        glow.setColor(QtGui.QColor(196, 110, 158, 97))
+        glow.setOffset(0, 3)
+        send.setGraphicsEffect(glow)
         send.setObjectName("send")
         send.setCursor(QtCore.Qt.PointingHandCursor)
         # 待发送附件：一条缩略图/文件名，空着就整条隐藏，不占高度
@@ -1750,6 +1764,15 @@ class ChatPanel(QtWidgets.QWidget):
         row.addWidget(send)
         layout.addLayout(row)
 
+        # 最底一行：快捷键提示在左，新会话在右。原来这两样占着顶栏，把模型挤没地方放
+        meta_row = QtWidgets.QHBoxLayout()
+        meta_row.setContentsMargins(4, 5, 4, 0)
+        meta_row.setSpacing(6)
+        meta_row.addWidget(hint_label)
+        meta_row.addStretch(1)
+        meta_row.addWidget(new_session)
+        layout.addLayout(meta_row)
+
         send.clicked.connect(self._emit)
         # 回车发送放 eventFilter 里判：多行控件没有 returnPressed，还要区分 Shift+回车和输入法组字
 
@@ -1757,7 +1780,53 @@ class ChatPanel(QtWidgets.QWidget):
         self._frame = frame
         frame.setMouseTracking(True)
         frame.installEventFilter(self)
+        self._init_background(frame)
         self._restore_geometry()
+
+    def _init_background(self, frame) -> None:
+        """右下角一张她的立绘当底纹：压在所有内容下面，淡到只当作画面。
+
+        路径必须走 `repo_root()`：`project_root()` 在 `NOESIA_HOME` 指到
+        `data/NoesiaHome` 时会跟着指过去，那儿没有 assets。
+        """
+        from paths import repo_root
+
+        self._bg_pixmap = QtGui.QPixmap(
+            str(repo_root() / "assets" / "transparent" / "noesia_background.png")
+        )
+        if self._bg_pixmap.isNull():
+            logger.warning("背景图读不到：%s", repo_root() / "assets" / "transparent" / "noesia_background.png")
+            return
+        self._bg = QtWidgets.QLabel(frame)
+        self._bg.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._bg.setStyleSheet("background: transparent;")
+        fade = QtWidgets.QGraphicsOpacityEffect(self._bg)
+        fade.setOpacity(0.34)
+        self._bg.setGraphicsEffect(fade)
+        self._bg.lower()
+        self._place_background()
+
+    def _place_background(self) -> None:
+        """按原图比例缩放贴右下：先定高，宽度跟着比例走；宽过面板就反过来以宽为准。"""
+        if getattr(self, "_bg", None) is None or self._bg_pixmap.isNull():
+            return
+        frame = self._bg.parentWidget()
+        if frame is None or frame.width() <= 0 or frame.height() <= 0:
+            return
+        height = int(frame.height() * 0.52)
+        width = int(height * self._bg_pixmap.width() / self._bg_pixmap.height())
+        limit = int(frame.width() * 0.72)
+        if width > limit:
+            width = limit
+            height = int(width * self._bg_pixmap.height() / self._bg_pixmap.width())
+        scaled = self._bg_pixmap.scaled(
+            width, height,
+            QtCore.Qt.AspectRatioMode.KeepAspectRatio,
+            QtCore.Qt.TransformationMode.SmoothTransformation,
+        )
+        self._bg.setPixmap(scaled)
+        self._bg.resize(scaled.size())
+        self._bg.move(frame.width() - scaled.width(), frame.height() - scaled.height())
 
     # ---- 对外接口 ----
 
@@ -2003,8 +2072,8 @@ class ChatPanel(QtWidgets.QWidget):
         items = [*refs, *attachments]
         start = self.view.document().characterCount() - 1  # 插入前的文末位置：这条消息从这儿开始
         self._insert_html(
-            f"<span style='color:#9ad0ff;'><b>{html.escape(_user_display_name())}</b></span>"
-            f"<br>{html.escape(message)}"
+            f"<span style='color:#c9a6e0;font-size:11px;'><b>{html.escape(_user_display_name())}</b></span>"
+            f"<br><span style='color:rgba(214,198,222,168);font-size:12.5px;'>{html.escape(message)}</span>"
         )
         self._begin_message("user", start, message, row_id)
         if row_id is None and self._row_stamp_pending is not None:
@@ -2039,7 +2108,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._end_reasoning_group()  # 思考在前、回答在后：先把那段思考收成「思考了 3s」
         self._flush_md()
         start = self.view.document().characterCount() - 1
-        self._insert_html("<span style='color:#ffd7e6;'><b>Noesia</b></span><br>")
+        self._insert_html("<span style='color:#d9b8cd;font-size:11px;'><b>Noesia</b></span><br>")
         self._begin_message("assistant", start, "", None)
         self._streaming = True
         self._bubble_has_text = False
@@ -4205,11 +4274,20 @@ class ChatPanel(QtWidgets.QWidget):
         if not hasattr(self, "_send_button"):
             return  # 按钮还没建（__init__ 里文本框先连接）：等 set_busy 时再来一次
         label = self._send_label()
-        self._send_button.setText(label)
+        if label == "排队":
+            # 排队时按钮上就写「排队」：只换个图标看不出来点下去是排队还是发送
+            self._send_button.setIcon(QtGui.QIcon())
+            self._send_button.setText("排队")
+            self._send_button.setFixedWidth(52)
+        else:
+            icon = icon_pixmap("stop" if label == "停止" else "arrow-up", "#2b1520", 15)
+            self._send_button.setIcon(QtGui.QIcon(icon) if icon is not None else QtGui.QIcon())
+            self._send_button.setText("")
+            self._send_button.setFixedWidth(32)
         self._send_button.setToolTip(
             "这一轮还在跑：点了先排队，它跑完接着发" if label == "排队"
             else "叫住这一轮（已进行的对话仍留在上下文里）" if label == "停止"
-            else ""
+            else "发送"
         )
 
     # ---- 排队：这一轮还在跑时你说的话，先排着，轮次完了自动发 ----
@@ -5185,14 +5263,15 @@ class ChatPanel(QtWidgets.QWidget):
         return QtCore.QPoint(x, y)
 
     def _sync_popup_width(self) -> None:
-        """菜单跟着面板变宽：模型名长的时候（`mimo-v2.6-pro-ultraspeed`）别被截成「…」。"""
+        """菜单宽按自己最长那一行算：Qt 本来就是内容多宽、菜单多宽，这里只让它重算一次。"""
         if hasattr(self, "_model_menu"):
-            self._model_menu.setMinimumWidth(max(240, self.width() - 60))
+            self._model_menu.adjustSize()
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
         if hasattr(self, "_model_menu"):
             self._sync_popup_width()
+        self._place_background()
         self._place_jump()  # 窗口一变，贴底的胶囊跟着重新贴底
         self._replace_msg_actions()  # 正文重排后，悬停条也得跟着落回它那一行
 
@@ -5468,11 +5547,20 @@ class ChatPanel(QtWidgets.QWidget):
         msg = {"role": role, "text": text, "row_id": row_id}
         msg["mark"] = _MsgMark(msg)
         block.setUserData(msg["mark"])
-        # 只有回答那条的按钮挂在末尾下方，需要在它后面留出一格；用户那条是并排的，一格都不用留
-        if self._msgs and self._msgs[-1]["role"] == "assistant":
+        # 两条消息的按钮都挂在末尾下方，所以每条后面都留出一格
+        if self._msgs:
             head_format = block.blockFormat()
             head_format.setTopMargin(HoverActionButton.BUTTON_PX + 10)
             QtGui.QTextCursor(block).setBlockFormat(head_format)
+        if role == "user":
+            # 你说的话靠右：和她那段左起正文分列两边，一眼分得清谁在说
+            user_format = block.blockFormat()
+            user_format.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+            user_format.setLeftMargin(96)
+            user_format.setRightMargin(6)
+            user_format.setBottomMargin(6)
+            # topMargin 留着不动：上一条是回答时，这块里已经有 34px 的按钮位，盖掉按钮就压字上了
+            QtGui.QTextCursor(block).setBlockFormat(user_format)
         self._msgs.append(msg)
         if role == "assistant":
             self._stream_msg = msg
@@ -5638,19 +5726,23 @@ class ChatPanel(QtWidgets.QWidget):
             self._hide_msg_actions()
             return
         inline = msg.get("role") == "user"
-        band_height = tail_rect.height() + (0 if inline else HoverActionButton.BUTTON_PX + 10)
+        band_height = tail_rect.height() + HoverActionButton.BUTTON_PX + 10
         self._msg_band = QtCore.QRect(0, tail_rect.top(), self.view.viewport().width(), band_height)
         buttons = self._msg_buttons[: len(specs)]
         if len(buttons) < len(specs):  # _ensure_msg_buttons() 刚建过，这里只是让类型检查看得见
             return
-        # 从右往左排：最后一个动作贴右边，前面的依次往左让一格
-        for index, (icon, tip, slot, usable) in enumerate(reversed(specs)):
-            button = buttons[len(specs) - 1 - index]
+        # 用户那条贴右边 → 从右往左排；回答挂在左下 → 从左往右排，顺序不能反
+        step = HoverActionButton.BUTTON_PX + 12
+        order = list(enumerate(specs))
+        if inline:
+            order.reverse()
+        for index, (slot_index, (icon, tip, slot, usable)) in enumerate(order):
+            button = buttons[slot_index]
             button.retarget(icon, tip, lambda m=msg, s=slot: s(m))
             button.set_enabled(usable)
             self._place_hover(
-                button, tail, tail, offset_x=-index * (HoverActionButton.BUTTON_PX + 4),
-                below=not inline, bottom_align=inline,
+                button, tail, tail, offset_x=(-index * step) if inline else (index * step),
+                below=True, anchor_right=inline,
             )
 
     def _hide_msg_actions(self) -> None:
@@ -5845,12 +5937,14 @@ class ChatPanel(QtWidgets.QWidget):
         return len(self._queued)
 
     def _place_hover(self, button: HoverActionButton, first, last, offset_x: int = 0,
-                     below: bool = False, bottom_align: bool = False) -> None:
+                     below: bool = False, bottom_align: bool = False,
+                     anchor_right: bool = False) -> None:
         rect = self._block_rect(first, last)
         if rect.height() <= 0:
             button.hide()
             return
-        button.place_at(rect, offset_x=offset_x, below=below, bottom_align=bottom_align)
+        button.place_at(rect, offset_x=offset_x, below=below, bottom_align=bottom_align,
+                        anchor_right=anchor_right)
         button.show()
         button.raise_()
 

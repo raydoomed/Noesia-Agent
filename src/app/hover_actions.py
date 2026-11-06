@@ -53,10 +53,11 @@ class HoverActionButton(QtWidgets.QToolButton):
 
     BUTTON_PX = 20
     ICON_PX = 12
-    IDLE_COLOR = "#e8edf5"
+    # 平时几乎退进背景（40% 灰），鼠标停上去才提亮——设计上不要底色、不要边框，
+    # 一排图标藏在正文最后一行下面，不跟内容抢注意力
+    IDLE_COLOR = "#8b8492"
+    HOVER_COLOR = "#f6dfea"
     DONE_COLOR = "#98c379"
-    # 按钮底下垫一层半透明深色：窗口背景是人物视频/壁纸，亮的地方纯白图标会整片糊掉
-    PLATE = "rgba(14, 16, 22, 0.55)"
 
     def __init__(
         self,
@@ -83,8 +84,7 @@ class HoverActionButton(QtWidgets.QToolButton):
         self.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setStyleSheet(
-            f"QToolButton {{ border: none; border-radius: 6px; background: {self.PLATE}; padding: 0; }}"
-            "QToolButton:hover { background: rgba(255, 255, 255, 0.28); }"
+            "QToolButton { border: none; background: transparent; padding: 0; }"
         )
         self.retarget(icon_name, tooltip, slot, done_tooltip)
         self.clicked.connect(self._clicked)
@@ -121,11 +121,11 @@ class HoverActionButton(QtWidgets.QToolButton):
         )
 
     def place_at(self, rect: QtCore.QRect, offset_x: int = 0, below: bool = False,
-                 bottom_align: bool = False) -> None:
+                 bottom_align: bool = False, anchor_right: bool = False) -> None:
         """贴在这块内容的右上角；`offset_x` 往左让位。
 
-        `below` 挂到这一块下沿外（另起一行，给回答用）；`bottom_align` 贴着这一块最后
-        一行并排（给用户那条用：它自己的话右边就是空的）。
+        `below` 挂到这一块下沿外（另起一行）；`anchor_right` 让这条另起的行贴右边
+        （用户那条用），不给就贴左边起（回答用）。
         """
         parent = self.parentWidget()
         if parent is None:
@@ -133,6 +133,9 @@ class HoverActionButton(QtWidgets.QToolButton):
         right = rect.right() - self.BUTTON_PX - 6 + offset_x
         x = max(0, min(right, parent.width() - self.BUTTON_PX))
         if below:
+            # 挂在块下沿：回答贴左起，像那句话自己的注脚；用户那条贴右边，和自己的话一列
+            x = (max(0, parent.width() - self.BUTTON_PX - 6 + offset_x) if anchor_right
+                 else max(0, rect.left() + 2 + offset_x))
             y = min(rect.bottom() + 6, parent.height() - self.BUTTON_PX - 4)
         elif bottom_align:
             y = max(rect.top(), rect.bottom() - self.BUTTON_PX - 2)
@@ -141,12 +144,22 @@ class HoverActionButton(QtWidgets.QToolButton):
         self.move(x, y)
 
     def enterEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+        self._set_icon(self.HOVER_COLOR)  # 鼠标停上去：图标从 40% 灰提到暖白
         self._show_tip()
         super().enterEvent(event)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+        self._set_icon(self.IDLE_COLOR)
         QtWidgets.QToolTip.hideText()
         super().leaveEvent(event)
+
+    def _set_icon(self, color: str) -> None:
+        """按给定颜色重画图标。刚点过还在显示 ✓ 的那 1.5 秒里不动它。"""
+        if self._flash and self._reset.isActive():
+            return
+        icon = icon_pixmap(self._icon_name, color, self.ICON_PX)
+        if icon is not None:
+            self.setIcon(QtGui.QIcon(icon))
 
     def _show_tip(self) -> None:
         """自己把提示弹出来：Qt 自带的悬停提示在无边框置顶窗里不弹（实测没有）。

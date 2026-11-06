@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6 import QtGui
+from PySide6 import QtCore, QtGui
 
 CARET_OPEN = "▾"
 CARET_CLOSED = "▸"
@@ -37,6 +37,17 @@ class _BodyMark(QtGui.QTextBlockUserData):
         super().__init__()
         self.key = key
         self.uid = uid
+
+
+def _inherit_clean(fmt: QtGui.QTextBlockFormat) -> QtGui.QTextBlockFormat:
+    """新块只继承字号行距，不继承对齐和左右缩进。
+
+    用户那条是右对齐带左缩进的，工具行、思考段跟着借来的格式就会一起跑到右边去。
+    """
+    fmt.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+    fmt.setLeftMargin(0)
+    fmt.setRightMargin(0)
+    return fmt
 
 
 @dataclass
@@ -139,7 +150,7 @@ class Folds:
         cursor = QtGui.QTextCursor(self._doc)
         cursor.setPosition(after.position() + after.length() - 1)  # 码元数：emoji 占两个
         cursor.insertBlock()
-        block_format = cursor.blockFormat()
+        block_format = _inherit_clean(cursor.blockFormat())
         block_format.setTopMargin(0)
         cursor.setBlockFormat(block_format)
         return cursor
@@ -244,7 +255,7 @@ class Folds:
         else:
             cursor.setPosition(after.position() + after.length() - 1)  # 码元数：emoji 占两个
             cursor.insertBlock()
-            block_format = cursor.blockFormat()
+            block_format = _inherit_clean(cursor.blockFormat())
             block_format.setTopMargin(0)
             cursor.setBlockFormat(block_format)
         start = cursor.position()
@@ -366,6 +377,6 @@ class Folds:
     def _start_block(self, cursor: QtGui.QTextCursor, *, margin: int) -> None:
         if not self._doc.isEmpty():
             cursor.insertBlock()
-        block_format = cursor.blockFormat()
+        block_format = _inherit_clean(cursor.blockFormat())
         block_format.setTopMargin(margin)
         cursor.setBlockFormat(block_format)

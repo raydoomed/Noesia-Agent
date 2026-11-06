@@ -159,16 +159,16 @@ STYLE = """
 /* 全透明、无彩：只有不同程度的白和黑，不再出现任何蓝色 */
 QDialog { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; font-size: 12px; color: #eef1f6; }
 #dialog-card {
-    background-color: rgba(18, 18, 22, 236);
-    border: 1px solid rgba(255, 255, 255, 34);
+    background-color: rgba(25, 21, 32, 244);
+    border: 1px solid rgba(255, 255, 255, 28);
     border-radius: 16px;
 }
 #titlebar { background: transparent; }
-#dialog-title { color: #ffffff; font-size: 14px; font-weight: 600; letter-spacing: 0.3px; }
+#dialog-title { color: #f6dfea; font-size: 14px; font-weight: 600; letter-spacing: 0.3px; }
 #dialog-sub { color: rgba(255, 255, 255, 100); font-size: 11px; }
 #dialog-hint { color: rgba(255, 255, 255, 100); font-size: 11px; }
 /* 页内小标题：不靠继承，直接给颜色——浅色主题下 QLabel 会退回系统黑字 */
-#field-label { color: rgba(255, 255, 255, 214); font-size: 11.5px; }
+#field-label { color: rgba(246, 223, 234, 214); font-size: 11.5px; }
 #live { color: rgba(255, 255, 255, 158); font-size: 11.5px; }
 #block-name { color: rgba(255, 255, 255, 246); font-size: 12.5px; font-weight: 600; }
 #closebtn {
@@ -187,19 +187,19 @@ QTabBar QToolButton:hover { background: rgba(255, 255, 255, 20); border-radius: 
 QTabBar { background: transparent; }
 QTabBar::tab {
     background: transparent;
-    border: 1px solid rgba(255, 255, 255, 18);
+    border: 1px solid rgba(240, 178, 210, 26);
     border-radius: 9px;
-    color: rgba(255, 255, 255, 120);
+    color: rgba(240, 214, 225, 135);
     padding: 4px 8px;
     margin-right: 4px;
     margin-bottom: 2px;
     font-size: 11.5px;
 }
-QTabBar::tab:hover { color: #ffffff; border-color: rgba(255, 255, 255, 50); }
+QTabBar::tab:hover { color: #fbe9f2; border-color: rgba(240, 178, 210, 90); }
 QTabBar::tab:selected {
-    background: rgba(255, 255, 255, 24);
-    border: 1px solid rgba(255, 255, 255, 78);
-    color: #ffffff;
+    background: rgba(240, 178, 210, 38);
+    border: 1px solid rgba(240, 178, 210, 118);
+    color: #fbe9f2;
     font-weight: 600;
 }
 QLineEdit, QComboBox, QPlainTextEdit {
@@ -212,8 +212,8 @@ QLineEdit, QComboBox, QPlainTextEdit {
     selection-background-color: rgba(255, 255, 255, 70);
     selection-color: #10121a;
 }
-QLineEdit:hover, QComboBox:hover, QPlainTextEdit:hover { border-color: rgba(255, 255, 255, 62); }
-QLineEdit:focus, QPlainTextEdit:focus { border-color: rgba(255, 255, 255, 130); background-color: rgba(255, 255, 255, 16); }
+QLineEdit:hover, QComboBox:hover, QPlainTextEdit:hover { border-color: rgba(240, 178, 210, 70); }
+QLineEdit:focus, QPlainTextEdit:focus { border-color: rgba(240, 178, 210, 150); background-color: rgba(240, 178, 210, 16); }
 QLineEdit:disabled, QComboBox:disabled { color: rgba(255, 255, 255, 70); border-color: rgba(255, 255, 255, 16); }
 QComboBox::drop-down { border: none; width: 20px; }
 QPlainTextEdit { padding: 6px 10px; }
@@ -224,14 +224,14 @@ QComboBox QAbstractItemView {
     color: #eef1f6;
     padding: 4px;
     outline: none;
-    selection-background-color: rgba(255, 255, 255, 40);
+    selection-background-color: rgba(240, 178, 210, 56);
     selection-color: #ffffff;
 }
 QComboBox QAbstractItemView::item { padding: 4px 8px; border-radius: 5px; }
 /* 每家一块：透明玻璃，只有发丝边；选中的那块白一点点，左边一道竖光 */
 #text-block, #voice-block {
-    background-color: rgba(255, 255, 255, 6);
-    border: 1px solid rgba(255, 255, 255, 20);
+    background-color: rgba(255, 255, 255, 7);
+    border: 1px solid rgba(240, 178, 210, 24);
     border-radius: 12px;
 }
 /* 选择标记是 _SelectDot 自己画的（细环 + 白核 + 一圈柔光），这里只负责文字和留位 */
@@ -239,39 +239,39 @@ QRadioButton {
     background: transparent;
     border: none;
     padding: 1px 2px 1px 17px;
-    color: rgba(255, 255, 255, 105);
+    color: rgba(246, 223, 234, 108);
     font-size: 11.5px;
 }
-QRadioButton:hover { color: rgba(255, 255, 255, 215); }
-QRadioButton:checked { color: #ffffff; font-weight: 600; }
+QRadioButton:hover { color: rgba(246, 223, 234, 215); }
+QRadioButton:checked { color: #fbe9f2; font-weight: 600; }
 QRadioButton::indicator { width: 0; height: 0; border: none; background: transparent; }
 QCheckBox { color: rgba(255, 255, 255, 200); font-size: 12px; spacing: 6px; }
-QCheckBox::indicator { width: 13px; height: 13px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, 70); background: rgba(255, 255, 255, 8); }
+QCheckBox::indicator { width: 13px; height: 13px; border-radius: 4px; border: 1px solid rgba(240, 178, 210, 85); background: rgba(255, 255, 255, 8); }
 QCheckBox::indicator:checked { background: rgba(255, 255, 255, 220); border: 1px solid rgba(255, 255, 255, 220); }
 /* 主按钮是一块压白，次按钮只有一圈发丝边 */
 QPushButton {
-    background-color: rgba(255, 255, 255, 225);
+    background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f7b6d2, stop:1 #c37ba6);
     border: none;
     border-radius: 9px;
-    color: #14161c;
+    color: #2b1520;
     padding: 7px 16px;
     font-size: 12.5px;
     font-weight: 600;
 }
-QPushButton:hover { background-color: #ffffff; }
-QPushButton:pressed { background-color: rgba(255, 255, 255, 180); }
+QPushButton:hover { background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffc9de, stop:1 #d18db5); }
+QPushButton:pressed { background-color: rgba(240, 178, 210, 200); }
 #secondary {
     background-color: transparent;
-    border: 1px solid rgba(255, 255, 255, 34);
-    color: rgba(255, 255, 255, 185);
+    border: 1px solid rgba(240, 178, 210, 42);
+    color: rgba(246, 223, 234, 185);
     font-weight: 400;
 }
-#secondary:hover { background-color: rgba(255, 255, 255, 16); color: #ffffff; border-color: rgba(255, 255, 255, 70); }
+#secondary:hover { background-color: rgba(240, 178, 210, 22); color: #fbe9f2; border-color: rgba(240, 178, 210, 95); }
 /* 页签里的长列表：横向一律不滚，竖向的条细、圆角、白半透明，没有箭头也没有凹槽 */
 #dialog-scroll, #dialog-scroll > QWidget > QWidget { background: transparent; border: none; }
 QScrollBar:vertical { background: transparent; width: 6px; margin: 2px 0 2px 0; border: none; }
-QScrollBar::handle:vertical { background: rgba(255, 255, 255, 60); border-radius: 3px; min-height: 28px; }
-QScrollBar::handle:vertical:hover { background: rgba(255, 255, 255, 120); }
+QScrollBar::handle:vertical { background: rgba(240, 178, 210, 75); border-radius: 3px; min-height: 28px; }
+QScrollBar::handle:vertical:hover { background: rgba(240, 178, 210, 135); }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; border: none; background: none; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
 QScrollBar:horizontal { height: 0; border: none; background: transparent; }
@@ -1335,17 +1335,17 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         block["use"].setChecked(using)
         block["use"].blockSignals(False)
         block["use"].setText("启用" if using else "未启用")
-        # 选中的那块：白一点点、左边一道竖光当「就是它」的标记；其余只有发丝边
+        # 选中的那块：粉紫一点点、左边一道竖光当「就是它」的标记；其余只有发丝边
         if using:
             block["block"].setStyleSheet(
-                "#text-block { border: 1px solid rgba(255,255,255,66);"
-                " border-left: 2px solid rgba(255,255,255,205);"
-                " border-radius: 12px; background-color: rgba(255,255,255,14); }"
+                "#text-block { border: 1px solid rgba(240,178,210,90);"
+                " border-left: 2px solid rgba(240,178,210,215);"
+                " border-radius: 12px; background-color: rgba(240,178,210,20); }"
             )
         else:
             block["block"].setStyleSheet(
-                "#text-block { border: 1px solid rgba(255,255,255,20);"
-                " border-radius: 12px; background-color: rgba(255,255,255,6); }"
+                "#text-block { border: 1px solid rgba(240,178,210,24);"
+                " border-radius: 12px; background-color: rgba(255,255,255,7); }"
             )
         block["note"].setStyleSheet("")
         if block["row"].get("models"):
@@ -1686,14 +1686,14 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         block["use"].setText("启用" if using else "未启用")
         if using:
             block["block"].setStyleSheet(
-                "#voice-block { border: 1px solid rgba(255,255,255,66);"
-                " border-left: 2px solid rgba(255,255,255,205);"
-                " border-radius: 12px; background-color: rgba(255,255,255,14); }"
+                "#voice-block { border: 1px solid rgba(240,178,210,90);"
+                " border-left: 2px solid rgba(240,178,210,215);"
+                " border-radius: 12px; background-color: rgba(240,178,210,20); }"
             )
         else:
             block["block"].setStyleSheet(
-                "#voice-block { border: 1px solid rgba(255,255,255,20);"
-                " border-radius: 12px; background-color: rgba(255,255,255,6); }"
+                "#voice-block { border: 1px solid rgba(240,178,210,24);"
+                " border-radius: 12px; background-color: rgba(255,255,255,7); }"
             )
         typed = block["key"].text().strip() if block.get("key") is not None else ""
         if block.get("error"):
