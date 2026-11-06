@@ -485,6 +485,10 @@ class _AvatarStatus(QtWidgets.QWidget):
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
         self.hide()
 
+    @property
+    def busy(self) -> bool:
+        return self._busy
+
     def set_state(self, text: str, busy: bool = False, ok: bool = True) -> None:
         self._text = text or ""
         self._busy = bool(busy)
@@ -820,6 +824,13 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
+        # 重启后第一次打开：清单要等引擎逐家重探（几秒），这期间一家都还没建出来，
+        # 空着就像坏了——先摆一行转圈，回包到了或者超时了再收。
+        self._keys_busy = _AvatarStatus(page)
+        layout.addWidget(self._keys_busy)
+        self._keys_busy.set_state("正在拉取供应商清单…", busy=True)
+        QtCore.QTimer.singleShot(15000, self._keys_busy_timeout)
+
         tools = QtWidgets.QHBoxLayout()
         tools.setContentsMargins(0, 0, 4, 0)
         tools.setSpacing(6)
@@ -856,6 +867,14 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         rows.addWidget(self._keys_empty)
         rows.addStretch(1)
         self._keys_apply_view()
+
+    def _keys_busy_timeout(self) -> None:
+        """15 秒还没等到清单：别一直转，说清现在用的是本地那份。"""
+        if not self._keys_busy.busy:
+            return
+        self._keys_busy.set_state(
+            "还没取到线上清单：先按本地记录显示，稍后可以重开设置。", busy=False, ok=False
+        )
 
     def _ordered_rows(self) -> list[dict]:
         """已配置的排前面，其余按名字：一屏里先看到跟自己有关的。"""
@@ -966,6 +985,9 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._models_empty.setText(f"拿不到供应商清单：{message or '引擎没回话'}")
         self._models_empty.setStyleSheet("color: #ff8a8a;")  # 红字：dialog-hint 那种灰字看不见
         self._models_empty.show()
+        self._keys_busy.set_state(
+            f"拿不到供应商清单：{message or '引擎没回话'}", busy=False, ok=False
+        )
 
     def _rebuild_models(self) -> None:
         """按现在这份清单重铺「模型设置」：只有配好的家建卡，没配的一家都不列。"""
@@ -1268,6 +1290,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                     block["configured"] = True
                     block["row"]["configured"] = True
             self._keys_apply_view()
+            self._keys_busy.set_state("")   # 清单到了：转圈收起
 
         if hasattr(self, "_text_scroller"):
             self._rebuild_models()
@@ -1992,6 +2015,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
     def _avatar_uploaded_done(self, text: str, ok: bool) -> None:
         self._avatar_status.set_state(text, False, ok)
+        self._avatar_pick_btn.setEnabled(True)
+        self._avatar_reset_btn.setEnabled(True)
         if ok:
             self._refresh_avatar_image()
 
@@ -2041,7 +2066,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                         ok = False
                         reason = f"图片没能落地：{exc}"
                 if not ok:
-                    avatar_prefs.drop_staged()
+                    try:
+                        avatar_prefs.drop_staged()
+                    except OSError:  # noqa: PERF203 - 删不掉待提交那张也不该把回执吞掉
+                        pass
             elif reset and ok:
                 try:
                     avatar_prefs.clear_image()
@@ -2051,6 +2079,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             text = done if ok else (f"{failed}（{reason}）" if reason else failed)
             self.avatar_uploaded.emit(text, ok)
 
+        # 更新期间把两个按钮关掉：这时再选一张，会把待提交的那张换掉，
+        # 前一个线程回来 commit 的就成了新图，配上的却是旧图的云端编号。
+        self._avatar_pick_btn.setEnabled(False)
+        self._avatar_reset_btn.setEnabled(False)
         threading.Thread(target=run, daemon=True, name="avatar-upload").start()
 
     def _reset_avatar_image(self) -> None:
