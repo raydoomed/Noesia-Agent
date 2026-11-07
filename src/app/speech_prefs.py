@@ -24,31 +24,23 @@ from app.doubao_voices import DOUBAO_VOICES as DOUBAO_LIST
 from settings import ConfigError, RESOLVER
 
 PREFS_PATH = "data/settings/speech.json"
-# 凭证读写只有一套：app/env_keys.py（这一行只是给提示语用的展示路径）
 _ENV_SHOWN = "data/NoesiaHome/.env"
 VOICES_URL = "https://api.elevenlabs.io/v1/voices"
-# 朗读地址模板：`{voice_id}` 由用户在「设置 → 语音」里选的音色填进去
 ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
 
 class SpeechError(RuntimeError):
     """语音相关失败（网络 / 额度 / 音色 / 资源），消息直接可以给用户看。"""
 
-# 豆包的接口地址和资源 id 都在 `src/tts_catalog.json`：代码里不写具体值，换资源只改数据文件
 DOUBAO_URL = doubao_voices.url()
-# 采样率跟声卡首选对齐（这台机是 48000）：少一次驱动重采样，播放走原生 48k。
 DOUBAO_SAMPLE_RATE = 48000
 
-# 两个引擎：ElevenLabs 按字符计费、音色可自定义；Edge 是微软的在线朗读，免费、音色固定。
 PROVIDERS = [
     ("elevenlabs", "ElevenLabs（按字符计费）"),
     ("doubao", "豆包语音 2.0（按字数计费）"),
     ("edge", "Edge 在线朗读（免费）"),
 ]
-# 要填 Key 才能用的引擎（Edge 不用 Key）
 KEYED_PROVIDERS = ("elevenlabs", "doubao")
-# 豆包音色是常量（不是账号里的清单）：清单在 app/doubao_voices.py，247 个音色逐个实测能出声，
-# 每条带 lang/gender，界面按语言分类。第一个是默认音色。
 DOUBAO_VOICES: tuple[dict, ...] = DOUBAO_LIST
 EDGE_VOICES = [
     {"id": "zh-CN-XiaoxiaoNeural", "name": "晓晓 · 女 · 温柔"},
@@ -59,28 +51,20 @@ EDGE_VOICES = [
     {"id": "zh-CN-YunxiaNeural", "name": "云夏 · 男 · 少年"},
 ]
 
-# 首次运行写进 speech.json 的完整模板：每个键都显式落地，之后一切以文件为准。
-# ElevenLabs 的音色属于账号：把某个人账号里的音色写进代码，别人装上就念不出来。
-# 所以这里不给默认音色，空着；用户选了 ElevenLabs，就用他自己的 Key 拉他自己账号的清单再挑一个。
 DEFAULT_ELEVENLABS_VOICE = ""
 _TEMPLATE: dict = {
     "enabled": True,
-    "mode": "plain",  # plain=纯语音朗读；interactive=语音互动（数字人实时说话），互斥
-    # 默认 Edge：不要 Key、谁的机器上都能出声。选别家才需要填 Key——语音本来就是可选的
+    "mode": "plain",
     "provider": "edge",
     "voice_id": "",
     "voice_name": "",
     "model_id": "eleven_v3",
-    "output_format": "pcm_16000",  # ElevenLabs 直接给 16k 单声道裸 PCM，落 wav 即可
+    "output_format": "pcm_16000",
     "sample_rate": 16000,
-    "voices": [],  # ElevenLabs 的音色缓存：[{"id": ..., "name": ...}]
-    "voice_history": {},  # 每个引擎各自上次选的音色：{"edge": {"id": ..., "name": ...}, ...}
-    # 每个引擎各自上次用的模型/资源：豆包是资源 id（seed-tts-2.0），ElevenLabs 是档位（eleven_v3）。
-    # 以前三家共用一个 model_id，从豆包切回 ElevenLabs 时把豆包的资源 id 当模型名送出去，
-    # 对不上就退回默认档，用户挑过的档位静默丢了。
+    "voices": [],
+    "voice_history": {},
     "model_history": {},
 }
-# 缺一个都不行：语音设置只有这一份，缺键当场报错，不拿代码默认值顶
 _REQUIRED = (
     "enabled", "mode", "provider", "voice_id", "voice_name", "model_id",
     "output_format", "sample_rate",
@@ -135,9 +119,6 @@ def save(**changes) -> dict:
     changes = dict(changes)
     typed_key = changes.pop("api_key", None)
     provider_now = str(changes.get("provider") or "") or str(load()["provider"] or "edge")
-    # 先验 Key 再动别的：以前是先存音色、后写 Key，Key 里混了中文（复制时带上说明文字）
-    # 就在 clean_api_key 里被清成空串，write_api_key 返回 False 也没人管——
-    # 用户以为存上了，实际第一次合成才发现没 Key。
     if typed_key is not None and str(typed_key).strip() and provider_now in KEYED_PROVIDERS:
         if not clean_api_key(str(typed_key)):
             raise ConfigError(
@@ -145,14 +126,12 @@ def save(**changes) -> dict:
                 "只粘 sk-… 这一串"
             )
     data = load()
-    # 空串不是「改成空」，是「这一项没填」：别让它把已经存好的音色/资源/名字抹掉
     for key in ("model_id", "voice_id", "voice_name"):
         if key in changes and not str(changes[key] or "").strip():
             changes.pop(key)
     if "model_id" in changes and (changes.get("provider") or data.get("provider")) == "doubao":
         known = doubao_voices.resources()
         if str(changes["model_id"]).strip() not in known:
-            # 写错的资源 id 当场拦下，并列出能填的：豆包会回 55000000，用户看不出为什么
             raise ConfigError(
                 f"豆包的资源 id 不认识：{changes['model_id']}；"
                 f"能填的是 {'、'.join(sorted(known))}（换资源时先在控制台开通）"
@@ -160,7 +139,6 @@ def save(**changes) -> dict:
     old_provider = str(data.get("provider") or "edge")
     history = dict(data.get("voice_history") or {})
     if data.get("voice_id"):
-        # 切换**之前**那家选的音色记在它自己名下（记在新引擎名下等于把对方的 id 认成自己的）
         history[old_provider] = {"id": data["voice_id"], "name": data.get("voice_name") or ""}
     data.update({key: value for key, value in changes.items() if key in _TEMPLATE})
     provider = data.get("provider") or "edge"
@@ -168,15 +146,11 @@ def save(**changes) -> dict:
     if "model_id" in changes:
         models[provider] = str(data.get("model_id") or "").strip()
     elif "provider" in changes:
-        # 只换了引擎：不能把上一家的 id 当这一家的用（豆包的资源 id 在 ElevenLabs 上是非法档位，
-        # 界面会静默退回默认档）。用这一家上次用过的，没有才用它自己的默认。
         data["model_id"] = models.get(provider) or (
             doubao_voices.default_resource() if provider == "doubao" else _TEMPLATE["model_id"]
         )
     data["model_history"] = models
     if "provider" in changes and "voice_id" not in changes:
-        # 音色同理：Edge 的 zh-CN-… 送到 ElevenLabs 上是非法 id，合成只会报一句看不懂的错。
-        # 换成这一家自己上次用的；没记过就留空，由 current() 回落这一家的默认音色。
         picked = history.get(provider) or {}
         data["voice_id"] = str(picked.get("id") or "")
         data["voice_name"] = str(picked.get("name") or "")
@@ -226,9 +200,7 @@ def current() -> dict:
     elif provider == "doubao":
         default_voice = DOUBAO_VOICES[0]["id"]
     else:
-        # ElevenLabs 没有「谁都有的默认音色」：留空，等界面用用户自己的 Key 拉他自己的清单
         default_voice = DEFAULT_ELEVENLABS_VOICE
-    # 换引擎时不把对方的音色 id 带过来（Edge 的 zh-CN-…、豆包的 zh_female_… 在 ElevenLabs 上都是非法 id）
     if provider not in ("edge", "doubao") and data["voice_id"] in {
         voice["id"] for voice in list(EDGE_VOICES) + list(DOUBAO_VOICES)
     }:
@@ -239,16 +211,11 @@ def current() -> dict:
         "provider": provider,
         "voice_id": data["voice_id"] or default_voice,
         "voice_name": data["voice_name"] or "默认音色",
-        # 豆包的「模型」就是资源 id：用户在 speech.json 里可以换资源，认不出来的值回落默认。
-        # 别的引擎按 model_history 取自己上次用的档位，取不到才用默认——共用一个字段会让
-        # 两家互相污染（豆包的资源 id 送到 ElevenLabs 上，界面只能退回默认档）。
         "model_id": (
             _doubao_model_id(models.get("doubao") or data.get("model_id"))
             if provider == "doubao"
             else (str(models.get(provider) or "") or _TEMPLATE["model_id"])
         ),
-        # 这里永远给 ElevenLabs 的缓存清单：Edge 的音色是常量，界面自己按引擎取（EDGE_VOICES）
-        # 合成参数也在这份配置里：纯语音和语音互动读同一套，不另开一处
         "output_format": data["output_format"],
         "sample_rate": int(data["sample_rate"]),
         "voices": list(data["voices"]),
@@ -265,7 +232,6 @@ def elevenlabs_error_message(code: int, detail: str = "") -> str:
             "或者先换豆包 / Edge 念。"
         )
     if code == 402:
-        # 免费账号调公共音色库的 Voice 会拿到 402：说清楚是哪一种，别让人以为是自己填错了
         if "library" in detail.lower():
             return (
                 "这个音色在 ElevenLabs 的公共音色库里，免费账号不能用 API 朗读；"
@@ -333,11 +299,7 @@ def fetch_voices(api_key: str = "") -> list[dict]:
         voices.append({
             "id": voice_id,
             "name": str(item.get("name") or "未命名"),
-            # 音色的归属：premade=所有账号都有；professional/library=要付费套餐才给 API 念；
-            # generated/cloned=账号自己的（别人没有）。界面靠它标注「需付费套餐」「我的音色」，
-            # 也是「默认音色只能挑 premade」的依据。
             "category": str(item.get("category") or ""),
-            # 只留界面上要显示的三个：语言/性别/口音（账户里 21 个是英文预置，靠这个才分得清）
             "labels": {key: str(labels.get(key) or "")
                        for key in ("language", "gender", "accent") if labels.get(key)},
         })
@@ -402,7 +364,6 @@ def key_status(provider: str = "") -> tuple[bool, str]:
     name = env_key_name(provider)
     if read_api_key(provider):
         env_path = env_file()
-        # 全新安装时 .env 还不存在：直接 read_text 会抛 FileNotFoundError，把「设置 → 语音」整页带崩
         if env_path.is_file() and name in env_path.read_text(encoding="utf-8", errors="replace"):
             return True, f"已保存（{_ENV_SHOWN} 里的 {name}）"
         return True, f"来自环境变量 {name}"
@@ -424,6 +385,5 @@ def _api_key(provider: str = "") -> str:
     if not key:
         raise RuntimeError(missing_key_message(provider))
     if not key.isascii() or any(ch.isspace() for ch in key):
-        # 直接把错误提示之类的东西粘进来了：这种值发出去只会在编码那步炸得莫名其妙
         raise RuntimeError("API Key 里混了中文或空格，重新粘贴一次（只要 sk_ 开头那一串）")
     return key

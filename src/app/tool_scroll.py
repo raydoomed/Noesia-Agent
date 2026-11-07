@@ -54,8 +54,8 @@ class ToolScroll(QtWidgets.QTextBrowser):
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self._text_width = 0  # 文档当前排出来的宽度：没变就不重排
-        self._narrowed = False  # 已经为滚动条让过路了
+        self._text_width = 0
+        self._narrowed = False
         self.setReadOnly(True)
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -66,7 +66,7 @@ class ToolScroll(QtWidgets.QTextBrowser):
     def set_rows(self, rows: list[tuple[str, QtGui.QColor | None, QtGui.QColor | None]]) -> None:
         """按行换内容；每行是（文字、前景色、底色），缺的给 None 用默认。"""
         self.clear()
-        self._narrowed = False  # 换成另一段内容了，让路那件事重新判断
+        self._narrowed = False
         cursor = QtGui.QTextCursor(self.document())
         cursor.beginEditBlock()
         for index, (text, color, bg) in enumerate(rows):
@@ -75,7 +75,7 @@ class ToolScroll(QtWidgets.QTextBrowser):
             self._insert_line(cursor, text, color, bg)
         cursor.endEditBlock()
         self._apply_line_height()
-        self.verticalScrollBar().setValue(0)  # 每次换内容都从头看
+        self.verticalScrollBar().setValue(0)
 
     def add_rows(self, rows: list[tuple[str, QtGui.QColor | None, QtGui.QColor | None]]) -> None:
         """往后接几行，已经有的不动。
@@ -108,9 +108,6 @@ class ToolScroll(QtWidgets.QTextBrowser):
         if color is not None and color.isValid():
             fmt.setForeground(color)
         cursor.insertText(text, fmt)
-        # 底色铺满整行（段落底色），不是只盖在字上——一半宽的颜色块看着像漏了。
-        # `insertBlock()` 会把上一块的段落格式（连底色）抄过来，所以没有底色的行必须显式清掉：
-        # 不清的话，diff 里紧跟 `+` 行的上下文行会被一路染绿（紧跟 `-` 的染红），ANSI 输出同理。
         block_fmt = cursor.blockFormat()
         if bg is not None and bg.isValid():
             block_fmt.setBackground(bg)
@@ -147,20 +144,16 @@ class ToolScroll(QtWidgets.QTextBrowser):
         """定宽、按内容定高（封顶），返回最终高度。"""
         text_width = max(1, width - PAD_H * 2 - 2)
         if text_width != self._text_width:
-            # 宽度没变就别重设：一设文档就得整篇重排，逐行追加时这一下最费
             self._text_width = text_width
             self.setFixedWidth(max(1, width))
             self.document().setTextWidth(text_width)
         height = int(self.document().size().height()) + PAD_V * 2 + 2
         if height > MAX_HEIGHT and not self._narrowed:
-            # 这么高就会出滚动条，它占掉 6px：文字按窄一点重排一遍，不然右边一截被切掉
             self._narrowed = True
             self._text_width = max(1, text_width - 6)
             self.document().setTextWidth(self._text_width)
             height = int(self.document().size().height()) + PAD_V * 2 + 2
         self.setFixedHeight(min(height, MAX_HEIGHT))
-        # 重排之后控件自己会滑到底部；只在本来就停在顶上时才拉回去，
-        # 用户正翻着中间就追加一行，不能把他弹回开头
         if self.verticalScrollBar().value() <= 0:
             QtCore.QTimer.singleShot(0, self._rewind)
         return self.height()

@@ -23,7 +23,6 @@ app = QtWidgets.QApplication([])
 
 out = {}
 
-# ---- 1) 附件卡：路径里有空格 / 文件不存在 ----
 from app import media_links  # noqa: E402
 from app.chat_panel import ChatPanel  # noqa: E402
 
@@ -53,7 +52,6 @@ out["file_mentioned"] = ("有 空格 的文件.png" in text) or any(
     "有 空格 的文件" in w.text() for w in panel.findChildren(QtWidgets.QLabel)
 )
 
-# ---- 2) 偏好往返（合法模型）----
 from app import avatar_prefs, speech_prefs, text_prefs, voice_input_prefs  # noqa: E402
 
 model = avatar_prefs.MODELS[0][0]
@@ -70,14 +68,12 @@ out["voice_roundtrip"] = (voice_input_prefs.device_guid(), voice_input_prefs.hot
 text_prefs.remember("deepseek", "deepseek-flash")
 out["text_roundtrip"] = text_prefs.remembered("deepseek")
 
-# 还原 settings
 for path in (REPO / "data" / "settings").glob("*"):
     if path.is_file() and before.get(path.name) is None:
         path.unlink()
     elif path.is_file():
         path.write_text(before[path.name], encoding="utf-8")
 
-# ---- 3) 窗口几何 ----
 from app import window_geometry as g  # noqa: E402
 
 rect = QtCore.QRect(100, 100, 360, 480)
@@ -87,7 +83,6 @@ out["fit"] = g.fit_width(360, 1.33).toTuple()
 out["edges"] = int(g.edges_at(QtCore.QPoint(1, 1), QtCore.QSize(360, 480)).value)
 out["in_card"] = g.point_in_rect(QtCore.QPoint(5, 5), QtCore.QRect(0, 0, 10, 10)) if hasattr(g, "point_in_rect") else "n/a"
 
-# ---- 4) 状态条：真有提示时高度要装得下 ----
 from app.status_stack import StatusStack  # noqa: E402
 
 stack = StatusStack()
@@ -113,7 +108,6 @@ h_clear = stack.height()
 out["stack_heights"] = (h_empty, h_notice, h_bg, h_clear)
 out["stack_painted_px"] = painted
 
-# ---- 5) 模型分组（真实条目形状）----
 from app import model_menu  # noqa: E402
 
 items = [

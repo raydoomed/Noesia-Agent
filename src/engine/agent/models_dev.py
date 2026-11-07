@@ -110,8 +110,6 @@ class ModelCapabilities:
 PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "openrouter": "openrouter", "novita": "novita-ai", "anthropic": "anthropic",
     "openai": "openai", "openai-api": "openai", "zai": "zai",
-    # models.dev 把 Kimi 的编程套餐记成 kimi-code-plan-global / -cn；早先写的
-    # "kimi-for-coding" 在它的目录里不存在，等于这几家一辈子拿不到实时目录。
     "kimi": "kimi-code-plan-global", "kimi-coding": "kimi-code-plan-global",
     "moonshot": "moonshotai", "stepfun": "stepfun",
     "kimi-coding-cn": "kimi-code-plan-cn", "minimax": "minimax",
@@ -129,7 +127,6 @@ PROVIDER_TO_MODELS_DEV: dict[str, str] = {
     "meta-ai": "meta", "meta": "meta", "groq": "groq", "mistral": "mistral",
     "togetherai": "togetherai", "perplexity": "perplexity", "cohere": "cohere",
     "ollama-cloud": "ollama-cloud",
-    # 这几家的 models.dev id 和我们的 slug 不同名，不补映射就等于没有自动目录。
     "vertex": "google-vertex", "bedrock": "amazon-bedrock", "gmi": "gmicloud",
     "arcee": "arcee", "lmstudio": "lmstudio", "nebius-token-factory": "nebius",
     "alibaba-cn": "alibaba-cn", "alibaba-coding-plan": "alibaba-coding-plan",

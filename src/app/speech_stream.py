@@ -27,13 +27,10 @@ import numpy as np
 
 from app.speech_prefs import SpeechError
 
-# 本程序是窗口程序，子进程不带这个标志会在 Windows 上闪一个 cmd 黑窗
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
-TARGET_RATE = 24000  # Vidu 组件版要 24k 单声道；本地播放也用这个，省一次重采样
+TARGET_RATE = 24000
 
-# 单次请求送给语音服务的最大字数。整段回答多长都照念，超过这个数就按句子切成几段，
-# 一段接一段合成、连续喂给播放器——段与段之间没有空隙（TTS 比实时快几倍，后段在前段还在播时就合成了）。
 SEGMENT_CHARS = 300
 
 
@@ -51,12 +48,9 @@ def _split_for_tts(text: str, limit: int = SEGMENT_CHARS) -> list[str]:
         if not sentence:
             continue
         if len(sentence) > limit and buf:
-            # 先把攒好的句子落段，再切这个超长句：反过来的话，pieces 里先冒出的是长句的
-            # 前半截，先前那些正常句子被挤到它后面——念出来就是「后半截先说、前面后说」。
             pieces.append(buf)
             buf = ""
         while len(sentence) > limit:
-            # 单句本身超长：先找逗号，再找不到就硬切（罕见，只在没有标点的长串里出现）
             cut = max(sentence.rfind(mark, 0, limit) for mark in "，、：, ")
             cut = cut + 1 if cut > limit // 3 else limit
             pieces.append(sentence[:cut])
@@ -183,7 +177,6 @@ def _stream_edge(text: str, chosen: dict) -> Iterator[bytes]:
 
     decoder = subprocess.Popen(
         ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0",
-         # 不带这个，Windows 上每句朗读都会闪一个 cmd 黑窗（本程序是窗口程序，没有控制台可继承）
          "-f", "s16le", "-ar", str(TARGET_RATE), "-ac", "1", "pipe:1"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0,
         creationflags=_NO_WINDOW,
@@ -215,18 +208,15 @@ def _stream_edge(text: str, chosen: dict) -> Iterator[bytes]:
             if block:
                 yield block
                 continue
-            # 读到空不等于「合成完了」：ffmpeg 出错自己退了也是空，
-            # 只认 stop 的话这里会一直空转；反过来只认 poll() 又会把末尾几个块丢掉。
             if stop.is_set() or decoder.poll() is not None:
                 break
             time.sleep(0.01)
     finally:
-        # 被中途打断（换句/停止）时，这里必须把 ffmpeg 收掉，否则它挂在管道上等 stdin
         try:
             if decoder.poll() is None:
                 decoder.kill()
             decoder.wait(timeout=5)
-        except Exception:  # noqa: BLE001 — 收尾失败不影响已经拿到的音频
+        except Exception:  # noqa: BLE001
             pass
 
 
@@ -234,7 +224,6 @@ def _stream_elevenlabs(text: str, chosen: dict) -> Iterator[bytes]:
     from app.speech_prefs import ELEVENLABS_URL, _api_key, elevenlabs_error_message
 
     if not str(chosen.get("voice_id") or "").strip():
-        # 音色属于账号：没选就不发请求，也不拿别人的 id 去试
         raise SpeechError(
             "还没选 ElevenLabs 的音色：「设置 → 语音」里选一个（清单是用你自己的 Key 拉的），"
             "或者改选不用 Key 的 Edge。"

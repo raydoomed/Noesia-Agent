@@ -17,7 +17,7 @@ def reasoning_wire_now(session: dict | None, cfg: dict | None, reasoning_config,
     model, provider = model_cfg.get("default") or "", model_cfg.get("provider") or ""
     base_url, api_mode = model_cfg.get("base_url") or "", model_cfg.get("api_mode")
     session = session or {}
-    if session.get("agent") is not None:  # 会话建好 agent 后以它为准
+    if session.get("agent") is not None:
         from agent.voice_turn_route import session_runtime_view
 
         view = session_runtime_view(session.get("agent"))
@@ -27,6 +27,6 @@ def reasoning_wire_now(session: dict | None, cfg: dict | None, reasoning_config,
         api_mode = getattr(view, "api_mode", None) or api_mode
     try:
         fields = effort_fields(reasoning_config, "", model, provider, base_url, api_mode)
-    except Exception:  # health: allow BLE001 -- 算不出来就当没有，界面只是少一句说明
+    except Exception:
         return ""
     return str(fields.get("reasoning_effort_wire") or "")

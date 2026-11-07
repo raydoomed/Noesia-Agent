@@ -262,10 +262,10 @@ def _remember_name(agent, result: Any) -> None:
     if not name:
         return
     if any(name in entry for entry in (getattr(store, "user_entries", []) or [])):
-        return  # 已经记过这个名字，不重复写
+        return
     try:
         store.add("user", f"Name: {name}")
-    except Exception:  # noqa: BLE001 - 档案写不进去不能把引导这轮打断
+    except Exception:  # noqa: BLE001
         logger.warning("写用户档案失败（名字 %s）", name, exc_info=True)
 
 

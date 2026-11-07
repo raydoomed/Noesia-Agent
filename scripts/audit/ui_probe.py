@@ -30,7 +30,6 @@ from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 qt_app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-# 模态框/文件框一律不真开：探针只验证「点了不炸、画面有像素」
 QtWidgets.QDialog.exec = lambda self, *a, **k: 0
 if hasattr(QtWidgets.QDialog, "exec_"):
     QtWidgets.QDialog.exec_ = lambda self, *a, **k: 0
@@ -44,8 +43,6 @@ for _n in ("information", "warning", "critical", "question", "about"):
 QtWidgets.QMessageBox.exec = lambda self, *a, **k: 0
 
 
-# PySide 的 C++ 方法（QMenu.exec / QDialog.exec）改不了类属性，只能靠定时器把弹出的模态窗关掉，
-# 否则点「＋」这种按钮会卡死在菜单事件循环里
 _popup_killer = QtCore.QTimer()
 _popup_killer.setInterval(60)
 

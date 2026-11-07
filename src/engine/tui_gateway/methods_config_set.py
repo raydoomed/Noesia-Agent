@@ -124,15 +124,12 @@ def _set_model(rid, params, key, value, session):
         # model. The stash crosses the boundary in the turn frame and the child's
         # turn thread applies it (_apply_pending_model_switch).
         if session.get("running") or session.get("_compute_host_active"):
-            # 供应商不应答时这一轮会一直挂着：等首字节最长 120 秒，叠上 3 次重试 + 5 轮自动恢复
-            # 能挂十几分钟。这期间只记账的话，界面胶囊变了、真正换模型却要等这一轮结束——而它
-            # 未必会结束，用户只能重启程序。所以先按「停止」同一条路把这一轮掐断，再照原样记账。
             if session.get("running"):
                 with session["history_lock"]:
                     inflight_at_interrupt = session.get("inflight_turn")
                 try:
                     _interrupt_session_turn(str(sid), session, request_id=f"model-switch-{rid}")
-                except Exception as exc:  # health: allow BLE001 -- 子进程控制通道可能抛传输层异常，救不回来就走停止那条兜底
+                except Exception as exc:
                     logger.warning("model switch: 掐断当前轮失败（%s）：%s", sid, exc)
                     _recover_unreachable_compute_host_turn(str(sid), session, inflight_at_interrupt)
             return _stash_pending_model_switch(rid, key, value, session, confirmed, parsed_flags)

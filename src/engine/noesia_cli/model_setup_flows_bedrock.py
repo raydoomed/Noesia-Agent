@@ -72,7 +72,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print("  ✓ API key saved.")
     print()
 
-    # 只问线上要：mantle 是 OpenAI 兼容的 /models，没有随包名单
     model_list = fetch_api_models(existing_key, mantle_base_url)
     if model_list:
         print(f"  Found {len(model_list)} model(s) from Bedrock mantle")
@@ -185,7 +184,6 @@ def _model_flow_bedrock(config, current_model=""):
         _model_flow_bedrock_api_key(config, region, current_model)
         return
 
-    # 3. Model discovery — live only（没有随包 Bedrock 名单了）
     print(f"  Discovering models in {region}...")
     live_models = discover_bedrock_models(region)
     model_list = _bedrock_text_model_ids(live_models, region) if live_models else []

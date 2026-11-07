@@ -205,7 +205,6 @@ run("speech_bar", speech_bar_probe)
 for name, state, value in results:
     print(f"RESULT {name} {state} {json.dumps(value, ensure_ascii=False, default=str)[:600]}")
 
-# 还原 data/settings（探针写过盘）
 for item in BACKUP.iterdir():
     target = SETTINGS / item.name
     if item.is_file():

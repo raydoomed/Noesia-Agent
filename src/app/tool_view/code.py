@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# 深色主题（暗底、饱和度低）
 PYGMENTS_STYLE = "one-dark"
 
 _TOKEN_CACHE: dict[str, object] = {}
@@ -40,7 +39,7 @@ def _lexer_for(path: str | None):
                 lexer = get_lexer_by_name(name, stripnl=False, ensurenl=False)
             except ClassNotFound:
                 lexer = None
-    except Exception:  # pygments 不在就整层降级，不让界面因为上色挂掉
+    except Exception:
         lexer = None
 
     _TOKEN_CACHE[name] = lexer
@@ -72,9 +71,6 @@ def highlight_code(text: str, path: str | None) -> list[list[tuple[str, str | No
 
     行数与 `text.splitlines()` 严格对齐——diff 要按行叠底色，少一行就串位。
     """
-    # 用 splitlines()：按 "\n" 切会在 CRLF 行尾留下 "\r"，也会把尾随换行多切出一个空行，
-    # 与「行数与 splitlines() 对齐」的约定不一致，diff 的底色就串位。
-    # 空文本仍返回一行空行：调用方按 [0] 取首行。
     lines = text.splitlines() or [""]
     plain = [[(line, None, False)] for line in lines]
     lexer = _lexer_for(path)
@@ -106,7 +102,6 @@ def highlight_code(text: str, path: str | None) -> list[list[tuple[str, str | No
             if chunk:
                 rows[-1].append((chunk, color, bold))
 
-    # 行数对齐：多出来的补空行，少的补到最后一行
     while len(rows) < len(lines):
         rows.append([])
     if len(rows) > len(lines):

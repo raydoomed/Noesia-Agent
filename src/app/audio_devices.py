@@ -25,8 +25,6 @@ logger = logging.getLogger(__name__)
 
 _ole32 = ctypes.oledll.ole32
 
-# `oledll` 会把 HRESULT 当错误码自动抛异常，对绝大多数调用是好事；但 CoInitializeEx
-# 的 `RPC_E_CHANGED_MODE` 不是失败，得单独拿返回值自己判——所以这一个走 windll。
 _S_OK = 0
 _S_FALSE = 1
 _RPC_E_CHANGED_MODE = 0x80010106
@@ -34,7 +32,6 @@ _coinit_ex = ctypes.windll.ole32.CoInitializeEx
 _coinit_ex.restype = ctypes.c_long
 _coinit_ex.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
 
-# ---------------------------------------------------------------- 常量
 
 CLSID_MMDeviceEnumerator = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
 IID_IMMDeviceEnumerator = "{A95664D2-9614-4F35-A746-DE8DB63617E6}"
@@ -54,12 +51,9 @@ COINIT_MULTITHREADED = 0x0
 VT_LPWSTR = 31
 STGM_READ = 0
 
-# 蓝牙端点由这几个枚举器创建。判断「是不是蓝牙」不能看名字：
-# 用户可能把设备改名成任何东西，而且不同品牌名字毫无规律。
 _BLUETOOTH_ENUMERATORS = {"BTHENUM", "BTHLE", "BTHHFENUM"}
 
 
-# ---------------------------------------------------------------- 结构体
 
 class GUID(ctypes.Structure):
     _fields_ = [("Data1", c_ulong), ("Data2", c_ushort), ("Data3", c_ushort), ("Data4", ctypes.c_byte * 8)]
@@ -95,27 +89,25 @@ def _release(interface) -> None:
         return
     try:
         _call(interface, 2, c_ulong)(interface)
-    except Exception:  # noqa: BLE001 - 释放失败不该把上层带崩
+    except Exception:  # noqa: BLE001
         logger.debug("Release 失败", exc_info=True)
 
 
-# ---------------------------------------------------------------- 数据
 
 @dataclass(frozen=True)
 class Endpoint:
     """一个音频端点（输入或输出）。"""
 
-    guid: str            # WASAPI 端点 id，跨会话稳定，设备记忆只存这个
-    name: str            # 系统里显示的名字，用户认这个
+    guid: str
+    name: str
     state: int           # DEVICE_STATE_*
-    bluetooth: bool      # 蓝牙端点：SCO 链路要单独处理
+    bluetooth: bool
 
     @property
     def active(self) -> bool:
         return bool(self.state & DEVICE_STATE_ACTIVE)
 
 
-# ---------------------------------------------------------------- 枚举
 
 def _com_ready() -> None:
     """当前线程进 COM。已经按别的套间进过就不算失败。
@@ -259,7 +251,6 @@ def default_input() -> Endpoint | None:
         _release(enumerator)
 
 
-# ---------------------------------------------------------------- 热插拔
 
 class _NotificationVtbl(ctypes.Structure):
     _fields_ = [
@@ -278,7 +269,6 @@ class _Notification(ctypes.Structure):
     _fields_ = [("lpVtbl", POINTER(_NotificationVtbl))]
 
 
-# 虚表字段和实现方法的对应关系：顺序必须跟 _NotificationVtbl._fields_ 一模一样
 _CALLBACK_NAMES = (
     "_query_interface",
     "_add_ref",
@@ -306,10 +296,6 @@ class EndpointWatcher:
         self._callback = callback
         self._lock = threading.Lock()
         self._refs = 0
-        # 结构体字段的类型是 WINFUNCTYPE，只认真的 C 函数指针，直接塞 Python 方法会
-        # 「expected WinFunctionType instance, got method」。逐个包一层 thunk，包出来的
-        # 对象还得攒在自己身上：只交给结构体的话 Python 这边没人引用，被 GC 就是野指针，
-        # 系统下一次回调直接踩进已释放内存。
         self._thunks = [
             field_type(getattr(self, name))
             for name, (_field, field_type) in zip(_CALLBACK_NAMES, _NotificationVtbl._fields_)
@@ -345,11 +331,10 @@ class EndpointWatcher:
             self._refs -= 1
             return self._refs
 
-    # ---- 通知
     def _fire(self, reason: str, flow: int | None = None, guid: str = "") -> int:
         try:
             self._callback(reason, flow, guid)
-        except Exception:  # noqa: BLE001 - 回调炸了不能把 COM 线程带崩
+        except Exception:  # noqa: BLE001
             logger.warning("端点通知回调失败", exc_info=True)
         return 0
 
@@ -368,7 +353,6 @@ class EndpointWatcher:
     def _on_property(self, this, device_id, key):
         return self._fire("property", None, device_id or "")
 
-    # ---- 生命周期
     def start(self) -> bool:
         if self._registered:
             return True

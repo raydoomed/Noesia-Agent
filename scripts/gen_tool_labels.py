@@ -82,7 +82,6 @@ def _template(src: str) -> str:
         inner = TERNARY_RE.sub(
             lambda t: f"({t.group(3)} if {t.group(1)} == {t.group(2)} else {t.group(4)})", match.group(1)
         )
-        # JS 方法名顺手换成 Python 的（文案模板里只用到这几个）
         inner = inner.replace(".toLowerCase()", ".lower()").replace(".toUpperCase()", ".upper()")
         return 'f"' + inner.replace("${", "{").replace('"', '\\"') + '"'
 
@@ -125,7 +124,6 @@ def flatten(node: dict, prefix: str = "assistant.tool") -> dict[str, object]:
 COMMON_LINE_RE = re.compile(r"^\s{4}([A-Za-z_][A-Za-z0-9_]*):\s*'((?:[^'\\]|\\.)*)',?\s*$")
 
 
-# 只搬工具行真正用到的 common 键（整棵 common 里有这里用不到的产品文案）。
 COMMON_KEYS = ("copy", "copied")
 
 
@@ -156,8 +154,8 @@ def main() -> None:
     en_src = to_python(block(en_text, "tool", "    ", "copyCode"))
     common_zh = common_strings(zh_text)
     common_en = common_strings(en_text)
-    zh = flatten(eval(compile(zh_src, "zh", "eval"), {}))  # noqa: S307 - 自己刚转出来的字面量
-    en = flatten(eval(compile(en_src, "en", "eval"), {}))  # noqa: S307 - 同上
+    zh = flatten(eval(compile(zh_src, "zh", "eval"), {}))  # noqa: S307
+    en = flatten(eval(compile(en_src, "en", "eval"), {}))  # noqa: S307
     missing = sorted(set(zh) ^ set(en))
     print(f"zh {len(zh)} 键 / en {len(en)} 键 / 差集 {len(missing)}")
     for key in missing[:10]:

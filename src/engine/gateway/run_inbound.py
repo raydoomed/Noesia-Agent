@@ -542,7 +542,6 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # #99106: durable-reaped guard. This is the live-gateway variant of #54878 and the #632
             # detached/ 405 suppressions in production. Evict the stale slot so the next message falls
             # through to the cold path and re-attaches or creates a fresh session; /status then correctly
-            # shows 代理运行中: 否 before the heal and a live turn after.
             _reap_store = getattr(self, "session_store", None)
             # Public, lock-held accessors: peek_session_id returns a non-str on stubbed stores in
             # bare test runners — the isinstance() / ``is True`` gates keep this inert unless a

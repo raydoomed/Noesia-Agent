@@ -1493,15 +1493,7 @@ def normalize_scope(scope: str | Path | None) -> str | None:
     return noesia_home_key(scope) if scope is not None else None
 
 
-# ---- 两个「根」：引擎树根 与 项目根 ------------------------------------------------
-# 内核原本把包放在仓库根（<repo>/agent、<repo>/noesia_cli），于是 `Path(__file__).parent.parent`
-# 一个表达式同时等于「引擎树根」和「项目根」。本项目把引擎放进 <项目>/src/engine 之后，这两者
-# 分家了，再混用就会露馅：`noesia --version` 报出的安装目录是 ...\src\engine，用户以为装错了地方。
 #
-#   * engine_root()：agent/ tools/ noesia_cli/ 所在那一层——sys.path 插入、optional-skills、
-#     包内相对路径要的是它；
-#   * repo_root()：仓库里 pyproject.toml 那一层——「安装目录 / 项目」显示、找 .git、找 pyproject
-#     要的是它。
 def engine_root() -> Path:
     """引擎树根（本文件所在目录：agent/、tools/、noesia_cli/ 的父层）。"""
     return Path(__file__).resolve().parent

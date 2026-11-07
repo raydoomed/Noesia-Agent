@@ -27,7 +27,7 @@ KEY_EVENT = 0x0001
 LEFT_CTRL_PRESSED = 0x0008
 VK_C = 0x43
 CTRL_C_SCANCODE = 0x2E
-_EPOCH_100NS = 116444736000000000  # 1601-01-01 → 1970-01-01，FILETIME 的 100ns 刻度数
+_EPOCH_100NS = 116444736000000000
 
 
 def _kernel32():
@@ -126,7 +126,7 @@ def start_time(pid: int) -> int | None:
         return None
     try:
         created = ctypes.c_ulonglong()
-        spare = ctypes.c_ulonglong()  # exit / kernel / user 时间：拿回来不为用，只管凑够参数
+        spare = ctypes.c_ulonglong()
         if not kernel32.GetProcessTimes(
             handle,
             ctypes.byref(created),
@@ -137,7 +137,7 @@ def start_time(pid: int) -> int | None:
             return None
     finally:
         kernel32.CloseHandle(handle)
-    return round((created.value - _EPOCH_100NS) / 100_000)  # 100ns 刻度 → 厘秒
+    return round((created.value - _EPOCH_100NS) / 100_000)
 
 
 def image_path(pid: int) -> str:
@@ -221,7 +221,7 @@ def terminate(pid: int, wait: float = 5.0) -> bool:
     kernel32 = _kernel32()
     handle = kernel32.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, False, pid)
     if not handle:
-        return not process_alive(pid)  # 已经没了也算成功
+        return not process_alive(pid)
     try:
         kernel32.TerminateProcess(handle, 1)
     finally:
@@ -319,7 +319,7 @@ def _press_within(pid: int, budget: float) -> bool:
     def work() -> None:
         try:
             outcome.append(press_ctrl_c(pid))
-        except Exception:  # noqa: BLE001 - 按键失败不该影响后面的杀进程
+        except Exception:  # noqa: BLE001
             logger.exception("按 Ctrl+C 时出错（pid %s）", pid)
 
     worker = threading.Thread(target=work, name="ctrl-c", daemon=True)

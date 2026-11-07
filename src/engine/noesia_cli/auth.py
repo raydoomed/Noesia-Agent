@@ -119,7 +119,6 @@ def _api_key_provider(
 
 # Registry rows in priority order (resolve_provider() scans api_key rows in this order). A tuple
 # row is ``_api_key_provider(id, name, inference_base_url, api_key_env_vars[, base_url_env_var
-# [, auth_type]])``；外部进程 / 云 SDK 走完整的 ``ProviderConfig`` 对象。
 _REGISTRY_ROWS: tuple[Any, ...] = (
     ("openai-api", "OpenAI API", "https://api.openai.com/v1", ("OPENAI_API_KEY",), "OPENAI_BASE_URL"),
     ("lmstudio", "LM Studio", "http://127.0.0.1:1234/v1", ("LM_API_KEY",), "LM_BASE_URL"),
@@ -1395,7 +1394,7 @@ def provider_key_env_vars(slug: str) -> tuple[str, ...]:
             env_vars = tuple(str(v) for v in (getattr(profile, "env_vars", ()) or ()) if v)
             if env_vars:
                 return env_vars
-    except Exception:  # noqa: BLE001 - 供应商表读不到就当没有，交给调用方报错
+    except Exception:  # noqa: BLE001
         pass
     return tuple(cfg.api_key_env_vars) if cfg is not None else ()
 

@@ -48,8 +48,6 @@ def window_settings() -> QtCore.QSettings:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
-        # 装在受保护目录（Program Files / 只读盘）时这里会失败：退回系统临时目录，
-        # 位置存不下来总比启动就崩强。
         logger.warning("窗口存档目录建不出来（%s），改落临时目录", target.parent, exc_info=True)
         target = Path(tempfile.gettempdir()) / "noesia-window.ini"
     return QtCore.QSettings(str(target), QtCore.QSettings.IniFormat)

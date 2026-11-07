@@ -32,7 +32,6 @@ logger = logging.getLogger("noesia_state")
 # triggers DROPPED — an external-content 'delete' for a rowid the index never
 # held is the canonical FTS5 corruption hazard.
 # The trigram tokenizer needs >=3 chars per query term, so 1-2 char CJK terms (ubiquitous in Korean/Chinese:
-# 일본, 구글, 项目, ...) fall through to a LIKE full-table scan — measured 3-6s CPU per query on multi-GB installs
 # and the dominant base cost of session_search on CJK workloads. ``cjk_unicode61`` (native/fts5_cjk/, a
 # ~250-line loadable FTS5 tokenizer with no dependencies) wraps unicode61: maximal CJK runs are re-emitted
 # as overlapping character bigrams (Lucene CJKAnalyzer semantics), everything else passes through unchanged.

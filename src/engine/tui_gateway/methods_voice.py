@@ -892,7 +892,6 @@ def _(rid, params: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         return _ok(rid, {"ready": False, "error": str(e), "downloaded": 0, "total": 0})
     if audio_sensevoice.is_ready():
-        # 顺手在后台把模型读进内存：界面进语音模式查这一下，说完话就不用再等六秒
         audio_sensevoice.warm()
     return _ok(rid, {
         "ready": audio_sensevoice.is_ready(),

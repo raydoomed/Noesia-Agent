@@ -79,7 +79,7 @@ HOLD = float(_flag("--hold", "0") or 0.0)
 _full = _flag("--save-full")
 FULL: pathlib.Path | None = pathlib.Path(_full) if _full else None
 if FULL is None:
-    avatar.set_target_size(QtCore.QSize(360, 480))  # 不存原图就直接按显示尺寸跑
+    avatar.set_target_size(QtCore.QSize(360, 480))
 
 stamps: list[float] = []
 shots: list = []
@@ -93,7 +93,7 @@ avatar.failed.connect(lambda msg: print("失败:", msg, flush=True))
 
 def on_frame(image):
     if FULL is not None and not FULL.exists():
-        image.save(str(FULL))                     # 存一张全分辨率原帧，用来比清晰度
+        image.save(str(FULL))
         avatar.set_target_size(QtCore.QSize(360, 480))
         print("已存全分辨率帧:", image.size().toTuple(), flush=True)
     stamps.append(time.perf_counter())
@@ -119,7 +119,7 @@ marks.update(first_push=0.0, last_push=0.0)
 
 
 def feed():
-    pcm = load_wav(WAV)[: SAMPLE_RATE * 2 * 3]  # 只推前 3 秒，省积分
+    pcm = load_wav(WAV)[: SAMPLE_RATE * 2 * 3]
     step = FRAME_BYTES
     start = time.perf_counter()
     marks["first_push"] = start

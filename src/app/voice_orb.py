@@ -18,7 +18,6 @@ import math
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-# 球里那几团光：粉 / 紫 / 蓝 / 橙。Screen 模式叠在一起就是那种中间烧白的花球
 _SIRI = (
     QtGui.QColor("#ff6b9d"),
     QtGui.QColor("#b98cff"),
@@ -51,9 +50,9 @@ class VoiceOrb(QtWidgets.QWidget):
     pressed = QtCore.Signal()
     released = QtCore.Signal()
 
-    SIZE = 94       # 画布宽：够放下下面那行字
-    ORB = 71        # 球所在方框的高
-    LABEL_H = 23    # 下面那行字占的高
+    SIZE = 94
+    ORB = 71
+    LABEL_H = 23
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,27 +62,23 @@ class VoiceOrb(QtWidgets.QWidget):
         self.setToolTip("按住说话，松手结束")
 
         self._state = STATE_IDLE
-        self._target = 0.0     # 目标音量 0..1
-        self._level = 0.0      # 平滑后的显示值，避免每帧跳
+        self._target = 0.0
+        self._level = 0.0
         self._phase = 0.0
         self._holding = False
 
         self._timer = QtCore.QTimer(self)
-        self._timer.setInterval(16)  # 60fps，跟采集的取数节奏一致
+        self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
-        # 不在构造里启动：这个球几乎一直藏着，60fps 空转是白耗电（笔记本上很明显）。
-        # 由 showEvent/hideEvent 开关。
 
-    # 看得见才转：动画只在显示时有意义
-    def showEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt
         super().showEvent(event)
         self._timer.start()
 
-    def hideEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt
         self._timer.stop()
         super().hideEvent(event)
 
-    # ---------------------------------------------------------- 外部接口
 
     def set_state(self, state: str) -> None:
         if state == self._state:
@@ -101,9 +96,8 @@ class VoiceOrb(QtWidgets.QWidget):
         if self._state == STATE_RECORDING:
             self._target = max(0.0, min(1.0, float(value)))
 
-    # ---------------------------------------------------------- 交互
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt 命名
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt
         if event.button() == QtCore.Qt.LeftButton:
             self._holding = True
             self.pressed.emit()
@@ -119,14 +113,11 @@ class VoiceOrb(QtWidgets.QWidget):
             return
         super().mouseReleaseEvent(event)
 
-    # ---------------------------------------------------------- 动画
 
     def _tick(self) -> None:
-        # 快上慢下：声音一停球立刻缩回去，但不会抖
         rate = 0.35 if self._target > self._level else 0.18
         self._level += (self._target - self._level) * rate
         if self._state == STATE_RECORDING:
-            # 说话时转得快，音量越大越快——球「活」起来靠的就是这个
             self._phase = (self._phase + 0.05 + 0.07 * self._level) % math.tau
         elif self._state == STATE_THINKING:
             self._phase = (self._phase + 0.06) % math.tau
@@ -136,7 +127,6 @@ class VoiceOrb(QtWidgets.QWidget):
             self._phase = (self._phase + 0.011) % math.tau
         self.update()
 
-    # ---------------------------------------------------------- 绘制
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QtGui.QPainter(self)
@@ -144,7 +134,7 @@ class VoiceOrb(QtWidgets.QWidget):
         painter.setPen(QtCore.Qt.NoPen)
 
         center = QtCore.QPointF(self.SIZE / 2, self.ORB / 2)
-        base = self.ORB * 0.38          # 主球半径：留出下面那行字的位置，光晕别压到字上
+        base = self.ORB * 0.38
         level = self._level
 
         if self._state == STATE_RECORDING:
@@ -158,9 +148,7 @@ class VoiceOrb(QtWidgets.QWidget):
 
         colors = _DANGER_GLOW if self._state == STATE_ERROR else _SIRI
 
-        # 球外那层柔光：光斑溢出来的余晖，让球不像贴图一样浮在底上
         self._paint_halo(painter, center, radius, colors, level)
-        # 外圈三段弧：一圈完整圆环太死板，断成三段才像在转
         self._paint_arcs(painter, center, radius)
         self._paint_ball(painter, center, radius, colors, level)
         self._paint_label(painter)
@@ -211,7 +199,6 @@ class VoiceOrb(QtWidgets.QWidget):
         path.addEllipse(center, radius, radius)
         painter.save()
         painter.setClipPath(path)
-        # 底色压得够深：Screen 叠加要有东西可叠，底浅了叠出来发灰、颜色全被冲淡
         painter.fillPath(path, QtGui.QColor(26, 18, 48))
         painter.setCompositionMode(QtGui.QPainter.CompositionMode_Screen)
 
@@ -223,8 +210,6 @@ class VoiceOrb(QtWidgets.QWidget):
                 center.x() + math.cos(angle) * reach,
                 center.y() + math.sin(angle) * reach,
             )
-            # 光斑别铺满整颗球：半径收到球的直径以内，四团色才分得开、看得出是四个颜色，
-            # 铺太开就四色相加糊成一片白
             gradient = QtGui.QRadialGradient(spot, radius * 1.02)
             gradient.setColorAt(0.0, QtGui.QColor(color.red(), color.green(), color.blue(), 195))
             gradient.setColorAt(0.50, QtGui.QColor(color.red(), color.green(), color.blue(), 112))
@@ -232,7 +217,6 @@ class VoiceOrb(QtWidgets.QWidget):
             painter.setBrush(QtGui.QBrush(gradient))
             painter.drawEllipse(center, radius, radius)
 
-        # 中心那点白热：没有它整颗球是「彩」但不「亮」
         hot = QtGui.QRadialGradient(center, radius * 0.9)
         hot.setColorAt(0.0, QtGui.QColor(255, 255, 255, 85))
         hot.setColorAt(0.45, QtGui.QColor(255, 255, 255, 22))
@@ -245,8 +229,6 @@ class VoiceOrb(QtWidgets.QWidget):
         text = _LABELS.get(self._state, "")
         font = QtGui.QFont(self.font())
         font.setPointSizeF(9.5)
-        # 画布只有 SIZE 宽，长句子（「没听清，再来一次」）放不下时会被两边各裁掉一点，
-        # 看着像糊了个字。按实际宽度把字号收一档，宁可字小一点也不切字。
         need = QtGui.QFontMetricsF(font).horizontalAdvance(text)
         if need > self.SIZE:
             font.setPointSizeF(max(7.0, 9.5 * self.SIZE / need))

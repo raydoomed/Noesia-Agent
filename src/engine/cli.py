@@ -1520,11 +1520,8 @@ class NoesiaCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if self._pending_relaunch:
             from noesia_cli.relaunch import relaunch
             relaunch(self._pending_relaunch, preserve_inherited=False)
-            return  # /update 会接着用这个控制台，窗口不能关
+            return
 
-        # 最后一步：退出后这个控制台窗口要不要一起关掉（`display.exit_closes_window`）。
-        # 放在所有输出与 relaunch 之后——`detach`/`close` 之后 stdout 就没了。
-        # 规则（谁的窗口能关、谁的不能）见 noesia_cli/console_window.py。
         try:
             from noesia_cli.console_window import close_console_window
             close_console_window(((self.config or {}).get("display") or {}).get("exit_closes_window", "own"))

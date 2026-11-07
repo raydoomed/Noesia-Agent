@@ -32,11 +32,10 @@ def _find_root(start: Path) -> Path:
 ROOT = _find_root(Path(__file__).resolve())
 ENGINE = ROOT / "src" / "engine"
 
-# 引擎优先：`cli` 这个名字两边都有，引擎的必须赢（前端进程那个从 src/cli.py 按路径加载）
 for path in (ENGINE, ROOT / "src"):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
-    else:  # 已在路径里就挪到前面，顺序不能靠运气
+    else:
         sys.path.remove(str(path))
         sys.path.insert(0, str(path))
 
@@ -75,8 +74,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.argv = [sys.argv[0], *argv]
 
     if not ENGINE.is_dir():
-        # 装成 wheel（非 -e）时引擎不在包里：给一句能照做的说明，
-        # 而不是后台抛 `ModuleNotFoundError: No module named 'noesia_cli'`。
         print(
             "noesia 命令行要在源码树里跑：引擎（src/engine）不随 wheel 发布。\n"
             "请 `pip install -e .` 后在本仓库目录执行，或直接用仓库里的脚本。",

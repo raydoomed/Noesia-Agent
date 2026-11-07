@@ -18,8 +18,6 @@ from PySide6 import QtCore, QtWidgets
 from app.redact import redact
 from app.window_geometry import card_position, screen_area
 
-# 引擎给的 description 是英文规则名（delete in root path / format drive …），
-# 界面上先给一句中文人话，再把原文放小字里：用户看的是「要干什么」，不是内部规则名。
 _FRIENDLY = {
     "delete file or folder": "她要删掉一个文件或目录",
     "delete via script": "她要用脚本删东西",
@@ -69,11 +67,8 @@ class ApprovalDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self._on_choice = on_choice
         self._answered = False
-        self._drag_offset: QtCore.QPoint | None = None  # 按住卡片拖动时的抓点
+        self._drag_offset: QtCore.QPoint | None = None
 
-        # 不抢焦点、不进任务栏，但必须压在其它窗口上面——用户可能正看着别的窗口。
-        # 不给 `WindowDoesNotAcceptFocus`：那样连点了之后键盘也进不来，Esc / 方向键全哑，
-        # 与桌面端那张卡不一致（它是一张普通的可聚焦卡片）。不抢活动窗口由下面的属性保证。
         self.setWindowFlags(
             QtCore.Qt.Tool
             | QtCore.Qt.FramelessWindowHint
@@ -101,24 +96,19 @@ class ApprovalDialog(QtWidgets.QDialog):
         if desc and desc.strip().lower() not in _FRIENDLY:
             sub = QtWidgets.QLabel(desc, card)
             sub.setObjectName("desc")
-            # 纯文本：说明里带 `<...>`（重定向、占位符、HTML 片段）时，AutoText 会把它们
-            # 当标签吃掉，用户看到的不是真正的内容
             sub.setTextFormat(QtCore.Qt.TextFormat.PlainText)
             lay.addWidget(sub)
 
         command_box = None
         if command:
-            # 整条命令原样给出，不截断：`python -c "…"`、heredoc、批量脚本、ffmpeg 长参数
-            # 轻松超过 400 字，截掉一半等于让人凭前半句批准整条命令；手选也选不到被砍掉的部分。
             box = QtWidgets.QPlainTextEdit(command, card)
             box.setObjectName("cmd")
-            box.setReadOnly(True)  # 只读但可选中、可滚动：长命令自己滚，卡片不撑破
+            box.setReadOnly(True)
             box.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
             box.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
             box.setTextInteractionFlags(QtCore.Qt.TextInteractionFlag.TextSelectableByMouse)
             lines = command.count("\n") + 1
-            box.setFixedHeight(min(240, 20 * lines + 12))  # 初值：真高度等宽度定了再量
-            # 别用控件级样式表（会盖掉 `#cmd` 那条边框/配色）：只把底色设成透明
+            box.setFixedHeight(min(240, 20 * lines + 12))
             pal = box.palette()
             pal.setColor(box.backgroundRole(), QtCore.Qt.GlobalColor.transparent)
             box.setPalette(pal)
@@ -143,7 +133,6 @@ class ApprovalDialog(QtWidgets.QDialog):
         self.adjustSize()
         self.setFixedWidth(max(320, min(460, self.sizeHint().width())))
         if command_box is not None:
-            # 宽度定下来了才知道那条命令会折成几行，等这一轮布局走完再校正高度
             QtCore.QTimer.singleShot(0, lambda: self._fit_command(command_box))
 
     @staticmethod
@@ -161,7 +150,6 @@ class ApprovalDialog(QtWidgets.QDialog):
             box.toPlainText(),
         )
         box.setFixedHeight(max(34, min(240, rect.height() + 20)))
-        # 按字体量出来的高度总差那一两像素：真冒出滚动条就再放一点，放到装得下为止
         while box.height() < 240 and box.verticalScrollBar().maximum() > 0:
             box.setFixedHeight(box.height() + 4)
 
@@ -182,7 +170,6 @@ class ApprovalDialog(QtWidgets.QDialog):
         finally:
             self.close()
 
-    # 关窗＝拒绝：沉默不是同意，含糊更不是
     def dismiss(self) -> None:
         """引擎自己撤了这张卡：关掉，但**不回任何选择**（不是用户拒绝）。
 
@@ -191,30 +178,28 @@ class ApprovalDialog(QtWidgets.QDialog):
         self._answered = True
         self.close()
 
-    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt
         """Esc＝拒绝（和关掉卡片同义）。Enter 故意不接：回一句手快的回车不该批准危险命令。"""
         if event.key() == QtCore.Qt.Key.Key_Escape:
             self._answer("deny")
             return
         super().keyPressEvent(event)
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
-        # 无边框卡片必须自己处理拖动，否则用户没法把它从挡住的内容上挪开。
-        # 输入/按钮自己吃掉按下事件，所以点它们不会连带拖窗。
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt
         if event.button() == QtCore.Qt.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt
         if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt
         self._drag_offset = None
         super().mouseReleaseEvent(event)
 
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt
         if not self._answered:
             self._answered = True
             self._on_choice("deny")
@@ -265,7 +250,7 @@ class ConfirmDialog(QtWidgets.QDialog):
 
         head = QtWidgets.QLabel(title, card)
         head.setObjectName("title")
-        head.setTextFormat(QtCore.Qt.TextFormat.PlainText)  # 同审批卡：不把 <...> 当标签吃掉
+        head.setTextFormat(QtCore.Qt.TextFormat.PlainText)
         lay.addWidget(head)
 
         body = QtWidgets.QLabel(description, card)
@@ -282,7 +267,7 @@ class ConfirmDialog(QtWidgets.QDialog):
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
         confirm = QtWidgets.QPushButton(confirm_label, card)
-        confirm.setObjectName("deny")  # 破坏性动作：跟审批卡片里的「拒绝」同一个红
+        confirm.setObjectName("deny")
         confirm.setCursor(QtCore.Qt.PointingHandCursor)
         confirm.clicked.connect(self._accept)
         row.addWidget(confirm)

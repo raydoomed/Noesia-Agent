@@ -662,8 +662,6 @@ def _provider_auth_hint(slug: str) -> tuple[str, str]:
     auth_type = cfg.auth_type if cfg else "api_key"
     key_env = cfg.api_key_env_vars[0] if (cfg and cfg.api_key_env_vars) else ""
     if not key_env:
-        # 插件供应商（openrouter 这类）不在 PROVIDER_REGISTRY 里：变量名由插件自己声明。
-        # 不回退的话设置页这一家没有变量名，Key 框是灰的——用户看着「能选却填不了」。
         from noesia_cli.auth import provider_key_env_vars
 
         envs = [str(v) for v in (provider_key_env_vars(slug) or ()) if v]
@@ -801,9 +799,6 @@ def _raw_config_has_enabled_moa_preset() -> bool:
 def _apply_picker_hints(rows: list[dict]) -> None:
     """Add ``authenticated``/``auth_type``/``key_env``/``warning`` per row."""
     for row in rows:
-        # 认证类型和变量名对每一行都要给：设置页靠它们决定「Key 框能不能填」。
-        # 以前只给没配过的骨架行，于是配过一次的家回包里既没有 key_env 也没有 auth_type，
-        # 桌面端就把 Key 框和「确定」一起灰掉——表现就是那个密钥再也改不了。
         auth_type, key_env = _provider_auth_hint(str(row.get("slug") or ""))
         row.setdefault("auth_type", auth_type)
         if auth_type == "api_key" and key_env:

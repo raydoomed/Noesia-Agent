@@ -1245,7 +1245,6 @@ _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_
 # emphasis markers each side (code/blockquote contexts are masked earlier); non-greedy with
 # ``MEDIA:`` as a boundary so glued tags (``MEDIA:/a.pngMEDIA:/b.png``) never merge; sentence-final
 # ``.`` is a boundary only before whitespace/EOL (``data.csv.`` -> ``data.csv``, ``archive.tar.gz``
-# extends past ``.tar``); CJK full-width punctuation terminates paths (``早报.pdf（782.6 KB）``).
 # A ``MEDIA:`` tag with an unknown extension is left in the text so it can still be picked up by the
 # bare-path detector (extract_local_files) downstream rather than silently deleted. Path anchors: ``~/``
 # (Unix home-relative), ``/`` (Unix absolute), ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
@@ -1260,7 +1259,6 @@ _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_
 # intact — for ``archive.tar.gz`` the ``.`` after ``tar`` is followed by ``g``, so the match must extend to
 # ``.gz`` instead of stopping early at ``.tar``. CJK full-width punctuation accepted as MEDIA path
 # terminators, mirroring the ASCII set in the looka below. Chinese-language agent output naturally writes
-# ``MEDIA:D:\path\早报.pdf（782.6 KB）`` or ``MEDIA:...pdf：内容`` — without these, the lookahead fails and the
 # attachment is silently dropped (#88038).
 _MEDIA_CJK_TERMINATORS = "（）〈〉《》：，。；！？、\u201c\u201d\u2018\u2019【】"
 

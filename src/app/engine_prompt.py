@@ -35,9 +35,6 @@ QPushButton#primary { background: #6b4a2f; border-color: #a9743f; }
 QPushButton#primary:hover { background: #7d5738; }
 """
 
-# 顺序是「先关窗口 → 再结束进程 → 然后启动」。窗口不关就结束进程，等于白杀：
-# 那台会话下一句话又会拉起一条 gateway，把数据根再占回去。这里把顺序写在卡片上，
-# 别让人以为点一下只是「杀个进程」。
 _HINT = (
     "同意后这样做：先替命令行里的 noesia 会话按 Ctrl+C（让它自己收尾退出），再结束后台占用进程，然后启动。"
     "那台会话里没答完的话会中断。全程静默，不弹窗口。"
@@ -57,9 +54,8 @@ class EngineProblemDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self._on_choice = on_choice
         self._answered = False
-        self._drag_offset: QtCore.QPoint | None = None  # 按住卡片拖动时的抓点
+        self._drag_offset: QtCore.QPoint | None = None
 
-        # 和审批卡片同一套窗口标志：不抢焦点、不进任务栏，但要压在人物窗**上面**
         self.setWindowFlags(
             QtCore.Qt.Tool
             | QtCore.Qt.FramelessWindowHint
@@ -67,7 +63,7 @@ class EngineProblemDialog(QtWidgets.QDialog):
             | QtCore.Qt.WindowDoesNotAcceptFocus
         )
         self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)  # 圆角外不留一块方底
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setModal(False)
         self.setStyleSheet(_STYLE)
 
@@ -121,24 +117,21 @@ class EngineProblemDialog(QtWidgets.QDialog):
         finally:
             self.close()
 
-    # 关窗＝不接管：沉默不是同意
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
-        # 无边框卡片必须自己处理拖动，否则用户没法把它从挡住的内容上挪开。
-        # 输入/按钮自己吃掉按下事件，所以点它们不会连带拖窗。
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt
         if event.button() == QtCore.Qt.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt
         if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt
         self._drag_offset = None
         super().mouseReleaseEvent(event)
 
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt
         if not self._answered:
             self._answered = True
             self._on_choice(False)

@@ -32,32 +32,17 @@ VOCAB_PATH = "data/settings/voice_vocab.json"
 CORPUS_PATH = "data/settings/voice_corpus.jsonl"
 SPEECH_CORPUS_PATH = "data/settings/speech_corpus.jsonl"
 
-# 中文段：连续汉字
 _CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
-# 英文 / 数字串：至少两个字符，允许中间带 . _ -
 _LATIN = re.compile(r"[A-Za-z][A-Za-z0-9._-]{1,}")
 
-# 下限挡住只出现过一次的口误。
 _MIN_FREQ = 3
-# 上限按「出现在多少条消息里」的比例判，不按总出现次数：总数是个绝对值，语料越攒越长，
-# 真正该进表的专名（在 4000 条里被提 400 次 = 10%）反而先被踢掉；而「今天」「什么」
-# 这类要挡的常用词本来就是靠比例才分得出来的。0.3 = 三成以上的消息里都有，太泛了。
 _MAX_DF = 0.3
-# 语料太少时比例没有意义（5 条消息里出现 5 次就是 100%）：少于这个条数只按频次判
 _DF_MIN_DOCS = 50
-# 凝聚度门槛：log2(p(xy) / (p(x)·p(y)))，越大越黏
 _MIN_PMI = 3.0
-# 邻接熵门槛：左右各自至少这么多比特，才算能自由移动。
-# 跨词边界的假词（「吧发给」这种句尾接句首拼出来的）左熵只有 0.92 左右，
-# 而真专名的左熵常在 1.4 以上——门槛放在它们中间。
 _MIN_ENTROPY = 1.2
-# 最多留多少个词，避免偏置表太大会拖慢解码又稀释奖励
 _MAX_WORDS = 200
-# 攒够这么多条新的用户消息才重算一次：算一遍要扫全部历史，别每条都扫
 _MIN_NEW = 50
-# 语料最多留这么多条：统计看的是最近怎么说，再多也不会更准，只会让重算变慢
 _MAX_CORPUS = 4000
-# 重算词表的最小间隔：全量扫一遍要几十到几百毫秒，不能每打一句就重来
 _REBUILD_EVERY_S = 600.0
 
 
@@ -72,7 +57,7 @@ def _discover_chinese(texts: list[str]) -> dict[str, float]:
     """中文 n-gram：频次 + 凝聚度 + 邻接熵。返回 {词: 分数}。"""
     char_freq: Counter = Counter()
     ngram_freq: Counter = Counter()
-    doc_freq: Counter = Counter()  # 多少条消息里出现过（算上限用）
+    doc_freq: Counter = Counter()
     left: dict[str, Counter] = {}
     right: dict[str, Counter] = {}
 
@@ -101,8 +86,7 @@ def _discover_chinese(texts: list[str]) -> dict[str, float]:
         if freq < _MIN_FREQ:
             continue
         if n_docs >= _DF_MIN_DOCS and doc_freq[gram] / n_docs > _MAX_DF:
-            continue  # 太泛：三成以上的消息里都有它
-        # 凝聚度取最弱的一处，只要有一处不黏就不算一个词
+            continue
         weakest = math.inf
         for i in range(len(gram) - 1):
             pair = gram[i:i + 2]
@@ -115,12 +99,10 @@ def _discover_chinese(texts: list[str]) -> dict[str, float]:
             weakest = min(weakest, math.log2(p_pair / (p_a * p_b)))
         if weakest < _MIN_PMI:
             continue
-        # 左右都得能接不同的字，否则只是个固定搭配的开头/结尾
         if min(_entropy(left[gram]), _entropy(right[gram])) < _MIN_ENTROPY:
             continue
         found[gram] = weakest * math.log2(1 + freq)
 
-    # 长词优先：被更长的词整段包含的短词去掉（「诺西亚」在，就不要「诺西」）
     ordered = sorted(found, key=len, reverse=True)
     kept: dict[str, float] = {}
     for word in ordered:
@@ -139,7 +121,7 @@ def _discover_latin(texts: list[str]) -> dict[str, float]:
         seen: set[str] = set()
         for match in _LATIN.finditer(text):
             word = match.group(0)
-            key = word.lower()  # 计数按小写归并：Noesia / noesia 是同一个词
+            key = word.lower()
             counter[key] += 1
             spellings.setdefault(key, Counter())[word] += 1
             if key not in seen:
@@ -151,8 +133,7 @@ def _discover_latin(texts: list[str]) -> dict[str, float]:
         if freq < _MIN_FREQ:
             continue
         if n_docs >= _DF_MIN_DOCS and doc_freq[key] / n_docs > _MAX_DF:
-            continue  # 同中文侧：按比例判，不按总次数
-        # 写回出现最多的那种大小写写法（Noesia 而不是 noesia）
+            continue
         shown = spellings[key].most_common(1)[0][0]
         found[shown] = math.log2(1 + freq)
     return found
@@ -271,7 +252,6 @@ def _trim_corpus() -> None:
         return
     kept = texts[-_MAX_CORPUS:]
     try:
-        # 同样先写临时文件再换名：引擎随时可能来读，不能让它读到裁了一半的语料
         temp = path.with_name(path.name + ".tmp")
         temp.write_text(
             "".join(json.dumps({"t": t}, ensure_ascii=False) + "\n" for t in kept),
@@ -295,13 +275,10 @@ def learn() -> dict | None:
     previous = _payload(target)
     built_at = previous.get("built_at") or 0
     newest = str(previous.get("newest") or "")
-    # 先裁剪再读：`samples` 记的是裁剪后的条数，两轮之间必须用同一个基准。
     _trim_corpus()
     texts = _read_corpus()
     if not texts or texts[-1] == newest:
-        return None  # 没有新语料
-    # 条数到上限以后，「多了几条」永远是 0（裁剪把它抹平了），只能看最新那一句变没变；
-    # 但每来一句就全量重扫要几百毫秒，所以再夹一道时间闸：最多十分钟算一次。
+        return None
     if time.time() - float(built_at) < _REBUILD_EVERY_S:
         return None
     payload = build(texts)

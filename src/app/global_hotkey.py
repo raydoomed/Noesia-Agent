@@ -40,7 +40,6 @@ VK_MENU = 0x12  # Alt
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
 
-# 修饰键的虚拟码 → 修饰位。左右分开的版本也认，否则按左 Shift 会漏
 _MOD_BY_VK = {
     0x10: MOD_SHIFT, 0xA0: MOD_SHIFT, 0xA1: MOD_SHIFT,
     0x11: MOD_CONTROL, 0xA2: MOD_CONTROL, 0xA3: MOD_CONTROL,
@@ -49,7 +48,7 @@ _MOD_BY_VK = {
 }
 
 ERROR_HOTKEY_ALREADY_REGISTERED = 1409
-_PROBE_ID = 0x4E53  # 只用来探一下能不能注册，探完立刻注销
+_PROBE_ID = 0x4E53
 
 
 class _KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -62,7 +61,6 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
     ]
 
 
-# 64 位下 wt.WPARAM / wt.LPARAM 还是 32 位的 c_long，回传 lParam 时会溢出并让回调崩掉
 _WPARAM = ctypes.c_size_t
 _LPARAM = ctypes.c_ssize_t
 
@@ -92,7 +90,6 @@ def _declare():
     u.CallNextHookEx.restype = ctypes.c_ssize_t
     u.GetAsyncKeyState.argtypes = [ctypes.c_int]
     u.GetAsyncKeyState.restype = ctypes.c_short
-    # 句柄一定按 64 位取，默认的 c_int 会把它截断，拿去做模块句柄就是 ERROR_MOD_NOT_FOUND
     _kernel32().GetModuleHandleW.argtypes = [wt.LPCWSTR]
     _kernel32().GetModuleHandleW.restype = wt.HMODULE
     u.GetMessageW.argtypes = [ctypes.POINTER(wt.MSG), ctypes.c_void_p, wt.UINT, wt.UINT]
@@ -141,7 +138,6 @@ def probe(mods: int, vk: int) -> tuple[bool, str]:
         return True, ""
     err = _kernel32().GetLastError()
     if err == ERROR_HOTKEY_ALREADY_REGISTERED:
-        # 1409 是 Windows 自己的说法：HOTKEY_ALREADY_REGISTERED
         return False, "这个组合已经被其他程序占用了"
     return False, f"注册失败（错误码 {err}）"
 
@@ -151,16 +147,15 @@ class GlobalHotkey(QtCore.QObject):
 
     pressed = QtCore.Signal()
     released = QtCore.Signal()
-    # 捕获模式专用：改键时任何按键都报上来（修饰位, 虚拟键码）
     captured = QtCore.Signal(int, int)
 
     def __init__(self, parent: QtCore.QObject | None = None) -> None:
         super().__init__(parent)
         self._mods = 0
         self._vk = 0
-        self._held_mods = 0  # 此刻按住的修饰键，钩子自己记账
-        self._capture = False  # 改键用：什么都报上去，一个都不吞
-        self._capture_last = (0, 0, 0.0)  # 上一次报的 (修饰位, 键, 时刻)，用来压住长按自动重复
+        self._held_mods = 0
+        self._capture = False
+        self._capture_last = (0, 0, 0.0)
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._stop = threading.Event()
@@ -168,7 +163,6 @@ class GlobalHotkey(QtCore.QObject):
         self._proc = None
         self._last_error = 0
 
-    # ---- 配置 ----
 
     def start_capture(self) -> None:
         """改键用：任何按键都报上来、一个都不吞。
@@ -192,7 +186,6 @@ class GlobalHotkey(QtCore.QObject):
     def sequence(self) -> tuple[int, int]:
         return self._mods, self._vk
 
-    # ---- 启停 ----
 
     def start(self) -> None:
         """装钩子。
@@ -202,7 +195,7 @@ class GlobalHotkey(QtCore.QObject):
         """
         if self._thread is not None and self._thread.is_alive():
             return
-        self._held_mods = current_modifiers()  # 启动时手上可能已经按着修饰键
+        self._held_mods = current_modifiers()
         self._ready = threading.Event()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="noesia-global-hotkey", daemon=True)
@@ -211,20 +204,14 @@ class GlobalHotkey(QtCore.QObject):
 
     def stop(self) -> None:
         thread = self._thread
-        # 停掉就等于不再「改键」：不改这一位的话，下次 start() 装的新钩子会沿用 capture，
-        # 把所有按键都报上去、一个都不转发——用户按 Shift+空格说不了话，别的快捷键也失灵。
         self._capture = False
         if thread is not None and thread.is_alive():
             self._stop.set()
             ident = thread.ident
             if ident:
-                # 叫醒阻塞在 GetMessage 的线程；ident 为空时传 0 会发给所有线程，不能发
                 _user32().PostThreadMessageW(ident, 0, 0, 0)
             thread.join(timeout=1.5)
             if thread.is_alive():
-                # 线程没退出：钩子还装着，回调还会来（`_stop` 只在消息泵那一圈检查）。
-                # 这里**不能**把引用清掉——清了就再也叫不回来，下一次 start() 会再装一个钩子，
-                # 同一个键一次触发两遍，而且旧钩子谁都摘不掉。留着，下一次 stop() 再试。
                 logger.warning("[热键] 钩子线程 1.5 秒没退出，保留引用，稍后重试")
                 return
         self._thread = None
@@ -235,12 +222,10 @@ class GlobalHotkey(QtCore.QObject):
     def running(self) -> bool:
         return self._hook is not None
 
-    # ---- 钩子线程 ----
 
     def _run(self) -> None:
         u = _user32()
-        self._proc = _HOOKPROC(self._callback)  # 回调要给钩子留引用，否则会被回收
-        # 低级钩子的钩子过程在本线程里（ctypes 回调），hMod 必须是 NULL
+        self._proc = _HOOKPROC(self._callback)
         self._hook = u.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, None, 0) or None
         self._last_error = 0 if self._hook else _kernel32().GetLastError()
         self._ready.set()
@@ -249,19 +234,14 @@ class GlobalHotkey(QtCore.QObject):
         hook = self._hook
         try:
             msg = wt.MSG()
-            # 阻塞取消息：Peek + sleep 顶不住，钩子回调要的是这个真循环
             while not self._stop.is_set() and u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
                 u.TranslateMessage(ctypes.byref(msg))
                 u.DispatchMessageW(ctypes.byref(msg))
         finally:
-            # 用自己的局部引用：stop() 可能已经把 self._hook 置空，用 None 卸不掉就是泄漏
             u.UnhookWindowsHookEx(hook)
             self._hook = None
 
-    # ---- 钩子回调 ----
     #
-    # 放行一律 CallNextHookEx(None, ...)：第一个参数传自己的钩子句柄表面上也能过，
-    # 实测键就丢了（窗口里打不出空格），传 None 才真的往下走。
 
     def _callback(self, n_code, w_param, l_param):
         if n_code != HC_ACTION:
@@ -270,8 +250,6 @@ class GlobalHotkey(QtCore.QObject):
                            ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
         vk = info.vkCode
 
-        # 修饰键状态自己记：回调里 GetAsyncKeyState 还没反映这一次按键，
-        # 系统要到回调返回之后才更新，问它等于问上一次
         mod_bit = _MOD_BY_VK.get(vk)
         if mod_bit is not None:
             if w_param in _DOWN:
@@ -280,13 +258,9 @@ class GlobalHotkey(QtCore.QObject):
                 self._held_mods &= ~mod_bit
 
         if self._capture:
-            # 改键期间：凡是主键都报上去，一个都不吞。
-            # 这里不能只认 self._vk——捕获时压根还没有目标键。
             if w_param in _DOWN and vk and mod_bit is None:
                 now = time.monotonic()
                 last_mods, last_vk, last_at = self._capture_last
-                # 按住不放系统会连着发按下，同一个键 0.3 秒内只报一次，
-                # 不然下面每报一次都要向系统注册试探一回
                 if (self._held_mods, vk) != (last_mods, last_vk) or now - last_at > 0.3:
                     self._capture_last = (self._held_mods, vk, now)
                     self.captured.emit(self._held_mods, vk)
@@ -306,7 +280,7 @@ class GlobalHotkey(QtCore.QObject):
         u = _user32()
         if w_param in _DOWN and self._held_mods == self._mods:
             self.pressed.emit()
-            return 1  # 命中了才吞：Shift+Space 不给输入法，免得顺手切全角
+            return 1
         if w_param in _UP:
             self.released.emit()
         return u.CallNextHookEx(None, HC_ACTION, w_param, l_param)

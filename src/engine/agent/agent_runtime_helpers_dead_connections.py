@@ -10,7 +10,6 @@ from typing import Any
 logger = logging.getLogger("run_agent")  # origin module's logger name: log records / caplog filters unchanged
 
 
-# 探测本身出错时每次会话都会重走一遍：同一个 client 只告警一次，免得日志被刷满。
 _PROBE_FAILURES_WARNED: set[str] = set()
 
 
@@ -19,7 +18,7 @@ def _socket_is_dead(sock) -> bool:
     import socket as _socket
     try:
         sock.setblocking(False)
-        return sock.recv(1, _socket.MSG_PEEK | getattr(_socket, "MSG_DONTWAIT", 0)) == b""  # Windows 没有 MSG_DONTWAIT：非阻塞靠上面的 setblocking(False)，有就顺带带上
+        return sock.recv(1, _socket.MSG_PEEK | getattr(_socket, "MSG_DONTWAIT", 0)) == b""
     except BlockingIOError:
         return False  # no data available: socket is healthy
     except OSError:
@@ -70,7 +69,6 @@ def cleanup_dead_connections(agent) -> bool:
         except Exception:
             # Best-effort probe over private httpcore internals: one client's failure must not
             # skip the other's check or abort the turn.
-            # 静默吞掉是上一轮审查点名的坑：清扫失效时日志里必须有痕迹，但同一种错只报一次。
             if label not in _PROBE_FAILURES_WARNED:
                 _PROBE_FAILURES_WARNED.add(label)
                 logger.warning("Dead connection check error for %s client", label, exc_info=True)

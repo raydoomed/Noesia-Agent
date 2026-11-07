@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtWidgets
 
-# `notification.show` 的 level → 用哪种字色（样式表里已经定好这几种）
 _LEVELS = {
     "success": "statusdone",
     "done": "statusdone",
@@ -17,34 +16,26 @@ _LEVELS = {
     "failed": "statusfailed",
     "warning": "statusfailed",
     "warn": "statusfailed",
-    # 「这一档暂时用不了」这类中性提醒：黄字，不是红字。缺语音 Key 走这一档——
-    # 语音不是必需的，没 Key 也能纯文字聊，报红等于告诉用户「你装坏了」。
     "note": "statuswarn",
     "busy": "statusbusy",
     "running": "statusbusy",
 }
 
-# 一次性确认（「已保存」「已改动」这种说一句就完的事）统一活 6 秒：
-# 同一类事情只该有一个数，别再一个 4 秒、一个 6 秒、一个 8 秒各写各的。
-# 状态类提示（缺 Key / 还没配模型 / 掉落纯语音 / 正在重连）**不带 ttl**，靠条件变化撤；
-# 真报错也不带 ttl——它没解决就该一直看得见。
 CONFIRM_TTL_MS = 6000
 
-_LINGER_OK_MS = 4000  # 跑完的留 4 秒：够看清「退出 0」
-_LINGER_BAD_MS = 12000  # 失败的多留一会儿：退出码得看得见
+_LINGER_OK_MS = 4000
+_LINGER_BAD_MS = 12000
 
 
 class StatusStack(QtWidgets.QFrame):
     """提示 / 正在调用 / 后台进程，三样都挂在输入框正上方这一条上。"""
 
-    kill_requested = QtCore.Signal(str)  # 后台进程那一行点了停止 → 把 session_id 交出去
+    kill_requested = QtCore.Signal(str)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("statusrow")
         self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Maximum)
-        # 提示写长了、窗口又矮：这一条最多占窗口四成高，多出来的部分自己滚，
-        # 不再靠「压扁」来塞进去（压扁就是把字切掉半截）。
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -53,7 +44,6 @@ class StatusStack(QtWidgets.QFrame):
         self._note.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self._note.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._note.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        # 滚动条：6px 细条、圆角半透明，没有箭头没有凹槽，跟这层灰底融在一起
         self._note.setStyleSheet(
             "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }"
             "QScrollBar:vertical { width: 6px; background: transparent; margin: 4px 1px 4px 0; }"
@@ -87,7 +77,6 @@ class StatusStack(QtWidgets.QFrame):
         self._bg_done: set[str] = set()
         self.hide()
 
-    # ---- 提示（notification.show / notification.clear） ----
 
     def show_notice(self, key: str, text: str, *, ttl_ms: int = 0, level: str = "") -> None:
         text = (text or "").strip()
@@ -108,7 +97,6 @@ class StatusStack(QtWidgets.QFrame):
         label = row.findChild(QtWidgets.QLabel)
         label.setObjectName(_LEVELS.get((level or "").strip().lower(), "statusnote"))
         label.setText(text)
-        # 换了 objectName 得让样式表重算一遍，否则字色还是上一档的
         label.style().unpolish(label)
         label.style().polish(label)
         row.show()
@@ -135,7 +123,6 @@ class StatusStack(QtWidgets.QFrame):
             row.deleteLater()
         self._sync()
 
-    # ---- 正在调用（tool.generating / tool.progress 的前奏） ----
 
     def set_activity(self, text: str) -> None:
         text = (text or "").strip()
@@ -161,7 +148,6 @@ class StatusStack(QtWidgets.QFrame):
         self._activity.show()
         self._sync()
 
-    # ---- 后台进程（process.list） ----
 
     def set_processes(self, rows: list) -> None:
         rows = [
@@ -202,7 +188,7 @@ class StatusStack(QtWidgets.QFrame):
         card.setSpacing(1)
         self._bg_head = QtWidgets.QToolButton(self._bg)
         self._bg_head.setCheckable(True)
-        self._bg_head.setChecked(False)  # 默认收起：只显「N 个后台任务」，不占屏幕
+        self._bg_head.setChecked(False)
         self._bg_head.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._bg_head.toggled.connect(self._toggle_bg)
         card.addWidget(self._bg_head, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
@@ -311,9 +297,8 @@ class StatusStack(QtWidgets.QFrame):
         text = self._bg_head.text()
         if text.startswith(("▸", "▾")):
             self._bg_head.setText(("▾" if opened else "▸") + text[1:])
-        self._sync()  # 展开/收起都变了高度：不重算就还是收起时那个高度，列表被切掉一截
+        self._sync()
 
-    # ---- 收摊 ----
 
     def clear_all(self) -> None:
         """换会话：提示和进程行都属于上一场，不能带过去。"""
@@ -324,7 +309,7 @@ class StatusStack(QtWidgets.QFrame):
         self._drop_bg()
         self._sync()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt 的命名
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt
         """宽度变了要重算高度：换行数随宽度变，算一次就冻住的话，
         窄了文字被切（高度不够）、宽了留一大块空白（高度还是按窄窗口算的）。"""
         super().resizeEvent(event)
@@ -335,13 +320,9 @@ class StatusStack(QtWidgets.QFrame):
         self.setVisible(shown)
         if not shown:
             return
-        # 高度照旧由提示自己说了算（原来布局就是拿 sizeHint 定这个高度），
-        # 里面文字换行后的真实高度更大时，多出来的用竖向滚动条看。
         inner = self._note.widget()
         if inner is None:
             return
-        # 高度就是「文字换行后要多少就是多少」——和原来一样，不多给也不少给；
-        # 只有窗口矮到放不下这么多行时才收一点，收掉的部分用竖向滚动条看。
         width = max(60, (self.width() or 260) - 16)
         need = 8
         for row in self._rows.values():
@@ -349,9 +330,6 @@ class StatusStack(QtWidgets.QFrame):
             if label is None:
                 continue
             need += max(label.heightForWidth(width), label.fontMetrics().height()) + 2
-        # 「N 个后台任务」那张卡和「正在调用」那行也在这一叠里，以前没算进去：
-        # 只有后台任务、没有普通提示的时候 need 停在 8，整块被压到 24px，
-        # 卡片自己 minima 就是 25px，于是标题上下各切一半，看着像一行糊掉的残字。
         spacing = self._box.spacing()
         for extra in (self._bg, self._activity):
             if extra is not None and extra.isVisible():

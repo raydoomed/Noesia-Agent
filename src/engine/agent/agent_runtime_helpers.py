@@ -925,7 +925,6 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
             agent.provider or "provider",
         )
         return False, has_retried_429
-    # api_key 池没有可刷新的短期凭据：直接换下一条。
     return (True, False) if rotate_and_swap(401, "auth failure") else (False, has_retried_429)
 
 
@@ -3246,7 +3245,6 @@ def looks_like_codex_intermediate_ack(
 # mid-punctuation ("?warming up") — is a provider-side collapse, not an answer, yet the loop
 # accepted it and the turn reported completed. Shape alone cannot PROVE a collapse, so this is
 # deliberately narrower than "short": a terse legitimate answer ("42", "SQLite", "report.csv",
-# "€12.50", "你好。", "Done.", ":8080", "да" to a Russian prompt) never matches, English-script
 # fragments ("the", "ing") are knowingly not covered, and the re-prompt it triggers asks for the
 # same answer again if it was complete. ``turn_finalizer._SENTENCE_END`` encodes a sibling
 # "≤ 24 chars, no terminal" heuristic for the finish explainer.

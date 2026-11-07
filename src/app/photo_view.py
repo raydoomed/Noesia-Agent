@@ -36,14 +36,14 @@ class PhotoView(QtWidgets.QDialog):
 
     def __init__(self, title: str, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(title or "图片")  # 只在任务栏/Alt-Tab 里露脸，窗口上没有标题条
+        self.setWindowTitle(title or "图片")
         self.setWindowFlags(
             QtCore.Qt.WindowType.Dialog
             | QtCore.Qt.WindowType.FramelessWindowHint
-            | QtCore.Qt.WindowType.WindowStaysOnTopHint  # 人物窗置顶，不跟着置顶就被压住点不着
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
         self._drag: QtCore.QPoint | None = None
-        self._dragged = False  # 用户自己拖过窗口没有：拖过就再不替他摆位置
+        self._dragged = False
 
         self._photo = QtWidgets.QLabel()
         self._photo.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
@@ -65,7 +65,6 @@ class PhotoView(QtWidgets.QDialog):
         corner.addStretch(1)
         corner.addWidget(close)
 
-        # 按钮和提示压在图上（同一格），图片因此能铺满整个窗口
         box = QtWidgets.QGridLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.addWidget(self._photo, 0, 0)
@@ -82,7 +81,6 @@ class PhotoView(QtWidgets.QDialog):
             QtCore.Qt.AlignmentFlag.AlignBottom | QtCore.Qt.AlignmentFlag.AlignLeft,
         )
 
-    # ---- 放图 ----
 
     def set_photo(self, pixmap: QtGui.QPixmap, pending: bool = False) -> None:
         """把图放上去。`pending` 表示原图还在路上，先拿缩略图顶着。"""
@@ -99,20 +97,16 @@ class PhotoView(QtWidgets.QDialog):
                     QtCore.Qt.AspectRatioMode.KeepAspectRatio,
                     QtCore.Qt.TransformationMode.SmoothTransformation,
                 )
-        self._photo.setMinimumSize(1, 1)  # 占位时靠它撑大小，图来了就不用撑了
+        self._photo.setMinimumSize(1, 1)
         self._photo.setPixmap(shown)
-        # `pending` 也要按手上这张图的尺寸摆窗：以前这里直接 return，窗口停在 label 的
-        # 最小尺寸 240×160，缩略图被居中裁掉四周，用户点开看到的是一小块中间
-        # （点开第 7 张图以后必现，因为原图只缓存最近 6 张）。
-        self.resize(shown.size())  # 窗口就是这张图，不多留一条边
+        self.resize(shown.size())
         if not self._dragged:
-            self._center()  # 原图比缩略图大得多，等它回来还会再摆一次；用户自己拖过了就别动他
+            self._center()
 
     def set_failed(self, text: str) -> None:
         """原图没取回来：说清楚，缩略图当时什么样就还是什么样。"""
         pixmap = self._photo.pixmap()
         if pixmap is not None and not pixmap.isNull():
-            # 图上已经有人脸了：把话放到下面那行小字，别用 setText 把缩略图抹成一行字
             self._say(text)
             return
         self._photo.setText(text)
@@ -127,7 +121,6 @@ class PhotoView(QtWidgets.QDialog):
         self._hint.setText(text)
         self._hint.setVisible(bool(text))
 
-    # ---- 摆哪儿 ----
 
     def _center(self) -> None:
         """摆到屏幕正中间。
@@ -149,7 +142,6 @@ class PhotoView(QtWidgets.QDialog):
         if not self._dragged:
             self._center()
 
-    # ---- 没有标题栏，拖动和关闭得自己管 ----
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
         if event.button() is QtCore.Qt.MouseButton.LeftButton:

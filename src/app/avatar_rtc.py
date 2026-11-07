@@ -38,10 +38,7 @@ from app.vidu_session import (
 
 logger = logging.getLogger(__name__)
 
-# 云端形象编号（avatar_id）的保质期：平台 90 天会清，留 5 天余量提前重传
 ASSET_MAX_DAYS = 85
-# 上传后云端还要生成描述（status=created/processing）：这段时间内别重复 POST，
-# 同一张图重复上传会返回同一个还在处理的资产，纯白花往返
 ASSET_PENDING_SECONDS = 60.0
 
 def warm_avatar_asset(
@@ -58,7 +55,7 @@ def warm_avatar_asset(
         return ""
     try:
         got = upload_avatar_asset(token, image)
-    except Exception as exc:  # noqa: BLE001 - 记下原因再往上抛，界面要显示它
+    except Exception as exc:  # noqa: BLE001
         logger.warning("[数字人] 形象上传失败：%s", exc)
         raise
     avatar_id, status = got["id"], got["status"]
@@ -84,7 +81,7 @@ def warm_avatar_asset(
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 RTC_DIR = REPO_ROOT / "vendor" / "alirtc"
-RTC_AUDIO_RATE = 48000  # 云端回来的音频固定 48k 单声道 s16（实测 858 帧 / 8.6 秒）
+RTC_AUDIO_RATE = 48000
 
 
 def _i420_to_rgb(y: bytes, u: bytes, v: bytes, width: int, height: int,
@@ -111,7 +108,7 @@ def _i420_to_rgb(y: bytes, u: bytes, v: bytes, width: int, height: int,
     return np.clip(np.stack([r, g, b], axis=-1), 0, 255).astype(np.uint8)
 
 
-SHARPEN = 0.9  # 轻微锐化：Vidu 云端渲染本身偏软，不锐化的话观感明显比待机视频糊
+SHARPEN = 0.9
 
 
 def _rgb_array(image: QtGui.QImage) -> np.ndarray:
@@ -141,9 +138,9 @@ class AvatarRtc(QtCore.QObject):
 
     frame_ready = QtCore.Signal(QtGui.QImage)
     failed = QtCore.Signal(str)
-    ready = QtCore.Signal()   # 会话就绪，可以推音频了
-    ended = QtCore.Signal()   # 已挂断，外壳该把待机视频接回来
-    notice = QtCore.Signal(str)  # 服务端回执里的问题（比如复位不被支持），界面上说一句
+    ready = QtCore.Signal()
+    ended = QtCore.Signal()
+    notice = QtCore.Signal(str)
 
     def __init__(
         self,
@@ -154,42 +151,37 @@ class AvatarRtc(QtCore.QObject):
     ) -> None:
         super().__init__(parent)
         self.image_path = pathlib.Path(image_path or avatar_prefs.DEFAULT_IMAGE)
-        self.model = model            # 空 = 用 avatar.json 里的 model（唯一来源，不在代码里兜）
-        self._module = None            # _alirtc 扩展模块
+        self.model = model
+        self._module = None
         self._session: ViduSession | None = None
-        self._engine_created = False  # create() 是否真的调过：回调失败重试时不许再造一个实例
-        self._dll_dir = None  # add_dll_directory 的句柄必须留着，否则目录会从 DLL 搜索路径里掉出去
+        self._engine_created = False
+        self._dll_dir = None
         self._target: QtCore.QSize | None = None
         self._lock = threading.Lock()
         self._state = "idle"           # idle / warming / ready
-        self._warm_seq = 0             # 建会话的代次：挂断/失败会把它推上去，晚回来的那条 worker 自己收摊
-        # 不设上限：TTS 合成得比实时快好几倍，设 50 帧（1 秒）会把前面的话直接丢掉，
-        # 结果就是"声音念完了、嘴只做了开头"。100 秒（5000 帧）当保险丝，正常永远碰不到。
+        self._warm_seq = 0
         self._queue: deque[bytes] = deque()
         self._queue_max = 5000
-        self._silence = b"\x00" * FRAME_BYTES          # 没话说时推静音：保持通话热度
+        self._silence = b"\x00" * FRAME_BYTES
         self._sender: threading.Thread | None = None
         self._send_run = threading.Event()
-        self._raw: tuple | None = None          # 最新一帧原始 I420，等着转
+        self._raw: tuple | None = None
         self._raw_lock = threading.Lock()
         self._raw_ready = threading.Event()
         self._convert_run = threading.Event()
         self._converter: threading.Thread | None = None
         self._frames = 0
-        self._frames_since_speak = 0  # 这一句开始后画面出了多少帧（短句别在还没出画时就收回）
+        self._frames_since_speak = 0
         self._audio_frames = 0
-        # 云端回来的音频：SDK 只把裸数据丢给我们，不会自己出声，所以自己播。
-        # 和画面同一条流、只多一个 100ms 缓冲，比"猜个几百毫秒去补"靠谱得多。
-        self._last_audio_at = 0.0  # 最后一次收到远端音频的时刻
-        self._last_loud_at = 0.0   # 最后一次听到"有声音"的远端音频（判断她念完了没）
-        self._speak_mark = 0.0     # 这一句开始的时刻（quiet 最早只从这个时刻算）
-        self._recv_samples = 0   # 云端已经回传多少采样（48k 单声道；换算成 24k s16 就是字节数）
+        self._last_audio_at = 0.0
+        self._last_loud_at = 0.0
+        self._speak_mark = 0.0
+        self._recv_samples = 0
         self._rate_warned = False
-        self._reset_off = False       # 复位（type 15）被服务端拒过：别再每句白发一遍
-        self._asset_lock = threading.Lock()  # 预加载和建会话都可能去传形象，串着来
-        self._asset_pending: tuple[str, float] = ("", 0.0)  # (上次上传的图哈希, 允许再传的时刻)
+        self._reset_off = False
+        self._asset_lock = threading.Lock()
+        self._asset_pending: tuple[str, float] = ("", 0.0)
 
-    # ---- 第一层：预加载（0 积分） ----
 
     def _configured_model(self) -> str:
         """数字人模型只从 `data/settings/avatar.json` 取；缺这个键就报错，不在代码里兜一个默认值。"""
@@ -205,8 +197,6 @@ class AvatarRtc(QtCore.QObject):
             import os
 
             if not self._engine_created:
-                # 句柄要留着：一回收，这个目录就从 DLL 搜索路径里消失了。
-                # 顺序不能反：_alirtc.pyd 依赖 rtc/ 里的库，目录不在搜索路径上 import 就失败。
                 self._dll_dir = os.add_dll_directory(str(RTC_DIR))
 
             from app import _alirtc
@@ -214,7 +204,6 @@ class AvatarRtc(QtCore.QObject):
             if not self._engine_created:
                 if not _alirtc.create(""):
                     return "引擎创建失败"
-                # 建过就记下：下面回调设置失败时，重试只补回调，不会再 create 出第二个实例
                 self._engine_created = True
             _alirtc.set_video_callback(self._on_yuv)
             _alirtc.set_audio_callback(self._on_remote_audio)
@@ -224,7 +213,6 @@ class AvatarRtc(QtCore.QObject):
                 target=self._convert_loop, daemon=True, name="avatar-convert"
             )
             self._converter.start()
-            # 顺手把形象存进云端（不建会话、不计费）：真说话时省掉现传整张图
             threading.Thread(target=self._warm_asset, daemon=True, name="avatar-asset").start()
             return ""
         except Exception as exc:  # noqa: BLE001
@@ -234,7 +222,6 @@ class AvatarRtc(QtCore.QObject):
     def loaded(self) -> bool:
         return self._module is not None
 
-    # ---- 形象图：配置里选的那张 + 它在云端的编号 ----
 
     def image_now(self) -> pathlib.Path:
         """当前该用的形象图：`avatar.json` 里选了的优先，没选就用内置那张。"""
@@ -251,12 +238,11 @@ class AvatarRtc(QtCore.QObject):
             return ""
         raw = str(asset.get("uploaded_at") or "")
         if "T" not in raw:
-            # 老格式只存了日期，判断不出「几分钟前刚传的」，当没缓存（重传只慢一句）
             return ""
         try:
             uploaded = datetime.fromisoformat(raw)
         except ValueError:
-            return ""          # 时间读不出来当过期：重传一次只慢一句，不拿它赌
+            return ""
         age = datetime.now() - uploaded
         return "" if age.days >= ASSET_MAX_DAYS else str(asset["id"])
 
@@ -275,7 +261,7 @@ class AvatarRtc(QtCore.QObject):
                 return cached
             pending_hash, retry_at = self._asset_pending
             if pending_hash == digest and time.time() < retry_at:
-                return ""      # 刚传过还在处理：每个字都再 POST 一次纯属白花时间
+                return ""
             got = warm_avatar_asset(image, digest)
             if not got:
                 self._asset_pending = (digest, time.time() + ASSET_PENDING_SECONDS)
@@ -286,10 +272,9 @@ class AvatarRtc(QtCore.QObject):
         """预加载后台顺手把形象传上去：真说话时就不用现传了。"""
         try:
             self._ensure_avatar_asset()
-        except Exception as exc:  # noqa: BLE001 - 传不上去只慢一点，不能因此开不了口
+        except Exception as exc:  # noqa: BLE001
             logger.info("[数字人] 形象没传上去，这一句照旧现传图：%s", exc)
 
-    # ---- 第二层：建会话（按秒计费） ----
 
     def warm(self) -> None:
         """后台建会话：建会话 → 入会 → conn_init → 推 1 秒静音把画面叫起来。"""
@@ -317,7 +302,7 @@ class AvatarRtc(QtCore.QObject):
         if self._module is not None:
             try:
                 self._module.leave()
-            except Exception:  # noqa: BLE001 - 收摊失败不该盖住别的
+            except Exception:  # noqa: BLE001
                 logger.debug("[数字人] leave 出错", exc_info=True)
         threading.Thread(target=session.hangup, daemon=True, name="avatar-discard").start()
 
@@ -331,27 +316,24 @@ class AvatarRtc(QtCore.QObject):
         """
         session: ViduSession | None = None
         try:
-            if self._module is None:  # 预加载没跑或失败过：这里补一次，别拿 None 去判断属性
+            if self._module is None:
                 why = self.preload()
                 if why:
                     raise RuntimeError(f"引擎没载起来：{why}")
             image = self.image_now()
             session = ViduSession(read_token(), image, self.model or self._configured_model())
             session.on_event = lambda msg: logger.info("[数字人] %s", msg)
-            session.on_error = self._on_server_error  # 103 错误回执：翻成人话交出去
+            session.on_error = self._on_server_error
             try:
                 avatar_id = self._ensure_avatar_asset(image)
-            except Exception as exc:  # noqa: BLE001 - 拿不到编号就现传图，不影响说话
+            except Exception as exc:  # noqa: BLE001
                 logger.info("[数字人] 形象编号没拿到，这一句现传图：%s", exc)
                 avatar_id = ""
-            # 这一行出现在日志里 = 从这一刻开始按秒计费。只在"按了发送、真要念这句"时才该看到它。
             logger.info("[数字人] 建会话（开始按秒计费）")
             try:
                 live = (session.create(avatar_id=avatar_id) or {}).get("live") or {}
             except RuntimeError as exc:
                 if "still processing" in str(exc):
-                    # 云端还在给这张图生成描述。这时连现传 image_uri 也会被同一个原因拒，
-                    # 只能等；两秒后再试一次，还不行就明确说清，别让她干等着不出画面。
                     logger.info("[数字人] 形象还在云端处理，2 秒后再试一次")
                     time.sleep(2.0)
                     try:
@@ -361,18 +343,15 @@ class AvatarRtc(QtCore.QObject):
                             "新形象还在云端处理（通常一分钟内），这一句先用纯语音念"
                         ) from again
                 elif avatar_id:
-                    # 云端编号失效（90 天到期或被提前清）：作废，用整张图再建一次
                     logger.info("[数字人] 形象编号不可用，改用整张图再建一次")
                     avatar_prefs.save_image_asset(None)
                     live = (session.create() or {}).get("live") or {}
                 else:
                     raise
-            # 云端到底给了什么：出问题时这一段是唯一能看见平台侧说法的地方
             logger.info("[数字人] 建会话回执：%s", str(live)[:300])
             if not self._warm_current(seq):
                 self._discard_warm(session)
                 return
-            # create 成功就已经在计费：先挂上，之后任何一步失败 `_fail` 才能把它挂断
             self._session = session
             rtc = session.rtc
             module = self._module
@@ -382,7 +361,7 @@ class AvatarRtc(QtCore.QObject):
                 raise RuntimeError(
                     "`_alirtc.pyd` 是旧版本（缺 subscribe_audio），跑 tools/build_alirtc.py 重编"
                 )
-            module.subscribe_audio(True)  # 要云端把音频回传回来，当时间轴用
+            module.subscribe_audio(True)
             logger.info("[数字人] 入会前：视频 %d 帧 / 音频 %d 帧", *self._counts())
             code = module.join(
                 rtc["token"], str(rtc["channel_id"]), str(rtc["user_id"]), "noesia"
@@ -394,7 +373,7 @@ class AvatarRtc(QtCore.QObject):
                 self._discard_warm(session)
                 return
             session.open_stream()
-            session.push_pcm(b"\x00\x00" * (SAMPLE_RATE // 2))  # 1 秒静音：她被叫醒但不说话
+            session.push_pcm(b"\x00\x00" * (SAMPLE_RATE // 2))
             if not self._warm_current(seq):
                 self._discard_warm(session)
                 return
@@ -407,7 +386,6 @@ class AvatarRtc(QtCore.QObject):
         except Exception as exc:  # noqa: BLE001
             msg = str(exc)
             if "429" in msg or "concurrency" in msg:
-                # 上一次会话（进程被杀/没挂断）还占着并发的坑，服务端要过一会儿才回收
                 msg = "并发已满：上一次会话还没完全关掉，等十几秒再发一次"
             self._fail(f"建会话失败：{msg}")
 
@@ -416,14 +394,12 @@ class AvatarRtc(QtCore.QObject):
         logger.warning("[数字人] %s", message)
         session, self._session = self._session, None
         if session is not None:
-            # 会话一建出来就按秒计费：失败路径原来只把状态置回 idle，
-            # 云端那一场一直挂着（还占并发名额，下一次就是 429）。
             try:
                 session.hangup()
-            except Exception:  # noqa: BLE001 — 收摊失败不能盖住真正的原因
+            except Exception:  # noqa: BLE001
                 logger.warning("[数字人] 挂断失败的会话时出错", exc_info=True)
         with self._lock:
-            self._warm_seq += 1  # 正在建的那一台也作废（它回来会自己挂掉）
+            self._warm_seq += 1
             self._state = "idle"
         self._send_run.clear()
         self.failed.emit(message)
@@ -497,7 +473,7 @@ class AvatarRtc(QtCore.QObject):
     @property
     def audio_seconds(self) -> float:
         """云端回传的音频有多长。"""
-        return self._recv_samples / RTC_AUDIO_RATE  # 48k 采样数 ÷ 48000 = 秒
+        return self._recv_samples / RTC_AUDIO_RATE
 
     def _on_remote_audio(self, uid, rate, channels, bps, samples, data, begin, end) -> None:
         """SDK 线程回调：只记账。云端这份音频有毛刺不播，只当时间轴。"""
@@ -505,8 +481,6 @@ class AvatarRtc(QtCore.QObject):
         self._recv_samples += int(samples)
         now = time.monotonic()
         self._last_audio_at = now
-        # 远端音频是"观众听到的那份"：它有声音 = 她还在说；它安静下来 = 这句真的念完了。
-        # 比"按字数估时长"准，因为 Vidu 的语速和她自己排的停顿只有它知道。
         try:
             if data:
                 pcm = np.frombuffer(bytes(data), dtype=np.int16)
@@ -518,7 +492,6 @@ class AvatarRtc(QtCore.QObject):
             self._rate_warned = True
             logger.warning("[数字人] 远端音频采样率是 %s，不是 %d", rate, RTC_AUDIO_RATE)
 
-    # ---- 音频：一份 PCM 推给云端驱动口型 ----
 
     def begin_speak(self) -> bool:
         """开口前调用：把攒的帧清掉，启动定速发送线程。没就绪返回 False。"""
@@ -538,7 +511,7 @@ class AvatarRtc(QtCore.QObject):
             return
         for offset in range(0, len(pcm), FRAME_BYTES):
             if len(self._queue) >= self._queue_max:
-                self._queue.popleft()  # 保险丝：真到了这一步说明云端已经跟不上了
+                self._queue.popleft()
             self._queue.append(pcm[offset : offset + FRAME_BYTES])
 
     def _send_loop(self) -> None:
@@ -548,7 +521,6 @@ class AvatarRtc(QtCore.QObject):
             session = self._session
             if session is None:
                 break
-            # 没话说就推静音：Vidu 长时间收不到音频会「睡着」，再开口要 1.6 秒才醒
             frame = self._queue.popleft() if self._queue else self._silence
             try:
                 session.push_frame(frame)
@@ -559,7 +531,7 @@ class AvatarRtc(QtCore.QObject):
             delay = next_at - time.perf_counter()
             if delay > 0:
                 time.sleep(delay)
-            elif delay < -0.2:  # 落后太多就别追了，重新对齐节奏
+            elif delay < -0.2:
                 next_at = time.perf_counter()
 
     def say_text(self, text: str) -> None:
@@ -605,13 +577,12 @@ class AvatarRtc(QtCore.QObject):
         if self._session is not None:
             self._session.interrupt()
 
-    # ---- 第三层：挂断（停计费） ----
 
     def hangup(self) -> None:
         self._send_run.clear()
         self._queue.clear()
         with self._lock:
-            self._warm_seq += 1  # 正在进行的那次建会话作废：它回来会自己把这台挂掉
+            self._warm_seq += 1
         session = self._session
         self._session = None
         with self._lock:
@@ -631,14 +602,13 @@ class AvatarRtc(QtCore.QObject):
         self._convert_run.clear()
         self._send_run.clear()
         with self._lock:
-            self._warm_seq += 1  # 退出时正在建的那一台也得作废，不然它会在关窗后又冒出来计费
+            self._warm_seq += 1
         session = self._session
         self._session = None
         if session is not None:
             logger.info("[数字人] 退出时挂断会话（停计费）")
             session.hangup()
 
-    # ---- 画面 ----
 
     def set_target_size(self, size: QtCore.QSize) -> None:
         """显示尺寸：帧先缩到这里再抠像（跟待机视频同一条路，省算力）。"""
@@ -676,7 +646,6 @@ class AvatarRtc(QtCore.QObject):
             target = self._target
             step = 1
             if target is not None and target.width() > 0:
-                # 显示宽不到源的四分之一才跳采样（跳了会糊，宁可贵一点）
                 step = max(1, width // (target.width() * 4))
             rgb = _i420_to_rgb(y, u, v, width, height, stride_y, stride_u, stride_v, step)
             rgb_h, rgb_w = rgb.shape[:2]
@@ -684,7 +653,6 @@ class AvatarRtc(QtCore.QObject):
                 rgb.data, rgb_w, rgb_h, rgb_w * 3, QtGui.QImage.Format_RGB888
             ).copy()
             if target is not None and image.size() != target:
-                # 最近邻，跟待机视频那条路完全一致（平滑缩放实测明显更软，观感就是"糊"）
                 image = image.scaled(
                     target, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.FastTransformation
                 )
@@ -698,4 +666,4 @@ class AvatarRtc(QtCore.QObject):
             try:
                 self.frame_ready.emit(key_image(image))
             except RuntimeError:
-                return  # 窗口已经销毁（退出中），转换线程跟着收工
+                return

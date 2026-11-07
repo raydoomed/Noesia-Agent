@@ -51,11 +51,10 @@ class SpeechBar(QtWidgets.QFrame):
         self._stop.clicked.connect(self.stop_requested.emit)
         row.addWidget(self._stop)
 
-    # ---- 三个状态：准备 / 播 / 收 ---- 
 
     def show_preparing(self) -> None:
         self._title.setText("正在准备音频")
-        self._progress.setRange(0, 0)  # 不确定进度：一条来回跑的滑块
+        self._progress.setRange(0, 0)
         self._clock.setText("")
         self.setVisible(True)
 

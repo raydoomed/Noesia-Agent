@@ -27,7 +27,7 @@ def _as_dict(item) -> dict:
         "label": getattr(item, "label", ""),
         "backend": getattr(item, "backend", ""),
         "model": getattr(item, "model", ""),
-        "available": getattr(item, "available", False),  # 没说能用就当不能用
+        "available": getattr(item, "available", False),
         "reason": getattr(item, "reason", ""),
     }
 
@@ -51,11 +51,9 @@ def group_models(items) -> list[dict]:
         option_id = str(row.get("id") or "")
         provider = str(row.get("backend") or "").strip()
         if not option_id and not provider:
-            placeholder.append(row)  # 既没 id 也没供应商：真正的「还没配置模型」占位
+            placeholder.append(row)
             continue
         label = str(row.get("label") or provider)
-        # 一级标题只留供应商名：清单项的 label 是「显示名 · 模型名」，把尾巴那截去掉。
-        # 用定长去尾而不是 split(" · ")[0]：供应商名自己带「 · 」时也不会被切成半个名字。
         model_name = str(row.get("model") or "")
         if model_name and label.endswith(f" · {model_name}"):
             label = label[: -len(model_name) - 3]
@@ -73,7 +71,6 @@ def group_models(items) -> list[dict]:
         group["items"].append(row)
         group["available"] = group["available"] or bool(row.get("available", False))
 
-    # 先「能用的那几组排前面」，再按名字：同一档里名次稳定，不会因为引擎这次返回的先后变来变去
     for group in groups:
         group["items"].sort(key=_model_sort_key)
     groups.sort(key=lambda group: (not group["available"], group["label"].casefold()))
@@ -97,35 +94,26 @@ def fill_menu(
     menu.clear()
     groups = group_models(items)
     if not any(group["provider"] for group in groups):
-        # 空清单时别弹出个空菜单。措辞要说"没取到"而不是"还没有"：拿不到 live 目录时
-        # 清单就是空的（不再拿仓库内静态表充数），用户该做的是点下面那条刷新。
         menu.addAction("模型清单没取到，点下面的刷新重试").setEnabled(False)
         if on_refresh is not None:
             return _add_refresh_action(menu, on_refresh, refreshing)
         return None
     for group in groups:
         if not group["provider"]:
-            continue  # 有真供应商时不再啰嗦「还没配置模型」，按钮上已经写着
+            continue
 
         count = len(group["items"])
         title = f"{group['label']} · {count} 个模型" if group["available"] else f"{group['label']} · 还没配置"
         sub = menu.addMenu(title)
-        # 标题里的「几个模型」会随清单变，重建后没法靠它找回原来是哪一家：把不含数量的
-        # 供应商名挂在 action 上（`data()`），重画时按它认。
         sub.menuAction().setData(group["label"])
-        # 子菜单是独立的弹出窗口，不会自动带上父菜单的 objectName：不写这一行，它就退回
-        # 系统默认的白底，而菜单项文字是样式表里的浅色——白底白字，模型名直接看不见。
         sub.setObjectName("modelmenu")
         sub.setToolTipsVisible(True)
-        # 勾选必须互斥：QAction 自己不带互斥，点第二条时第一条不会松手，菜单里就会出现两个勾
-        # （而且只有引擎回了清单才重画，中间那段时间一直两个勾）。给每个子菜单一个排他组。
         picks = QtGui.QActionGroup(sub)
         picks.setExclusive(True)
         for row in group["items"]:
             model = str(row.get("model") or row.get("label") or "")
             action = sub.addAction(model or str(row.get("id")))
             if not str(row.get("id") or ""):
-                # 这家的模型名要配了密钥才问得到：只留一句「配了就出现」，点了也没事干
                 action.setText("配好密钥后这里会出现模型")
                 action.setEnabled(False)
                 action.setToolTip(str(row.get("reason") or ""))
@@ -135,8 +123,6 @@ def fill_menu(
             action.setChecked(str(row.get("id")) == current)
             action.setEnabled(bool(row.get("available", True)))
             action.setToolTip(str(row.get("reason") or row.get("id") or ""))
-            # 灰不灰交给样式表（`QMenu::item:disabled`）：QAction 没有 setForeground，
-            # 菜单项的颜色只能由样式控制。
             action.triggered.connect(lambda _checked=False, option_id=str(row.get("id")): on_pick(option_id))
 
     if on_refresh is not None:
@@ -168,8 +154,6 @@ def _add_refresh_action(
     button.setStyleSheet(_REFRESH_QSS)
     button.setFlat(True)
     button.setCursor(QtCore.Qt.PointingHandCursor)
-    # 不用 setEnabled(False) 表示「刷新中」：把菜单里正亮着的控件禁用，QMenu 会把高亮甩回
-    # 第一行（用户看到「点完自己跳到第一个」）。改成变灰 + 点击时忽略，高亮就留在原地。
     button.setProperty("busy", bool(refreshing))
     button.setToolTip("重新向引擎要一次模型清单：上游新上的会加进来，下架的会去掉")
     holder = QtWidgets.QWidgetAction(menu)
@@ -187,7 +171,5 @@ def current_label(items, current: str, *, fallback: str = "选模型") -> str:
         if str(row.get("id") or "") == current:
             return str(row.get("model") or row.get("label") or current)
     if current:
-        # 清单这一刻没有它（缓存刚作废、后台还在重探）：引擎说了现在跑的是哪个，就照它写。
-        # 退回「选模型」会让用户以为刚才选的没生效——那正是最容易被当成的「没保存上」。
         return current.split(":", 1)[1] if ":" in current else current
     return fallback

@@ -19,8 +19,6 @@ from paths import resource_file
 
 logger = logging.getLogger(__name__)
 
-# 随包发布的数据文件：源码树里在 `src/` 下，装成 wheel 后在 `share/noesia/`
-# （`paths.resource_file` 两处都找）。写死 `__file__` 旁边那份的话，非 editable 安装读不到。
 CATALOG_PATH = resource_file("tts_catalog.json")
 
 

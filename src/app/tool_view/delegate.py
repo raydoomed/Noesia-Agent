@@ -19,7 +19,6 @@ from typing import Any, Mapping
 
 DELEGATE_TOOL = "delegate_task"
 
-# 目标、摘要这类长文本在卡片上的上限
 GOAL_MAX = 60
 SUMMARY_MAX = 200
 PREVIEW_MAX = 60
@@ -45,13 +44,11 @@ _STATUS_LABELS = {
 
 _MODE_LABELS = {"background": "后台运行", "sync": "同步等结果", "foreground": "同步等结果"}
 
-# 行首那个记号：跑着的、停着的（后台派发的子代理已经没人看着它）、成了、没成
 GLYPH_RUNNING = "◐"
 GLYPH_PARKED = "·"
 GLYPH_DONE = "✓"
 GLYPH_FAILED = "✗"
 
-# `--- ✓ TASK 1/3: <目标>  (status=completed, api_calls=11, 108.64s) ---`
 _TASK_HEAD = re.compile(r"^---\s*[✓✗×]?\s*TASK\s+(\d+)/(\d+):\s*(.*?)\s*\((.*?)\)\s*---\s*$")
 _DELEGATION_ID = re.compile(r"deleg_[0-9a-f]{6,}")
 _TOTAL_DURATION = re.compile(r"Total duration:\s*([0-9.]+)s")
@@ -120,12 +117,10 @@ def rows(args: Any, result: Any) -> list[dict]:
     ids = _strings(record.get("subagent_ids"))
     titles = goals(args) or dispatched or [f"任务 {index + 1}" for index in range(len(finished))]
     if len(finished) > len(titles):
-        # 结果比参数里声明的任务多：按结果自己的目标补齐，别把后面几条吞掉
         titles = titles + [
             _text(entry.get("goal")) or f"任务 {index + 1}"
             for index, entry in enumerate(finished[len(titles):], start=len(titles))
         ]
-    # 还没结果：这一行是「派发中」；结果回来了但只是后台派发回执：它是「停着的」，没人追它
     idle_status = "dispatching" if result is None else "dispatched"
 
     out: list[dict] = []
@@ -138,7 +133,6 @@ def rows(args: Any, result: Any) -> list[dict]:
                 "index": index,
                 "goal": goal,
                 "status": status,
-                # 成没成单独一个判定：`超时` / `已中断` 显示自己的词，但都不算成
                 "state": settled_status(status) if entry else "running",
                 "seconds": _number(entry.get("duration_seconds")) if entry else None,
                 "model": _text(entry.get("model")) if entry else "",
@@ -193,7 +187,7 @@ def running_title(args: Any) -> str:
 def status_glyph(row: Mapping[str, Any]) -> str:
     status = _text(row.get("status")).lower()
     if status == "dispatched":
-        return GLYPH_PARKED  # 停着的，不是跑着的：这里转圈就是假装我们还看得见它
+        return GLYPH_PARKED
     state = row.get("state")
     if state == "completed":
         return GLYPH_DONE

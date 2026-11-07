@@ -240,7 +240,7 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         stripped = _strip_matching_provider_prefix(name, provider)
         if stripped == name and name.startswith(("openai/", "openai:")):
-            return name[len("openai/"):]  # openai 系别名把 openai/gpt-5.4 与 openai:gpt-5.4 都还原成 gpt-5.4
+            return name[len("openai/"):]
         return stripped
 
     if provider == "deepseek":

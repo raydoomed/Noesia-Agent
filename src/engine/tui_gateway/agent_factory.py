@@ -17,8 +17,6 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    # 没有 env / config 指定就问目录里标了默认的那个（只读缓存）；目录也没说就空着。
-    # 不再随包写死一个模型名：那会让「用户还没选模型」悄悄变成「悄悄用了某个模型」。
     with contextlib.suppress(Exception):
         from noesia_cli.models import get_preferred_silent_default_model
         return get_preferred_silent_default_model()
@@ -585,8 +583,6 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     if any(overrides.values()):
         _rederive_per_model_route(model, resolution.runtime)
     if not str(model or "").strip():
-        # 有 Key、没模型：这轮跑不了。别让供应商回一句 400 的 "model is required" 当答案，
-        # 直接説清楚该去哪儿点。
         raise RuntimeError("还没有启用模型：打开「设置 → 模型设置」，选一个模型再点保存并启用。")
     return model, resolution.runtime
 

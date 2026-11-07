@@ -28,7 +28,6 @@ from app.audio_devices import Endpoint, _call, _enumerator, _guid, _release
 
 logger = logging.getLogger(__name__)
 
-# ---- WASAPI 常量
 IID_IAudioClient = "{1CB9AD4C-DBFA-4c32-B178-C2F568A703B2}"
 IID_IAudioCaptureClient = "{C8ADBD64-E71E-48a0-A4DE-185C395CD317}"
 
@@ -36,7 +35,6 @@ AUDCLNT_SHAREMODE_SHARED = 0
 AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM = 0x80000000
 AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY = 0x08000000
 
-# 缓冲区 200ms：够顶住界面 16ms 的取数节奏，又不至于让「按下到有数据」等太久
 _BUFFER_HNS = 2_000_000
 
 WAVE_FORMAT_PCM = 1
@@ -151,13 +149,9 @@ class WasapiCapture:
             raise CaptureError(f"「{self.endpoint.name}」打不开（Activate hr=0x{hr & 0xFFFFFFFF:08X}）")
         self._client = client
 
-        # 第一步：按调用方要的格式开，让系统的重采样器去转（大多数设备走这条）
         flags = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
         hr = self._initialize(client, ctypes.cast(byref(self._format), c_void_p), flags)
         if hr != 0:
-            # 第二步：系统不肯按我们要的采样率转，就改用它自己的采样率和声道数——
-            # 但位深仍坚持 16bit。混音格式常是 32bit float，直接照抄的话上层按 int16
-            # 解析会得到一堆垃圾，所以这里只要采样率/声道，不要位深。
             native = self._mix_format(client)
             if native is None:
                 self._release_all()
@@ -183,7 +177,6 @@ class WasapiCapture:
             )
             self._format = fmt16
 
-        # 实际拿到多少以设备为准，调用方按这个值去重采样
         self.rate = self._format.nSamplesPerSec
         self.channels = self._format.nChannels
 
@@ -218,22 +211,17 @@ class WasapiCapture:
                 self._capture, byref(data), byref(frames), byref(flags), byref(position), byref(qpc)
             )
             if hr < 0:
-                # 负 HRESULT 是「出事了」，不是「这一刻没数据」：设备被拔、驱动重启、
-                # 蓝牙链路断（AUDCLNT_E_DEVICE_INVALIDATED = 0x88890004）全在这里。
-                # 以前一律 break 当成没数据：流看着还开着，音频再也不来，松手得到
-                # 「说话太短了」或半句话，界面一次都不知道麦克风已经死了。
                 self._opened = False
                 self._release_all()
                 raise CaptureError(
                     f"「{self.endpoint.name}」录音中断开了（hr=0x{hr & 0xFFFFFFFF:08X}）"
                 )
             if not frames.value:
-                break  # AUDCLNT_S_BUFFEREMPTY：这一刻真没数据，下一轮再来取
+                break
             size = frames.value * self._format.nBlockAlign
             if data:
                 chunks.append(ctypes.string_at(data, size))
             else:
-                # SILENT 包：指针是空的，但这段时长真实存在，不补零录音就会变短
                 chunks.append(b"\x00" * size)
             _call(self._capture, 4, ctypes.c_long, ctypes.c_uint)(self._capture, frames.value)
         return b"".join(chunks)
@@ -248,7 +236,6 @@ class WasapiCapture:
         self._release_all()
 
     def _release_all(self) -> None:
-        # 顺序固定：采集 → 客户端 → 设备。反了会留下半开着的 endpoint
         for attr in ("_capture", "_client", "_device"):
             handle = getattr(self, attr, None)
             if handle:

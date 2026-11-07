@@ -18,7 +18,6 @@ from dataclasses import dataclass
 # route to the desktop "Accounts" tab, everything else (api_key, and aws_sdk configured via
 # AWS_REGION/AWS_PROFILE) to "API keys". Mirrors the auth_type strings in PROVIDER_REGISTRY and
 # ProviderProfile: external_process = copilot-acp (spawns `copilot --acp --stdio`), copilot = GitHub
-# Copilot token / gh auth. oauth_* 只剩第三方插件 provider 会用。
 _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
     {"oauth_device_code", "oauth_external", "external_process", "copilot"}
 )

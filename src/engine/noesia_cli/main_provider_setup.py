@@ -418,7 +418,6 @@ def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     return None if idx is _CANCELLED else idx
 
 
-# 没有「Qwen Portal 大概是这几个模型」的随包名单了：模型清单只问线上。
 
 # (mode value, label, description, accepted answers); "" = auto-detect
 _CUSTOM_API_MODES = (

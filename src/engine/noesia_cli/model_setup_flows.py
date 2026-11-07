@@ -578,7 +578,6 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     profile = get_provider_profile(provider_id)
     if profile is not None:
         # The profile owns endpoint (models_url), headers and response shape. Same probe as the
-        # ``/model`` picker; 取不到就返回空，让用户手填。
         model_list = probe_profile_catalog(provider_id, profile, api_key_for_probe, effective_base)
         if model_list:
             _report_live_models(model_list, f"{pconfig.name} catalog")
@@ -588,7 +587,7 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     if live_models:
         _report_live_models(live_models, f"{pconfig.name} API")
         return live_models
-    return []  # 取不到就让用户手填
+    return []
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):

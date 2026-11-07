@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-# 行号列一行 20px
 PREVIEW_LINE_PX = 20
 
 
@@ -74,7 +73,7 @@ class DiffPreviewWindow(QtWidgets.QDialog):
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.Start)
         self.view.setTextCursor(cursor)
 
-    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802 - Qt 回调命名
+    def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802 - Qt
         if event.key() == QtCore.Qt.Key.Key_Escape:
             self.close()
             return

@@ -34,7 +34,6 @@ _last_interactive_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] 
 # move this signature and rescan on the next lookup instead of waiting for /reload-skills (CFG-8).
 _skill_commands_sig_by_key: dict[tuple, tuple] = {}
 _publish_lock = threading.Lock()
-# ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
 # applied by noesia_cli/commands_platforms.py, not here.
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")

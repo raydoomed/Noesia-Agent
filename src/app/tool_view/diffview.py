@@ -14,8 +14,6 @@ CONTEXT = "context"
 
 META_PREFIXES = ("diff --git ", "index ", "new file mode ", "deleted file mode ", "old mode ", "new mode ")
 
-# hunk 之前的这一段「文件头」只是把路径再说一遍，
-# 而工具行的抬头本来就写着路径；绝对路径到了这里还会变成 `a/<绝对路径>` 这种难看的写法。
 DIFF_HEADER_PREFIXES = (
     "diff --git",
     "index ",
@@ -32,8 +30,6 @@ def _is_arrow_header_line(line: str) -> bool:
     trimmed = line.strip()
     if trimmed[:1] in "+-@":
         return False
-    # `a/<旧> → b/<新>`。路径里可能带空格（Windows 绝对路径就带），
-    # 按「一整个非空白串」去卡正则会漏掉，所以只认两端的 a/ 和 b/ 标记。
     return "→" in trimmed and trimmed.startswith(("a/", "b/", "a\\", "b\\"))
 
 

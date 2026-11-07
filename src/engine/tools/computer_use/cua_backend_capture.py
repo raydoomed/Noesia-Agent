@@ -238,7 +238,6 @@ class _CaptureMixin:
                              key=lambda w: not _is_desktop_window(w, _DESKTOP_BACKDROP_NAMES))
             return desktop or self._failed_capture(mode, _NO_DESKTOP_WINDOW_MSG.format(app=app))
         # When the filter matches nothing, say so instead of silently capturing the frontmost window — on
-        # macOS list_windows returns the localized app name (e.g. "計算機"), so `app="Calculator"` legitimately misses.
         return self._match_windows_for_app(windows, app) or self._failed_capture(mode, _NO_APP_MATCH_MSG.format(app=app))
 
     def _gws_args(self) -> dict[str, Any]:

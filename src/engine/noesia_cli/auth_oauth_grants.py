@@ -33,7 +33,6 @@ _DEVICE_CODE_BLOCK_PROVIDERS = ("noesia",)
 
 
 def _block_tokens(block: dict[str, Any]) -> dict[str, Any]:
-    # Noesia 把令牌对平铺在 block 上；兼容历史 ``tokens`` 嵌套。
     tokens = block.get("tokens")
     return tokens if isinstance(tokens, dict) else block
 

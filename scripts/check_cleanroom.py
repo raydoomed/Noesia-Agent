@@ -69,9 +69,6 @@ def init_data(room: Path, python: str) -> None:
     print("[2] init_data:", (proc.stdout or proc.stderr).strip().replace("\n", " | "))
     if proc.returncode != 0:
         raise RuntimeError("init_data 失败")
-    # 新房子里必须一个记忆文件都没有：人设与记忆由引擎首次使用时创建。
-    # 判断「是不是新用户」看的是密钥/会话/供应商，不看 SOUL.md；这里是防 init_data
-    # 把默认人设写死在仓库里（那样等于绕过引擎的注入与升级逻辑）。
     leftovers = [
         p.relative_to(room).as_posix()
         for p in (room / "data").rglob("*")
@@ -90,14 +87,10 @@ class Engine:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         env["PYTHONPATH"] = str(engine)
         env["NOESIA_HOME"] = str(room / "data" / "NoesiaHome")
-        # 干净房间查的是「新目录 + 空 data/」能不能跑起来，不是「没有密钥能不能跑」：
-        # 根目录 .env 里的变量一并带进进程环境（有的键引擎直接从环境读）。
         for key, value in _dotenv(PROJECT_ROOT / ".env").items():
             env.setdefault(key, value)
         self.log_path = room / "engine.log"
         self._log = self.log_path.open("w", encoding="utf-8")
-        # 引擎主要认 <home>/.env：房间里也放一份，等于「新用户照说明把 key 填进去」，
-        # 不是偷偷替他配好。本机 data/ 里的记忆、会话一个字节都不带过来。
         source_env = PROJECT_ROOT / "data" / "NoesiaHome" / ".env"
         env_file = Path(env["NOESIA_HOME"]) / ".env"
         env_file.parent.mkdir(parents=True, exist_ok=True)
@@ -117,8 +110,6 @@ class Engine:
             errors="replace",
         )
         self._id = 0
-        # 读帧放一条线程：`stdout.readline()` 没有超时，引擎一旦卡住不吐字，主线程就永远停在那儿，
-        # 上面那些 deadline 全都成了摆设。线程只管把行丢进队列，等多久由调用方决定。
         self._lines: queue.Queue[str] = queue.Queue()
         threading.Thread(target=self._pump, name="cleanroom-stdout", daemon=True).start()
         print(f"[4] 引擎 pid={self.proc.pid}，日志 {self.log_path}")
@@ -127,7 +118,7 @@ class Engine:
         assert self.proc.stdout is not None
         for line in self.proc.stdout:
             self._lines.put(line)
-        self._lines.put("")  # 读到头（进程关了 stdout）
+        self._lines.put("")
 
     def send(self, method: str, params: dict | None = None) -> int:
         self._id += 1
@@ -209,9 +200,6 @@ class Engine:
             params["session_id"] = session_id
         result = self.wait_result(self.send("config.set", params))
         if isinstance(result, dict) and result.get("error"):
-            # 本机 config 里的模型名引擎不认（线上清单改过名/下线，比如 deepseek-flash）：
-            # 照抄它会让体检以「干净房间跑不起来」收场，而代码其实没问题。
-            # 这时按房间自己的清单挑同一家的第一个模型重试一次。
             alt = self.first_model(provider)
             if alt and alt != choice:
                 print(f"[6] 本机配置的 {choice} 引擎不认（{result['error'].get('code')}），改用清单里的 {alt}")
@@ -225,7 +213,7 @@ class Engine:
         """房间里引擎认的、这一家的第一个模型（`provider:model`）；问不到就回空。"""
         try:
             result = self.wait_result(self.send("model.options", {"explicit_only": True}), timeout=60)
-        except Exception:  # noqa: BLE001 - 拿不到清单就按原样继续，别把体检搞崩
+        except Exception:  # noqa: BLE001
             return ""
         for row in (result or {}).get("providers") or []:
             if not isinstance(row, dict) or str(row.get("slug") or "") != provider:
@@ -249,9 +237,7 @@ class Engine:
             result = frame.get("result")
             if isinstance(result, dict) and result.get("session_id") and started is None:
                 started = time.perf_counter()
-                # 房间是空的：会话起来以后先选一次模型（引擎要求必须带 session_id），再发话
                 self.pick_model(str(result["session_id"]))
-                # 会话 id 必须带上：引擎按它找会话，不带就是 session not found
                 self.send("prompt.submit", {"session_id": result["session_id"], "text": text})
                 continue
             params = frame.get("params") or {}
@@ -264,7 +250,6 @@ class Engine:
                     first = (time.perf_counter() - (started or time.perf_counter())) * 1000
                 parts.append(str(payload.get("text", "")))
             elif kind == "message.complete":
-                # 有的失败路径不逐字推，只在完成帧里带 text/error——两处都要接住
                 if not parts and payload.get("text"):
                     parts.append(str(payload["text"]))
                 if payload.get("error"):
@@ -302,8 +287,6 @@ def main(argv: list[str] | None = None) -> int:
         engine = Engine(room, args.python)
         engine.wait_ready()
         if not engine.has_key:
-            # 「跳过」不能算「通过」：exit 0 + [PASS] 会让守门人以为整条链路验过了，
-            # 其实最关键的「能对话」一次都没跑。用 2 把「跳过」和「失败(1)」分开。
             print("[SKIP] 本机 data/NoesiaHome/.env 里没有密钥：只验到「引擎起来了」，对话这步跳过")
             print("[SKIP] 这次不算通过：填好密钥再跑一遍才算验完")
             return 2
@@ -313,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError("没收到回复")
         print("[PASS] 干净环境下 clone → init_data → 引擎 → 对话 全通")
         return 0
-    except Exception as exc:  # noqa: BLE001 - 体检脚本要把原因打全
+    except Exception as exc:  # noqa: BLE001
         print(f"[FAIL] {exc}")
         return 1
     finally:

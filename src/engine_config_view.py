@@ -26,9 +26,9 @@ def engine_defaults(core_path: Path | str) -> dict[str, Any]:
     if str(core) not in sys.path:
         sys.path.insert(0, str(core))
 
-    from noesia_cli.config_defaults import DEFAULT_CONFIG  # noqa: PLC0415 - 依赖 sys.path，必须延迟导入
+    from noesia_cli.config_defaults import DEFAULT_CONFIG  # noqa: PLC0415
 
-    return copy.deepcopy(DEFAULT_CONFIG)  # 深拷贝：调用方改自己的副本，不会污染引擎默认表
+    return copy.deepcopy(DEFAULT_CONFIG)
 
 
 def translated_comments() -> dict[str, str]:
@@ -39,7 +39,7 @@ def translated_comments() -> dict[str, str]:
     source = resource_file("config_comments_zh.json")
     if not source.exists():
         return {}
-    import json  # noqa: PLC0415 - 只有生成配置时才需要
+    import json  # noqa: PLC0415
 
     return json.loads(source.read_text(encoding="utf-8"))
 
@@ -60,7 +60,7 @@ def engine_comments(core_path: Path | str) -> dict[tuple[str, ...], str]:
     生成的配置文件要给用户看"这个值是干嘛的"，唯一可信的来源就是引擎自己的注释——
     自己另写一份说明迟早和引擎行为对不上。没有注释的键就不写注释。
     """
-    import ast  # noqa: PLC0415 - 只在生成说明时用
+    import ast  # noqa: PLC0415
     import io  # noqa: PLC0415
     import tokenize  # noqa: PLC0415
 
@@ -69,7 +69,6 @@ def engine_comments(core_path: Path | str) -> dict[tuple[str, ...], str]:
     lines = text.splitlines()
     tree = ast.parse(text)
 
-    # 行尾注释（`"nudge_interval": 10,  # 每轮…`）也算说明，一起收进来
     trailing: dict[int, str] = {}
     for token in tokenize.generate_tokens(io.StringIO(text).readline):
         if token.type == tokenize.COMMENT:

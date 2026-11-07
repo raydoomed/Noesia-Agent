@@ -33,8 +33,6 @@ LFR_M = 7
 LFR_N = 6
 FEAT_DIM = N_MELS * LFR_M  # 560
 
-# 空闲多久把模型从内存里放掉。模型占 100 多 MB 常驻没必要，
-# 用户不说话了就该还回去
 IDLE_UNLOAD_SECONDS = 300.0
 
 _REPO = "iic/SenseVoiceSmall-onnx"
@@ -46,10 +44,8 @@ _FILES: dict[str, tuple[int, str]] = {
     "am.mvn": (11203, "29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5"),
 }
 
-# 输出里带一堆角标：<|zh|><|HAPPY|><|Speech|><|woitn|>……全剥掉只剩正文
 _TAG = re.compile(r"<\|[^|]*\|>")
 
-# 下载超时。模型 230 MB，10 秒超时在大文件上会误伤
 _TIMEOUT = 30
 
 
@@ -57,7 +53,6 @@ class ModelMissing(RuntimeError):
     """模型还没下好。消息可以直接给用户看。"""
 
 
-# ---------------------------------------------------------------- 路径
 
 def model_dir() -> Path:
     """模型存放目录：项目内 `data/models/SenseVoice`。"""
@@ -91,7 +86,6 @@ def downloaded_bytes() -> int:
     return done
 
 
-# ---------------------------------------------------------------- 下载
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -156,14 +150,13 @@ def _fetch(name: str, part: Path, start: int, progress) -> None:
             handle.write(block)
             done += len(block)
             now = time.monotonic()
-            if progress and now - last > 0.1:  # 每秒最多报十次，别把界面刷死
+            if progress and now - last > 0.1:
                 last = now
                 progress(name, done, total)
         if progress:
             progress(name, done, total)
 
 
-# ---------------------------------------------------------------- 推理
 
 class _Engine:
     """模型 + 分词器 + CMVN 参数，一次装好反复用。"""
@@ -176,7 +169,6 @@ class _Engine:
         import onnxruntime
 
         options = onnxruntime.SessionOptions()
-        # 语音输入是「说完就要」，抢 4 个核足够；再多会跟界面抢 CPU
         options.intra_op_num_threads = 4
         options.log_severity_level = 3
         started = time.monotonic()
@@ -202,11 +194,9 @@ class _Engine:
         logits, lengths = self.session.run(None, {
             "speech": features[None, :, :],
             "speech_lengths": np.array([features.shape[0]], dtype=np.int32),
-            "language": np.array([0], dtype=np.int32),   # 0 = 自动判语种
-            "textnorm": np.array([0], dtype=np.int32),   # 0 = 数字带标点
+            "language": np.array([0], dtype=np.int32),
+            "textnorm": np.array([0], dtype=np.int32),
         })
-        # 有词表就走前缀搜索（把同音的错字按词表纠正回来），
-        # 没词表还走原来的贪心。词表出任何问题都退回贪心，绝不让识别失败。
         try:
             words = _vocab()
         except Exception:  # noqa: BLE001
@@ -221,7 +211,6 @@ class _Engine:
                 logger.warning("[语音] 词表解码失败，这一句退回普通解码", exc_info=True)
         if not decoded:
             text = _decode(np, logits[0], int(lengths[0]), self.tokens)
-        # 攒词表用的语料：和上面怎么解码无关，只用模型自己的把握程度挑可信片段
         try:
             _remember_speech(_learnable(np, logits[0], int(lengths[0]), self.tokens))
         except Exception:  # noqa: BLE001
@@ -259,7 +248,7 @@ def _fbank(knf, samples):
     options.frame_opts.frame_shift_ms = 10.0
     options.frame_opts.frame_length_ms = 25.0
     options.frame_opts.window_type = "hamming"
-    options.frame_opts.dither = 0.0        # 抖动是给训练用的，推理要可复现
+    options.frame_opts.dither = 0.0
     options.frame_opts.snip_edges = True
     options.mel_opts.num_bins = N_MELS
     options.energy_floor = 0.0
@@ -319,11 +308,7 @@ def _decode(np, logits, length: int, tokens: list[str]) -> str:
     return text.replace("▁", " ").strip()
 
 
-# ---------------------------------------------------------------- 词表偏置
 
-# 词表由 app 侧算好写进 data/settings/voice_vocab.json，这里只读。
-# 内容是按用户自己打的字统计出来的专有名词；引擎不认识它们，
-# 但解码时给这些词的路径一点概率补偿，能把同音的错字拉回来。
 _VOCAB_BOOST = 1.6
 _BEAM_WIDTH = 8
 _BEAM_TOP_K = 12
@@ -365,8 +350,6 @@ def _vocab() -> list[str]:
     except (OSError, ValueError):
         pass
     with _vocab_lock:
-        # 只有读成功才把 stamp 记下：读失败（文件正好在换、权限、编码问题）
-        # 也记 stamp 的话，这个 mtime 就一直钉着空表，直到下次重算才恢复。
         if read_ok:
             _vocab_stamp = stamp
         _vocab_words = words
@@ -389,8 +372,6 @@ def _decode_beam(np, logits, length: int, tokens: list[str], vocab: list[str]) -
 
     log_boost = math.log(_VOCAB_BOOST)
     max_word = max(len(w) for w in vocab)
-    # 词表和「每个词的所有 ≥2 字前缀」摊进集合：判定只看末尾几个字的每种后缀，
-    # 是 O(max_word) 次查表，而不是逐词比一遍字符串。
     index: set[str] = set()
     for word in vocab:
         index.add(word)
@@ -398,11 +379,9 @@ def _decode_beam(np, logits, length: int, tokens: list[str], vocab: list[str]) -
             index.add(word[:cut])
 
     blank_ids = (0, 1, 2)
-    # 前缀 -> [全是空白的对数概率, 以非空白结尾的对数概率]
     beams: dict[tuple[int, ...], list[float]] = {(): [0.0, -1e30]}
     for frame_index in range(horizon):
         frame = logits[frame_index]
-        # 只展开概率最高的若干个字：整张表两万多个 token，全展开没意义
         top = np.argsort(frame)[-_BEAM_TOP_K:]
         grown: dict[tuple[int, ...], list[float]] = {}
 
@@ -419,10 +398,7 @@ def _decode_beam(np, logits, length: int, tokens: list[str], vocab: list[str]) -
                     bump(prefix, 0, reachable + step)
                     continue
                 if prefix and prefix[-1] == token:
-                    # 同一个字连着出：这一帧的概率仍归到同一条前缀（合并），状态是「非空白」
                     bump(prefix, 1, p_non_blank + step)
-                    # 要真的变两个字，只能上一帧是空白——所以起点是 p_blank，不是合并后的总数。
-                    # 用总数会让「诺诺诺」解成「诺诺」，所有叠字都会多出一个。
                     longer = prefix + (token,)
                     bump(longer, 1, p_blank + step + _tail_boost(tokens, longer, index, max_word, log_boost))
                 else:
@@ -450,13 +426,9 @@ def _tail_boost(tokens, prefix: tuple[int, ...], index: set[str], max_word: int,
     return 0.0
 
 
-# ---------------------------------------------------------------- 语音语料
 
-# 模型自己有多确信这一个字，低于这个值就算「拿不准」。
-# 实测：听错的那个字概率掉到 0.50~0.75，同一句其余字都在 0.94 以上。
 _CONFIDENT = 0.8
 
-# 至少要有一段连着两个字，才当得成语料（切开后的碎片不值得记）
 _WHOLE = re.compile(r"[\u4e00-\u9fff]{2,}|[A-Za-z]{2,}")
 
 
@@ -477,7 +449,7 @@ def _learnable(np, logits, length: int, tokens: list[str]) -> str:
     sure = prob.max(axis=1)
     ids = window.argmax(axis=1)
 
-    merged: list[list] = []  # [这个字, 它覆盖的几帧里最确信的那一次]
+    merged: list[list] = []
     previous = -1
     for frame in range(horizon):
         token = int(ids[frame])
@@ -521,7 +493,6 @@ def _remember_speech(text: str) -> None:
         logger.debug("[语音] 这段语料没记上", exc_info=True)
 
 
-# ---------------------------------------------------------------- 对外
 
 _lock = threading.Lock()
 _engine: _Engine | None = None
@@ -573,7 +544,7 @@ def warm() -> None:
 def _warm_worker() -> None:
     try:
         _get_engine()
-    except Exception:  # noqa: BLE001 - 预热失败就算了，真识别的时候还会再试一次
+    except Exception:  # noqa: BLE001
         logger.warning("[语音] 预热失败", exc_info=True)
 
 
@@ -595,8 +566,6 @@ def transcribe(wav_path: str | Path, sample_rate: int = SAMPLE_RATE) -> str:
     if channels > 1:
         samples = samples.reshape(-1, channels).mean(axis=1)
     if rate != sample_rate:
-        # 采集层已经固定要 16k，走到这里说明调用方给了别的文件；
-        # 不静默重采样，让问题暴露出来
         raise ValueError(f"采样率必须是 {sample_rate}Hz（收到 {rate}Hz）")
 
     engine = _get_engine()

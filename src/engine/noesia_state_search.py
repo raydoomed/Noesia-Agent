@@ -1161,7 +1161,6 @@ class SessionSearchMixin:
             except sqlite3.OperationalError as exc:
                 logger.debug("Unindexed-gap supplement skipped: %s", exc)
 
-        # unicode61 puts no boundary between Latin and adjacent CJK ("修改youer服务端" is
         # one token, so MATCH "youer" misses). On a zero-result Latin miss retry the
         # substring-capable indexes: cjk first (exact ranked match), then trigram (>=3-char
         # tokens). Gated on a miss so hits keep their ranking ("cat" may then match

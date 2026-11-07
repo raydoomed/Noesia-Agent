@@ -151,7 +151,7 @@ def _resolve_repo_dir() -> Optional[Path]:
     """
     from noesia_constants import repo_root
 
-    repo_dir = repo_root()  # 项目根（pyproject.toml 那层）：.git 在仓库根，不在 ...\src\engine
+    repo_dir = repo_root()
     if not (repo_dir / ".git").exists():
         repo_dir = get_noesia_home() / "noesia-agent"
     return repo_dir if (repo_dir / ".git").exists() else None

@@ -38,7 +38,7 @@ class ImageInfo:
     height: int
     has_alpha: bool = False
     alpha_fully_opaque: bool = False
-    corner_kind: str = ""          # 背景类型判断：绿幕 / 棋盘格（已烘焙） / 纯色 / 透明
+    corner_kind: str = ""
     corner_rgb: tuple[int, int, int] | None = None
 
 

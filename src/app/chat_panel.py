@@ -41,14 +41,11 @@ from app.tool_view.i18n import tr as tool_tr
 
 logger = logging.getLogger(__name__)
 
-# 引擎的错误文案常带动态片段（路径、端口、请求 id、时间戳）：整句相等去重会失效，
-# 同一条错每次换个数字就刷满屏幕。按「去掉噪声后的正文」当指纹比较。
 _ERROR_NOISE = re.compile(r"[A-Za-z]:[\\/][^\s'\"]*|/(?:[\w.\-]+/)+[\w.\-]+|\b[0-9a-f]{8,}\b|\d+|\s+")
 
 
-MAX_REVIEW_SUMMARIES = 100  # 一场对话里最多逐条贴这么多回顾灰字：超了就不再往文档里堆
+MAX_REVIEW_SUMMARIES = 100
 
-# 正文区自己会拿来滚动的键：按下就算「用户自己在翻」，不能当成 Qt 的自动调整。
 _SCROLL_KEYS = frozenset({
     QtCore.Qt.Key_Up,
     QtCore.Qt.Key_Down,
@@ -90,7 +87,6 @@ class _Input(QtWidgets.QPlainTextEdit):
         painter = QtGui.QPainter(self.viewport())
         painter.setPen(QtGui.QColor(255, 255, 255, 88))
         painter.setFont(self.font())
-        # cursorRect 宽只有 1px（就光标那么宽），直接拿它画会把字裁光：只取 y 和行高，宽度给满
         rect = self.cursorRect()
         rect.setWidth(max(0, self.viewport().width() - rect.x() - 2))
         painter.drawText(rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self._ph_text)
@@ -157,7 +153,7 @@ class _JumpPill(QtWidgets.QWidget):
         painter.drawRoundedRect(box, self.RADIUS, self.RADIUS)
 
         color = self.TEXT_HOVER if self._hover else self.TEXT
-        icon = icon_pixmap("arrow-down", color.name(), self.ICON_PX)
+        icon = icon_pixmap("arrow-down", color.name(), self.ICON_PX, self.devicePixelRatioF())
         if icon is not None:
             painter.drawPixmap(self.PAD_X, (self.height() - self.ICON_PX) // 2, icon)
         painter.setPen(color)
@@ -179,14 +175,11 @@ class _JumpPill(QtWidgets.QWidget):
         super().mouseReleaseEvent(event)
 
 
-# 这些标签 Qt 导入时会自己开新段（再 `insertBlock()` 就凭空多一个空段 = 一整行空白）。
-# 实测（offscreen）：只有 列表 / 表格 / 分隔线 会开新段；`<h1>`-`<h6>`、`<blockquote>`、
-# `<p>`、`<pre>` 一律并进当前段，连 headingLevel 都不留——所以它们得自己开段、自己画样式。
 _SELF_BLOCK_TAGS = ("<ul", "<ol", "<table", "<hr")
 _HEADING_RE = re.compile(r"^\s*<h([1-6])[^>]*>(.*)</h\1>\s*$", re.S | re.I)
 _HEADING_PX = {1: 20, 2: 18, 3: 16, 4: 15, 5: 14, 6: 14}
 _QUOTE_TAG = "<blockquote"
-_QUOTE_COLOR = "#b9c0cf"  # 引用的字比正文淡一点：Qt 不认 <blockquote>，缩进和颜色得自己给
+_QUOTE_COLOR = "#b9c0cf"
 
 
 def _starts_own_block(markup: str) -> bool:
@@ -209,7 +202,6 @@ def _plain_block_format() -> QtGui.QTextBlockFormat:
     """普通段落：只留 5px 上间距，不带上一段的底色/缩进（代码块的底色否则会渗下来）。"""
     block_format = QtGui.QTextBlockFormat()
     block_format.setTopMargin(5)
-    # 行距 1.3：13px 的字配上这个松紧，一行一行读着不挤也不散
     block_format.setLineHeight(130, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
     return block_format
 
@@ -226,17 +218,16 @@ def _keep_edge_spaces(markup: str) -> str:
     lead = markup[: len(markup) - len(markup.lstrip(" "))]
     trail = markup[len(markup.rstrip(" ")) :]
     core = markup.strip(" ")
-    if not core:  # 整段都是空格
+    if not core:
         return "&nbsp;" * len(markup)
     return lead.replace(" ", "&nbsp;") + core + trail.replace(" ", "&nbsp;")
 
 
-_PHOTO_CACHE = 24  # 最多记着多少张取回来的图：只挡重复下载，不是显示上限
-_ORIGINAL_CACHE = 6  # 另外记着几张原图（字节），点开就能看清、能存；再多就别占内存了
-_THUMB_WIDTH = 200  # 正文里的图按缩略图显示：看得清大概，又不把气泡撑满
+_PHOTO_CACHE = 24
+_ORIGINAL_CACHE = 6
+_THUMB_WIDTH = 200
 _HINT_TEXT = "Enter 发送 · Esc 收起"
 
-# 图片后缀按字节真实格式定（和 desktop 按 Content-Type 定是一回事，我们手上有字节就自己看）
 _IMAGE_SUFFIX = {
     "png": ".png",
     "jpeg": ".jpg",
@@ -307,11 +298,11 @@ def _open_link(text: str) -> bool:
     rest = text[start:]
     closing = rest.find("]")
     if closing < 0:
-        return True  # `![冰岛` —— 连说明都没写完
+        return True
     opened = rest.find("(", closing)
     if opened < 0:
-        return False  # `[1]` 这种引用标记，不是链接
-    return ")" not in rest[opened:]  # `![说明](地址` —— 就等最后那个括号
+        return False
+    return ")" not in rest[opened:]
 
 
 from app.user_state import window_settings
@@ -334,16 +325,14 @@ from app.window_geometry import (
     size_from_drag_free,
 )
 
-PANEL_WIDTH = 420  # 默认（第一次打开）大小；之后记在 QSettings 里
+PANEL_WIDTH = 420
 PANEL_HEIGHT = 460
 MIN_PANEL_WIDTH = 280
 MIN_PANEL_HEIGHT = 240
-# 顶栏左边写的名字：窗窄到放不下长的那条，就换成短的，别让字顶到右边的胶囊
 TITLE_FULL = "Noesia Agent"
 TITLE_SHORT = "Noesia"
 TITLE_FULL_MIN_WIDTH = 430
 
-# USER.md 里的名字：文件没动就不重读（每条用户消息都要用它）
 _USER_NAME_CACHE: dict[str, object] = {"stamp": None, "name": ""}
 
 
@@ -378,10 +367,8 @@ def _user_display_name() -> str:
     return name or "你"
 
 
-RESIZE_MARGIN = 12  # 距边缘多少像素内按下算缩放
-SNAP_DISTANCE = 24  # 拖到离她下缘这么近就自动吸过去
-# 不可用的模型项：置灰（setEnabled(False) 只是不能选，颜色还得自己给，
-# 因为下拉列表整体设了 color，禁用态不会自动变淡）
+RESIZE_MARGIN = 12
+SNAP_DISTANCE = 24
 
 STYLE = """
 #frame {
@@ -571,25 +558,18 @@ QMenu::indicator { width: 14px; height: 14px; }
 """
 
 
-# 审批图标按档位着色：不看 tooltip 也能一眼看出「现在问不问」，off 用红色提醒
 APPROVAL_TINT = {"manual": "#ffcf8a", "smart": "#e8e8ef", "off": "#ff9a9a"}
 
-# 思考段的三档抬头，照引擎中文语言包（assistant.thread.thinking / thought / thoughtBriefly / thoughtFor）
 _THINKING_LABEL = "思考中"
 
-# 审批档位的文案，照引擎中文语言包（shell.approvalMode：label · description）
 _APPROVAL_MODES = (
     ("manual", "手动 · 执行需要审批的操作前询问"),
     ("smart", "智能 · 自动评估操作，并在需要时询问"),
     ("off", "关闭 · 不显示审批提示，直接运行"),
 )
 
-# 输入框最多长到几行，再多就在框里滚动。
-# 窗口只有 360 宽时一行放不下几个字，行数给多了整条输入区会吃掉聊天区。
 INPUT_MAX_LINES = 5
 
-# 思考档位清单，
-# 中文标签照 `shell.modelOptions`。`none` 不是一档，是「关掉思考」，只在模型允许关时才摆。
 _REASONING_LEVELS = (
     ("minimal", "最小"),
     ("low", "低"),
@@ -602,20 +582,7 @@ _REASONING_LEVELS = (
 _REASONING_OFF = ("none", "关闭思考")
 
 
-def _format_elapsed(seconds: int) -> str:
-    """照桌面端 `formatElapsed`：不到一分钟写「12s」，再长写「1:05」。"""
-    if seconds < 60:
-        return f"{seconds}s"
-    return f"{seconds // 60}:{seconds % 60:02d}"
-
-
-def _thought_label(seconds: float | None) -> str:
-    """思考段收尾后的抬头：已思考 / 思考了片刻 / 思考了 3s（跟桌面端同一套分档）。"""
-    if seconds is None:
-        return "已思考"
-    if seconds < 1:
-        return "思考了片刻"
-    return f"思考了 {_format_elapsed(int(seconds))}"
+_THOUGHT_DONE = "已思考"
 
 
 def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
@@ -655,7 +622,6 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
         painter.drawLine(QtCore.QPointF(9.0, 4.6), QtCore.QPointF(9.0, 13.4))
         painter.drawLine(QtCore.QPointF(4.6, 9.0), QtCore.QPointF(13.4, 9.0))
     elif kind == "gear":
-        # 厚圈 + 八根短齿：13~16px 上都还看得出是齿轮，细齿会糊成一朵太阳
         pen.setWidthF(2.0)
         painter.setPen(pen)
         painter.drawEllipse(QtCore.QPointF(9.0, 9.0), 4.2, 4.2)
@@ -726,28 +692,25 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
         body.lineTo(4.0, 10.7)
         body.closeSubpath()
         painter.drawPath(body)
-        for radius in (2.4, 4.4):  # 两道声波
+        for radius in (2.4, 4.4):
             painter.drawArc(
                 QtCore.QRectF(9.2 - radius, 9.0 - radius, radius * 2, radius * 2),
                 -50 * 16,
                 100 * 16,
             )
     elif kind == "mic":
-        # 话筒：头 + 支架弧 + 杆。语音输入用这个，跟上面 voice（喇叭）不是一回事
         painter.drawRoundedRect(QtCore.QRectF(6.2, 2.4, 5.6, 8.2), 2.8, 2.8)
         painter.drawArc(QtCore.QRectF(4.8, 5.4, 8.4, 7.4), 180 * 16, 180 * 16)
         painter.drawLine(QtCore.QPointF(9.0, 12.8), QtCore.QPointF(9.0, 15.4))
     elif kind == "keyboard":
-        # 键盘：外框 + 一排按键 + 空格键。14px 里塞两排会糊成一片，只留一排
         painter.drawRoundedRect(QtCore.QRectF(2.6, 4.6, 12.8, 8.8), 1.6, 1.6)
         for x in (5.2, 7.8, 10.4, 13.0):
             painter.drawPoint(QtCore.QPointF(x, 8.2))
         painter.drawLine(QtCore.QPointF(7.0, 10.6), QtCore.QPointF(11.0, 10.6))
     elif kind == "keycap":
-        # 一个键帽：表示「按住说话的键」，跟整把键盘那颗切换键区分开
         painter.drawRoundedRect(QtCore.QRectF(3.2, 5.0, 11.6, 8.0), 2.2, 2.2)
         painter.drawLine(QtCore.QPointF(7.2, 9.0), QtCore.QPointF(10.8, 9.0))
-    else:  # spark：思考档位
+    else:
         star = QtGui.QPainterPath()
         points = [(9.0, 2.4), (11.0, 7.0), (15.6, 9.0), (11.0, 11.0),
                   (9.0, 15.6), (7.0, 11.0), (2.4, 9.0), (7.0, 7.0)]
@@ -760,8 +723,6 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
     return pix
 
 
-# 输入框那排的语音三档：静音（不念）/ 纯语音（现在的朗读）/ 语音互动（数字人实时说话）。
-# 纯语音和语音互动是同一档位里的两个选项，永远互斥。
 _VOICE_MODES = (("muted", "静音"), ("plain", "纯语音"), ("interactive", "语音互动"))
 _VOICE_TINT = {"muted": "#c9c3d4", "plain": "#9ad0ff", "interactive": "#b39dff"}
 
@@ -792,33 +753,18 @@ def _glyph_icon(kind: str, color: str = "#e8e8ef") -> QtGui.QIcon:
     return icon
 
 
-# 「＋」和粘贴按扩展名分：这些当图片走 `image.attach`，其余走 `file.attach`。
-# 表跟引擎的 `cli._IMAGE_EXTENSIONS` 同口径——界面进程 import 不到引擎包，只能自己维护一份；
-# 引擎那边加格式时 media_links 里必须一起加，否则新格式会被界面当普通文件送出去（模型就看不见图了）。
-IMAGE_SUFFIXES = media_links.IMAGE_SUFFIXES  # 口径只留一份（定义在 media_links）：贴图与「图片/文件」分类不能两套
+IMAGE_SUFFIXES = media_links.IMAGE_SUFFIXES
 
-# 附件在消息里是独占一行的标记：`@image:<路径>`（引擎存历史时补在正文后）、`@file:<工作区相对路径>`
-# （发文件时拼在正文前，跟桌面 buildContextText 一致），带空格的值用反引号/引号包住；历史里还可能夹
-# 一行 `[screenshot]` 占位。这些是给界面看的标记、不是正文，显示时必须摘出来还原成附件卡片。
-# 规则照引擎 session_history.py（界面进程 import 不到引擎包，只能照抄一份）。
 _REF_LINE = re.compile(r"@(image|file|folder|url):(`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+'|\S+)\Z")
 _SCREENSHOT_PLACEHOLDER = "[screenshot]"
 
-# 引擎以「用户消息」/「回答」的形式回灌给模型的机器行：display_kind 标了种类。
-# 这些原文是给模型看的英文脚手架，界面上一个字都不能照搬——照搬的结果就是他截的那张图：
-# 一段 `[System note: Your previous turn was interrupted mid-run …]` 像是我说的话，
-# 三句 `Your request was not processed…` 像是我的回答。
 _NOTICE_LABELS = {
     "auto_continue": "上次那一轮被中断了，引擎重启后自己接着跑完",
     "failed_turn": "这一轮没跑成：引擎没处理，要的话把话重发一次",
 }
-# 子代理完成那条不是固定文案：正文交给 delegate_view 解析成中文说明行
 _DELEGATION_DISPLAY_KIND = "async_delegation_complete"
-# 事故恢复注记末尾会带上「原来那句话是什么」，摘出来接在中文说明后面
 _AUTO_CONTINUE_REQUEST = "The interrupted request was:]"
 
-# 引擎把 @file:/@folder:/@url: 展开出来的内容补在正文后面这一段里（那是喂给模型看的，不是用户写的话）。
-# 显示时切开：标记之后整段丢掉，里面提到的引用只补回「正文里没有的」那几条。
 _ATTACHED_CONTEXT = re.compile(r"(?:^|\n)--- Attached Context ---[ \t]*\n")
 _CONTEXT_WARNINGS = re.compile(r"(?:^|\n)--- Context Warnings ---[\s\S]*$")
 _CONTEXT_REF = re.compile(
@@ -857,7 +803,7 @@ def split_attachment_refs(text: str) -> tuple[str, list[dict]]:
         kind, value = match.group(1), match.group(2)
         ref = value[1:-1] if value[0] in ("`", '"', "'") else value
         if kind == "image":
-            if Path(ref).exists():  # 图没了就只剩正文，不留一串死路径
+            if Path(ref).exists():
                 items.append({"kind": "image", "name": Path(ref).name, "path": ref})
         elif kind == "url":
             items.append({"kind": "url", "name": ref})
@@ -867,7 +813,6 @@ def split_attachment_refs(text: str) -> tuple[str, list[dict]]:
 
 
 
-# 「＋」里的「提示词片段…」——三条起始提示，文案跟桌面端中文包一致
 PROMPT_SNIPPETS = (
     ("代码审查", "审查当前更改是否存在回归、遗漏的边界情况和缺失的测试。",
      "请审查这部分是否存在缺陷、回归和缺失的测试。"),
@@ -979,7 +924,6 @@ def _key_name(sequence: QtGui.QKeySequence | None) -> str:
     text = sequence.toString(QtGui.QKeySequence.NativeText)
     if text in ("Space", ""):
         return "空格"
-    # Qt 管 Windows 键叫 Meta，中文界面上没人认得这个称呼
     return text.replace("Meta", "Win").replace("Space", "空格")
 
 
@@ -999,16 +943,12 @@ def _to_native(sequence: QtGui.QKeySequence) -> tuple[int, int] | None:
     if flags & QtCore.Qt.KeyboardModifier.MetaModifier:
         mods |= global_hotkey.MOD_WIN
     name = QtCore.Qt.Key(combo.key()).name[4:]     # "Key_Slash" -> "Slash"
-    # 小键盘是另一套键码，先认掉
     if flags & QtCore.Qt.KeyboardModifier.KeypadModifier:
         return (mods, 0x60 + ord(name) - 0x30) if name in "0123456789" else None
     vk = _qt_key_to_vk(name)
     return (mods, vk) if vk is not None else None
 
 
-# Qt 的键值只在字母、数字、空格这几段恰好等于 Win32 虚拟键码。标点、
-# 方向键、Delete 全都不同号：硬套会把 Ctrl+/ 当成 VK_HELP(47)、Ctrl+. 当成
-# VK_DELETE(46)，按下去没反应还顺手把 Ctrl+Delete 吞掉。下面是固定对应关系。
 _OEM_KEYS = {
     "Semicolon": 0xBA, "Equal": 0xBB, "Comma": 0xBC, "Minus": 0xBD,
     "Period": 0xBE, "Slash": 0xBF, "QuoteLeft": 0xC0,
@@ -1024,16 +964,11 @@ _NAMED_KEYS = {
     "Print": 0x2C, "Pause": 0x13,
 }
 _VK_TO_QT_NAME = {vk: name for name, vk in {**_OEM_KEYS, **_NAMED_KEYS}.items()}
-_VK_TO_QT_NAME[0x0D] = "Return"   # Enter 和 Return 同码，取常用的那个名
+_VK_TO_QT_NAME[0x0D] = "Return"
 
 
-# 修饰键在系统里成对出现（左右键码不同），任一按着就算这个修饰键按着
-# 一次按住最多这么久。正常人一口气说话到不了两分钟；到了还没收尾就是松开事件丢了，
-# 这是不依赖键态、不依赖事件的最后一道出口，保证话筒不会一直开着。
 _HOLD_MAX_SECONDS = 120.0
 
-# 位用的是 `_to_native` 拼出来的那套（global_hotkey.MOD_*），不是 Qt 的枚举：
-# PySide6 的 KeyboardModifier 连 int() 都不给转，混着比永远对不上（还会在心跳里抛 TypeError）。
 _MOD_KEY_CODES = (
     (global_hotkey.MOD_SHIFT, (0x10, 0xA0, 0xA1)),
     (global_hotkey.MOD_CONTROL, (0x11, 0xA2, 0xA3)),
@@ -1105,7 +1040,7 @@ def _from_native(mods: int, vk: int) -> QtGui.QKeySequence | None:
         modifier |= QtCore.Qt.KeyboardModifier.AltModifier
     if mods & global_hotkey.MOD_WIN:
         modifier |= QtCore.Qt.KeyboardModifier.MetaModifier
-    if 0x60 <= vk <= 0x69:                       # 小键盘 0-9
+    if 0x60 <= vk <= 0x69:
         modifier |= QtCore.Qt.KeyboardModifier.KeypadModifier
         key = QtCore.Qt.Key(int(QtCore.Qt.Key.Key_0) + (vk - 0x60))
     else:
@@ -1125,7 +1060,6 @@ class _PttKeyDialog(QtWidgets.QDialog):
         parent=None,
     ) -> None:
         super().__init__(parent)
-        # 改之前的原样留着：没动的那些要原封不动带回去
         self._before: dict[str, QtGui.QKeySequence | None] = {
             "window": window_current,
             "global": global_current,
@@ -1136,18 +1070,15 @@ class _PttKeyDialog(QtWidgets.QDialog):
         self._caps: dict[str, QtWidgets.QLabel] = {}
         self._rows: dict[str, QtWidgets.QFrame] = {}
 
-        # 改键必须靠低层钩子收键：Win+空格、Alt+Tab 这类系统保留组合会被系统
-        # 直接接走，Qt 的 keyPressEvent 根本不来，只靠窗口事件等于没反应
         self._capture = global_hotkey.GlobalHotkey(self)
         self._capture.captured.connect(self._on_captured)
 
-        # 跟审批卡片、引擎卡片同一套：无边框圆角、压在最上面、不进任务栏
         self.setWindowFlags(
             QtCore.Qt.Tool
             | QtCore.Qt.FramelessWindowHint
             | QtCore.Qt.WindowStaysOnTopHint
         )
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)  # 圆角外不留一块方底
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
         self.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
         self.setStyleSheet(_PTT_DIALOG_QSS)
 
@@ -1174,7 +1105,6 @@ class _PttKeyDialog(QtWidgets.QDialog):
         lay.addLayout(head)
         lay.addSpacing(10)
 
-        # 两条键槽：点哪条，接下来按的键就记给哪条
         lay.addWidget(self._make_row(card, "window", "窗口内"))
         lay.addSpacing(4)
         lay.addWidget(self._make_row(card, "global", "系统级"))
@@ -1212,7 +1142,6 @@ class _PttKeyDialog(QtWidgets.QDialog):
         self.adjustSize()
         self.setFixedWidth(340)
 
-        # 按钮不吃焦点：空格、回车都要落回弹窗自己身上，不然按空格等于点「取消」
         cancel.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self._ok.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
@@ -1271,23 +1200,18 @@ class _PttKeyDialog(QtWidgets.QDialog):
         window = self._pending["window"]
         globe = self._pending["global"]
 
-        # 两条设成同一个键：按下去分不清该走哪个，这是真冲突不是规则
         if window is not None and globe is not None and window == globe:
             return "block", "两条键不能一样，按下去分不清是哪一个"
 
         native = _to_native(globe) if globe is not None else None
         if native is None:
-            # 转成虚拟键码这一步失败的键（界面上的名字翻不出键码）装不上钩子，
-            # 这里不拦就会存进去，然后系统级按住说话静默失效
             return "block", "这个键当系统级用不了，换成字母、数字、F 键或标点"
         mods, vk = native
         if mods == 0:
-            # 这是钩子的物理限制，不是规则：不带修饰键就分不清「要说话」和「在打字」
             return "block", "系统级的键必须带修饰键（Ctrl / Alt / Shift / Win），不然分不清是在打字还是要说话"
         ok, why = global_hotkey.probe(mods, vk)
         if ok:
             return "", ""
-        # 被占用就别存：存下去会把那个程序的快捷键抢掉，这是坏行为不是本事
         return "block", why
 
     def _refresh(self) -> None:
@@ -1296,7 +1220,6 @@ class _PttKeyDialog(QtWidgets.QDialog):
         changed = self._pending != self._before
         self._ok.setEnabled(changed and level != "block")
         if warn:
-            # 冲突优先说：哪怕这次一个字没改，当前这个键也用不了
             self._desc.setText(warn)
             self._desc.setStyleSheet("color: #ff7b72;")
         elif not changed:
@@ -1308,8 +1231,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
-        self.setFocus()   # 一打开就能直接按键
-        # 改键期间把系统级的钩子停了：不然按一下 Shift+空格 当场就开始录音
+        self.setFocus()
         panel = self.parent()
         running = getattr(panel, "_global_ptt", None)
         if running is not None:
@@ -1320,7 +1242,6 @@ class _PttKeyDialog(QtWidgets.QDialog):
         """改键结束（确定、取消、Esc、点外面关掉都走这里）先卸钩子。"""
         self._capture.stop_capture()
         super().done(result)
-        # 语音模式还开着就把系统级键按新配置重新装上
         panel = self.parent()
         if getattr(panel, "_voice_mode_on", False):
             apply = getattr(panel, "_apply_global_ptt", None)
@@ -1329,22 +1250,17 @@ class _PttKeyDialog(QtWidgets.QDialog):
 
     def _on_captured(self, mods: int, vk: int) -> None:
         """钩子收到一个键：跟窗口事件走同一套——填进当前那行，再看冲不冲突。"""
-        # 弹窗还开着但人已经切到别的程序去了：那边按的键不算，不然会把
-        # 不相干的键绑进来。不用 isActiveWindow()——无边框窗口上它恒为 False，
-        # 会把正常改键也一起拦死，得直接问系统现在前台是谁。
         if ctypes.windll.user32.GetForegroundWindow() != int(self.winId()):
             return
         sequence = _from_native(mods, vk)
         if sequence is None:
             return
-        # 回车留给「确定」，不当成要绑的键
         if vk in (0x0D, 0x0A):
             return
         self._pending[self._target] = sequence
         self._paint_cap(self._target)
         self._refresh()
 
-    # 无边框卡片得自己处理拖动，不然挡住内容也挪不开；按钮会吃掉自己的按下事件
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
         if event.button() == QtCore.Qt.LeftButton:
             self._drag_offset = (
@@ -1367,7 +1283,6 @@ class _PttKeyDialog(QtWidgets.QDialog):
             self.reject()
             return
         if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
-            # 回车留给「确定」：它不能当按住说话的键
             if self._pending != self._before and self._conflict()[0] != "block":
                 self.accept()
             return
@@ -1377,12 +1292,12 @@ class _PttKeyDialog(QtWidgets.QDialog):
             QtCore.Qt.Key_Alt,
             QtCore.Qt.Key_Meta,
         ):
-            return   # 光按修饰键不算，等真正的键
+            return
         if event.isAutoRepeat():
             return
         sequence = QtGui.QKeySequence(event.keyCombination())
         if not sequence.toString(QtGui.QKeySequence.PortableText):
-            return   # 这个键翻不成名字，当没按
+            return
         self._pending[self._target] = sequence
         self._paint_cap(self._target)
         self._refresh()
@@ -1396,10 +1311,6 @@ class _PttKeyDialog(QtWidgets.QDialog):
         return self._pending["global"]
 
 
-# ---- 面板的透明度 ----
-# 这里原本想挂系统磨玻璃（DWM acrylic / Mica），实测在无边框 + 逐像素透明的 Qt 窗上
-# 都不生效：系统只铺一层固定的灰（Mica=32、Acrylic=84），既不随窗口挪动，也不是背后
-# 的画面。要“看得出透明、跟着桌面走”，只能让面板自己真透明 —— 代价是没有模糊。
 
 
 def _dimmed(pixmap: QtGui.QPixmap, factor: float) -> QtGui.QPixmap:
@@ -1419,31 +1330,24 @@ def _dimmed(pixmap: QtGui.QPixmap, factor: float) -> QtGui.QPixmap:
 class ChatPanel(QtWidgets.QWidget):
     """打字对话窗。"""
 
-    submitted = QtCore.Signal(str, str)  # (正文, 来源)：来源区分打字和语音，语音结果不算干净语料
-    model_chosen = QtCore.Signal(str)  # 下拉框选了模型 → 交给窗口发 SET_MODEL
-    models_refresh_requested = QtCore.Signal()  # 菜单里的「刷新模型」→ 让窗口重问一次引擎
-    # 「设置」：还没配模型（或下拉框里全是灰的）时的明确入口，不能让人对着一个空下拉框猜
+    submitted = QtCore.Signal(str, str)
+    model_chosen = QtCore.Signal(str)
+    models_refresh_requested = QtCore.Signal()
     model_settings_requested = QtCore.Signal()
-    # 「新会话」：人设（SOUL.md）是引擎在建 agent 时读进系统提示的，换了人设要新会话才生效
     new_session_requested = QtCore.Signal()
-    approval_requested = QtCore.Signal(str)  # 输入框旁的审批档位：点了哪一档就发哪个
-    stop_requested = QtCore.Signal()  # 跑着的时候按「停止」，叫住这一轮
-    speech_stop_requested = QtCore.Signal()  # 语音进度条上那个停止：只掐朗读，不动这一轮
-    voice_mode_changed = QtCore.Signal(str)  # 语音档位换了（静音/纯语音/互动）：旧的语音提示要跟着撤
-    # 语音输入：录完一段，把 WAV 路径发出去让引擎识别；结果由窗口那边回灌给 apply_voice_transcript
+    approval_requested = QtCore.Signal(str)
+    stop_requested = QtCore.Signal()
+    speech_stop_requested = QtCore.Signal()
+    voice_mode_changed = QtCore.Signal(str)
     voice_transcribe_requested = QtCore.Signal(str)
-    # 按下说话：窗口那边先掐掉正在念的那句，不然麦克风收的是她自己的声音
     voice_record_started = QtCore.Signal()
-    # 进了语音模式：窗口那边问一句识别模型在不在（引擎顺手预热）
     voice_input_opened = QtCore.Signal()
-    reasoning_requested = QtCore.Signal(str)  # 思考档位：选哪一档发哪个（空串 = 不指定）
-    attachment_picked = QtCore.Signal(list)  # 按发送那一刻才把附件交给引擎（选的时候只留在界面上）
-    attachment_failed = QtCore.Signal(str)  # 某个附件没传上去：从待发送条里撤掉
-    clarify_answered = QtCore.Signal(str, str, str)  # (request_id, qid, 答案)：她要的那个选择
-    clarify_skipped = QtCore.Signal(str)  # reply_id：这次提问整个跳过
-    process_kill_requested = QtCore.Signal(str)  # 后台进程那一行点了「停止」
-    # 重新生成 / 编辑重发：把要重来的那条和正文交给窗口，由它去引擎把这段历史截掉再发
-    # (消息, 正文, 是否只是重新生成, 是否整场清空, 后面还有别的问答要一起删)
+    reasoning_requested = QtCore.Signal(str)
+    attachment_picked = QtCore.Signal(list)
+    attachment_failed = QtCore.Signal(str)
+    clarify_answered = QtCore.Signal(str, str, str)
+    clarify_skipped = QtCore.Signal(str)
+    process_kill_requested = QtCore.Signal(str)
     resubmit_requested = QtCore.Signal(object, str, bool, bool, bool)
 
     def __init__(
@@ -1465,8 +1369,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._streaming = False
         self._drag_offset: QtCore.QPoint | None = None
         self._anchor: QtCore.QRect | None = None
-        self._snapped = False  # 吸在她下面没有：有的话她挪一步它跟一步  # 头像窗当前在屏幕上的位置（吸附用）
-        # 缩放状态：命中的边、按下时的尺寸与全局坐标
+        self._snapped = False
         self._resize_edge = None
         self._resize_start_size: QtCore.QSize | None = None
         self._resize_start_global: QtCore.QPoint | None = None
@@ -1496,7 +1399,6 @@ class ChatPanel(QtWidgets.QWidget):
         header.addWidget(dot)
         header.addWidget(state)
         header.addStretch(1)
-        # 「新会话」放顶栏、不发在底部：底部最右是「发送」，两颗键上下正对，错一下就清了上下文
         new_session = QtWidgets.QPushButton("新会话", frame)
         new_session.setObjectName("mini")
         new_session.setToolTip("开一段新对话：换回历史里不带的干净上下文（改了人设、SOUL.md 之后用它生效）")
@@ -1506,14 +1408,13 @@ class ChatPanel(QtWidgets.QWidget):
         self._state_label = state
         self._title_label = title
 
-        # 模型切换：并进顶栏一行（名字 · 在 ······ 模型胶囊 · 设置），不再单独占一行
         combo = QtWidgets.QToolButton(frame)
         combo.setObjectName("model")
         combo.setToolTip("点开按供应商分组选模型（右键头像 → 模型 也能选）；「设置」里填密钥")
         combo.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         combo.setCursor(QtCore.Qt.PointingHandCursor)
         combo.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
-        combo.setText("模型")  # 引擎还没回报清单时的占位，有值后会被覆盖；空着就是个没字的方块
+        combo.setText("模型")
         combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed)
         menu = QtWidgets.QMenu(combo)
         menu.setObjectName("modelmenu")
@@ -1526,7 +1427,7 @@ class ChatPanel(QtWidgets.QWidget):
         set_model.setObjectName("mini")
         set_model.setIcon(_glyph_icon("gear"))
         set_model.setIconSize(QtCore.QSize(14, 14))
-        set_model.setFixedSize(26, 20)  # 只留图标，省下的宽度给「新会话」
+        set_model.setFixedSize(26, 20)
         set_model.setToolTip("设置：选模型；没有可用的就告诉你密钥该放在哪个文件")
         set_model.setCursor(QtCore.Qt.PointingHandCursor)
         set_model.clicked.connect(self.model_settings_requested.emit)
@@ -1534,81 +1435,68 @@ class ChatPanel(QtWidgets.QWidget):
         self._model_button = combo
         self._model_menu = menu
         self._models: list[dict] = []
-        self._models_refreshing = False  # 刷新请求发出去了、清单还没回来
-        self._current_model_id = ""  # 菜单里勾着的那一个（刷新时重画要保留）
-        self._refresh_button: QtWidgets.QPushButton | None = None  # 菜单底部那颗「刷新模型」
+        self._models_refreshing = False
+        self._current_model_id = ""
+        self._refresh_button: QtWidgets.QPushButton | None = None
 
-        # 当前这条回答里是否已经落下正文（用来掐掉开头的空行）
         self._bubble_has_text = False
-        # 一轮是否在跑：在跑时「发送」变成「停止」
         self._busy = False
-        self._interrupted = False  # 这一轮被叫停过：之后还飘回来的字一律不进气泡
-        self._assistant_pending = ""  # 还没落进窗口的半行（`MEDIA:` 可能被流式切两半）
-        self._last_error_key = ""  # 上一条错误的指纹：同一条只留一条，别刷屏
-        self._review_count = 0  # 这场对话里贴过多少条回顾灰字
-        self._review_folded = False  # 超限之后只提示一次
-        self._reasoning_pending = ""  # 思考增量先攒着，成段再落（见 flush_reasoning）
-        self._md_block: list[str] = []  # 攒着的结构行（列表 / 表格 / 代码块）
-        self._para_break = False  # 空行记的账：下一段来时再开新段（当场开就是白留一行）
-        self._md_fence = False  # 是否在 ``` 围栏代码块里
-        self._media_roots: tuple = ()  # 相对路径从哪些目录找（由窗口按配置塞进来）
-        # 正文里的网络图片：Qt 自己不下载，得先取回来注册成文档资源才画得出来
-        self._photos: dict[str, QtGui.QPixmap] = {}  # 网址 → 取回来的图
-        self._photo_keys: dict[str, str] = {}  # 网址 → 文档里的资源名
-        self._photo_sources: dict[str, str] = {}  # 资源名 → 网址：点图时要知道点的是哪张
-        self._originals: dict[str, bytes] = {}  # 网址 → 原图字节：留着才能看原图、存原图
-        self._downloading: set[str] = set()  # 正在取原图的网址：连点不再发第二趟
-        self._local_photos: dict[str, tuple[str, "Path | bytes"]] = {}  # 本地图（附件、工具贴图）→ (名字, 文件或字节)
-        self._hint_label: QtWidgets.QLabel | None  # 底部那句提示，建顶栏时填上；存图时临时改口
+        self._interrupted = False
+        self._assistant_pending = ""
+        self._last_error_key = ""
+        self._review_count = 0
+        self._review_folded = False
+        self._reasoning_pending = ""
+        self._md_block: list[str] = []
+        self._para_break = False
+        self._md_fence = False
+        self._media_roots: tuple = ()
+        self._photos: dict[str, QtGui.QPixmap] = {}
+        self._photo_keys: dict[str, str] = {}
+        self._photo_sources: dict[str, str] = {}
+        self._originals: dict[str, bytes] = {}
+        self._downloading: set[str] = set()
+        self._local_photos: dict[str, tuple[str, "Path | bytes"]] = {}
+        self._hint_label: QtWidgets.QLabel | None
         self._hint_timer = QtCore.QTimer(self)
         self._hint_timer.setSingleShot(True)
         self._hint_timer.timeout.connect(self._restore_hint)
-        self._photo_pending: set[str] = set()  # 正在取的，别重复发
-        self._press_pos: QtCore.QPoint | None = None  # 正文里按下的位置：松手时判断是点击还是拖选
+        self._photo_pending: set[str] = set()
+        self._press_pos: QtCore.QPoint | None = None
         self._net = QtNetwork.QNetworkAccessManager(self)
-        # 思考段 / 工具行都是「可折叠的一段」（见 app/disclosure.py）
-        self._reason_fold: disclosure.Fold | None = None  # 正在攒的思考段
-        self._reason_started = 0.0  # 这段思考从什么时候开始（算「思考了 3s」）
-        self._tool_folds: dict[str, disclosure.Fold] = {}  # tool_id → 工具行，回来时补结果
-        self._tool_images: dict[str, str] = {}  # 每个工具块贴过的图：同一张只贴一次
-        self._tool_term_drawn: dict[str, bool] = {}  # 终端转录画过没：跑着/跑完两帧都带同一条命令
-        self._tool_detail_seen: dict[str, tuple] = {}  # 详情画过没：同样的正文不重复贴
-        # 子代理卡片：tool_id → 卡片状态（fold / 已经贴过的活动行），`subagent.*` 事件往上刷
+        self._reason_fold: disclosure.Fold | None = None
+        
+        self._tool_folds: dict[str, disclosure.Fold] = {}
+        self._tool_images: dict[str, str] = {}
+        self._tool_term_drawn: dict[str, bool] = {}
+        self._tool_detail_seen: dict[str, tuple] = {}
         self._delegate_cards: dict[str, dict] = {}
-        self._delegate_latest: str = ""  # 最近一张还在跑的子代理卡片
-        self._clarify: dict | None = None  # 引擎正在问的那个问题（一张卡、可点选项）
-        # 还在跑的工具行要显示跑了多久：画第一笔时记下起点，之后每秒重标一次。
+        self._delegate_latest: str = ""
+        self._clarify: dict | None = None
         self._tool_started: dict[str, tuple[object, str, float, str | None]] = {}
         self._tool_clock = QtCore.QTimer(self)
         self._tool_clock.setInterval(1000)
         self._tool_clock.timeout.connect(self._tick_running_tools)
-        self._icon_cache: dict[tuple, QtGui.QPixmap] = {}  # 抬头小图标：同一图标同一颜色只渲一次
-        self._icon_registered: set[str] = set()  # 已登记进文档资源的图标 URL
-        self._fence_cache: dict[tuple[int, int], str] = {}  # 代码围栏整块文本：同一块只拼一次
-        self._image_seq = 0  # 附件图片的资源名序号：名字+尺寸会撞
-        self._clarify_gen = 0  # 提问卡的代际：旧卡的锚点靠它认出自己已作废
-        # 桌面端照着引擎的两把开关画：show_reasoning 关掉就不画思考；
-        # tool_progress=off 时引擎本来就不发 tool 帧，这里再挡一道是不让它露出来
+        self._icon_cache: dict[tuple, QtGui.QPixmap] = {}
+        self._icon_registered: set[str] = set()
+        self._fence_cache: dict[tuple[int, int], str] = {}
+        self._image_seq = 0
+        self._clarify_gen = 0
         self._show_reasoning = True
         self._tool_progress = "all"
-        self._provider_wait = ""  # 引擎在等供应商时那句中英文提示（底部状态行）
+        self._provider_wait = ""
 
-        # QTextBrowser 而不是 QTextEdit：附件行是 <a href="file://...">，只有它会在点击时发 anchorClicked
         self.view = ChatView(frame)
         self.view.setObjectName("view")
         self.view.setReadOnly(True)
-        self.view.setOpenLinks(False)  # 不自己跳转：点开是「用默认程序打开文件」，不是窗口内导航
+        self.view.setOpenLinks(False)
         self.view.setOpenExternalLinks(False)
         self.view.anchorClicked.connect(self._on_anchor)
-        # 正文一滚，贴在某一行上的按钮就对不上字了：直接收掉，鼠标再过来时重摆
         self.view.scrolled.connect(self._hide_hover)
         self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        # 横向不出条：正文一律按视口宽折行（代码块也是，见 markdown_render._unwrap_pre），
-        # 差一两像素的取整误差也不许在底下弹一条——这个位置以前就因为这个被嫌弃过。
         self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         layout.addWidget(self.view, 1)
 
-        # 折叠段的字体：抬头是一行暗色小字（可点），正文再暗一档；工具正文用等宽
         head_format = QtGui.QTextCharFormat()
         head_format.setForeground(ChatView.SCAFFOLD_IDLE)
         head_format.setFontPointSize(9)
@@ -1625,68 +1513,54 @@ class ChatPanel(QtWidgets.QWidget):
         )
         self.view.attach_folds(self._folds)
 
-        # 悬停才出现的小动作：两个**各自独立**的按钮——复制（点完换 ✓）与「看完整 diff」
-        # （只开窗，不冒充复制成功）。靠 CSS 的 group-hover，Qt 没有，所以自己盯鼠标摆位。
         self._hover_copy: HoverActionButton | None = None
-        self._zone: tuple | None = None  # 鼠标当前在哪个区域，换区才换按钮
+        self._zone: tuple | None = None
         self._hover_expand: HoverActionButton | None = None
         self._hover_download: HoverActionButton | None = None
-        # 消息级悬停条：复制整段 / 引用 / 编辑重发 / 重新生成（按角色与位置决定露哪几个）
-        self._msgs: list[dict] = []  # 这个窗口里的消息，按出现顺序（截断/清屏时跟着动）
-        self._stream_msg: dict | None = None  # 正在流式写的那条回答
-        # 悬停条只有一颗按钮，两种角色（用户/回答）轮着用它
-        self._msg_buttons: list[HoverActionButton] = []  # 悬停条：回答那条是「复制 / 刷新」，用户那条一颗
+        self._msgs: list[dict] = []
+        self._stream_msg: dict | None = None
+        self._msg_buttons: list[HoverActionButton] = []
         self._reserve_tail_space()
-        self._msg_band: QtCore.QRect | None = None  # 悬停条所在那一带（鼠标在里面就别收）
-        self._msg_shown: dict | None = None  # 悬停条现在属于哪条消息（窗口一缩放就得重新摆）
-        self._edge_cursor_shape = None  # 现在贴在面板上的边缘光标对应哪条边（None = 没设过）
-        self._rewind_waiting = False  # 截断重发已经交给引擎，等它真接下来（这期间不许再发）
-        self._rewind_after_stop: tuple[dict, str, bool] | None = None  # 流式中点了重来：先叫停，停稳了再按这条重跑
-        self._row_stamp_pending: int | None = None  # 截断重发：行号比正文先回，先存着等新消息贴上去
-        self._jump: _JumpPill | None = None  # 没看完时底下那颗「滚动到底部」
-        # 跟不跟随新内容：状态位，不是「此刻位置」（流式一快，位置永远追不上最大值，
-        # 按位置判就会一直判成「翻着看」，然后彻底不再跟）。用户往上翻才熄，回到底才亮。
+        self._msg_band: QtCore.QRect | None = None
+        self._msg_shown: dict | None = None
+        self._edge_cursor_shape = None
+        self._rewind_waiting = False
+        self._rewind_after_stop: tuple[dict, str, bool] | None = None
+        self._row_stamp_pending: int | None = None
+        self._jump: _JumpPill | None = None
         self._follow = True
-        self._self_scroll = False  # 自己滚的这会儿，valueChanged 不算用户意图
-        # 用户真在动手滚（滚轮 / 拖条 / 点箭头 / 方向键）：只有这种位置变化才算「往上翻」。
-        # Qt 自己在 show()、排版变高、窗口缩放时也会挪位置，那不是用户的意思，不能拿它熄跟随。
+        self._self_scroll = False
         self._user_scroll = False
-        self._range_changing = False  # 排版刚变过、滚动条范围跟着变：这期间的位移是 Qt 挪的
-        self._restoring = False  # 正在整窗重铺历史：逐条插入不滚、不摆胶囊，铺完一次到位
-        self._diff_texts: dict[int, tuple[str | None, str]] = {}  # 折叠段 key → (路径, 整段 diff)
-        self._tool_payloads: dict[int, tuple[str, str]] = {}  # 折叠段 key → (复制按钮文案, 待复制的文本)
+        self._range_changing = False
+        self._restoring = False
+        self._diff_texts: dict[int, tuple[str | None, str]] = {}
+        self._tool_payloads: dict[int, tuple[str, str]] = {}
         self.view.viewport().setMouseTracking(True)
         self.view.viewport().installEventFilter(self)
-        self.view.installEventFilter(self)  # 方向键 / PageUp 也是用户自己滚的
+        self.view.installEventFilter(self)
         bar = self.view.verticalScrollBar()
         bar.valueChanged.connect(self._on_scrolled)
-        bar.sliderMoved.connect(self._user_scroll_now)  # 拖着滚动条
-        bar.actionTriggered.connect(self._user_scroll_now)  # 点箭头 / 点条 / 翻页动作
-        bar.rangeChanged.connect(self._range_changed)  # 范围变了 = 刚刚重新排版
-        self.view.document().contentsChanged.connect(self._replace_msg_actions)  # 流式还在长，条得跟着尾巴走
+        bar.sliderMoved.connect(self._user_scroll_now)
+        bar.actionTriggered.connect(self._user_scroll_now)
+        bar.rangeChanged.connect(self._range_changed)
+        self.view.document().contentsChanged.connect(self._replace_msg_actions)
 
-        # 输入框正上方那一叠状态（桌面端 composer 的 status-stack）：引擎的提示、还在跑的后台
-        # 进程、正在生成的工具调用。没有内容时整块藏着，不占高度。
         self.stack = StatusStack(frame)
         self.stack.kill_requested.connect(self.process_kill_requested.emit)
         layout.addWidget(self.stack)
 
-        # 念出来那条进度：常驻在输入框正上方，没人念的时候自己藏起来（和桌面端同一个位置）
         self.speech_bar = SpeechBar(frame)
         self.speech_bar.stop_requested.connect(self.speech_stop_requested.emit)
         layout.addWidget(self.speech_bar)
 
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(8)
-        # 审批 / 思考放进输入框里做成图标：窗口拉到最窄时它们各只占一个图标宽，
-        # 不会再挤掉输入区域（原来在框外，窄了就被压成「批 sma」「思考 默」）。
         self._inputbox = box = QtWidgets.QFrame(frame)
         box.setObjectName("inputbox")
         box_row = QtWidgets.QHBoxLayout(box)
         box_row.setContentsMargins(9, 0, 4, 0)
         box_row.setSpacing(2)
 
-        # 「＋」加附件：图片、文档都行。选完立刻交给引擎上传，发送时只发文字。
         self._attach_button = QtWidgets.QToolButton(box)
         self._attach_button.setObjectName("icon")
         self._attach_button.setIcon(_glyph_icon("plus"))
@@ -1695,7 +1569,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attach_button.setToolTip("加附件（图片、文档；也可以直接粘贴或拖进来）")
         self._attach_button.setCursor(QtCore.Qt.PointingHandCursor)
         self._attach_menu = QtWidgets.QMenu(self._attach_button)
-        self._attach_menu.setObjectName("modelmenu")  # 跟审批/档位菜单同一套样式
+        self._attach_menu.setObjectName("modelmenu")
         self._attach_menu.addSection("附加")
         for label, slot, glyph in (
             ("文件…", self._pick_files, "file"),
@@ -1711,39 +1585,30 @@ class ChatPanel(QtWidgets.QWidget):
         snippets.triggered.connect(lambda _checked=False: self._show_snippets())
         self._attach_menu.addSeparator()
         hint = self._attach_menu.addAction("提示：输入 @ 以内联引用文件。")
-        hint.setEnabled(False)  # 只是提示，不是能点的项
+        hint.setEnabled(False)
         self._attach_button.clicked.connect(self._show_attach_menu)
         box_row.addWidget(self._attach_button)
 
-        # 输入区在最左，两个图标键贴右边（按钮放输入框右侧，不放左侧）
-        # 多行输入：Enter 发送、Shift+Enter 换行；写到换行才长高，最多 5 行，再多内部滚动。
         self.input = _Input(box)
         self.input.setObjectName("input")
-        self.input.set_placeholder("和 Noesia 说点什么…")  # 自己画，见 _Input 的说明
+        self.input.set_placeholder("和 Noesia 说点什么…")
         self.input.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.input.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
-        self.input.setTabChangesFocus(True)            # Tab 用来换焦点，不往正文里塞制表符
+        self.input.setTabChangesFocus(True)
         self.input.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.input.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        # 文档默认有 4px 边距，会让字比外壳往里缩一格；单行框时对齐的是 padding，这里抹平
         self.input.document().setDocumentMargin(0)
-        self.input.installEventFilter(self)  # 焦点高亮 / Enter 发送 / 粘贴接附件
-        # 拖放要装在视口上：多行控件是 QAbstractScrollArea，拖进来的目标其实是 viewport，
-        # 挂在控件本身收不到（单行框不是滚动区，所以以前挂在上面就够）
+        self.input.installEventFilter(self)
         self.input.viewport().installEventFilter(self)
         self.input.setAcceptDrops(True)
         self.input.textChanged.connect(self._fit_input_height)
         box_row.addWidget(self.input, 1)
-        self._ime_composing = False   # 输入法正在组字：这时回车是确认候选词，不是发送
+        self._ime_composing = False
         self.input.textChanged.connect(self._sync_input_ph)
-        self.input.textChanged.connect(self._sync_send_button)  # 框里有字，「停止」变「排队」
+        self.input.textChanged.connect(self._sync_send_button)
         self._sync_input_ph()
         self._fit_input_height()
 
-        # 语音模式的输入区：跟输入框抢同一个位置，同一时刻只露一个。
-        # 切模式只做 hide/show，不销毁输入框——草稿、光标位置、焦点都在控件自己身上，
-        # 藏起来不会丢，切回来还是原样。
-        # 球按居中摆：语音模式下其余按钮都藏起来，整条输入区就剩这一颗球。
         self._box_row = box_row
         self._voice_orb = VoiceOrb(box)
         self._voice_orb.hide()
@@ -1751,7 +1616,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_orb.released.connect(self._voice_hold_end)
         box_row.addWidget(self._voice_orb, 1, QtCore.Qt.AlignCenter)
 
-        # 审批档位：写一句话之前先知道「危险命令要不要问我」。档位写在 tooltip 上。
         self._approval_button = QtWidgets.QToolButton(box)
         self._approval_button.setObjectName("icon")
         self._approval_button.setIcon(_glyph_icon("shield"))
@@ -1762,8 +1626,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._approval_menu = QtWidgets.QMenu(self._approval_button)
         self._approval_menu.setObjectName("modelmenu")
         self._approval_menu.setStyleSheet(STYLE)
-        # 一档只勾一个：照桌面端那组 radio（`DropdownMenuRadioGroup`）。不分组的话每点一次就多一个勾，
-        # 点过三档就是三个勾——看起来「三档都选上了」。
         self._approval_group = QtGui.QActionGroup(self._approval_menu)
         self._approval_group.setExclusive(True)
         for value, label in _APPROVAL_MODES:
@@ -1778,17 +1640,15 @@ class ChatPanel(QtWidgets.QWidget):
         self._approval_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         box_row.addWidget(self._approval_button)
 
-        # 思考档位：菜单项不写死，等引擎按当前模型/路由算完再填（这个模型没有的档不摆）。
         self._reasoning_button = QtWidgets.QToolButton(box)
         self._reasoning_button.setObjectName("icon")
         self._reasoning_button.setIcon(_glyph_icon("spark"))
         self._reasoning_button.setIconSize(QtCore.QSize(14, 14))
         self._reasoning_button.setFixedSize(22, 22)
         self._reasoning_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self._reasoning_button.setEnabled(False)  # 档位是引擎回读的，没读到之前别让人点
+        self._reasoning_button.setEnabled(False)
         self._reasoning_button.setToolTip("推理强度：等引擎回读当前档位")
         self._reasoning_menu = QtWidgets.QMenu(self._reasoning_button)
-        # 组建一次复用（跟审批那组一样）：每轮新建会把旧组一直挂在菜单下面
         self._reasoning_group = QtGui.QActionGroup(self._reasoning_menu)
         self._reasoning_group.setExclusive(True)
         self._reasoning_menu.setObjectName("modelmenu")
@@ -1797,16 +1657,12 @@ class ChatPanel(QtWidgets.QWidget):
         self._reasoning_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         box_row.addWidget(self._reasoning_button)
 
-        # 念出来（TTS）：和审批/思考并排，三档——静音 / 纯语音 / 语音互动。
-        # 纯语音和语音互动互斥，就是同一档位里的两个选项，所以不存在两个同时生效的情况。
-        # 状态存在 speech_prefs 里，和音色、Key 一个地方；点一下立刻生效，不影响正在跑的这轮。
         self._voice_button = QtWidgets.QToolButton(box)
         self._voice_button.setObjectName("icon")
         self._voice_button.setIconSize(QtCore.QSize(14, 14))
         self._voice_button.setFixedSize(22, 22)
         self._voice_button.setCursor(QtCore.Qt.PointingHandCursor)
         self._voice_menu = QtWidgets.QMenu(self._voice_button)
-        # 三档互斥：QAction 不带互斥，点过静音又点纯语音就是两个勾
         self._voice_group = QtGui.QActionGroup(self._voice_menu)
         self._voice_group.setExclusive(True)
         for value, label in _VOICE_MODES:
@@ -1820,8 +1676,6 @@ class ChatPanel(QtWidgets.QWidget):
         box_row.addWidget(self._voice_button)
         self.set_voice_mode(_voice_mode())
 
-        # 语音输入：点一下在「打字 / 说话」之间来回切，右键选麦克风。
-        # 跟左边那个 TTS 三档是两件事——那个管「念不念出来」，这个管「怎么输入」。
         self._mic_button = QtWidgets.QToolButton(box)
         self._mic_button.setObjectName("icon")
         self._mic_button.setIcon(_glyph_icon("mic"))
@@ -1840,7 +1694,6 @@ class ChatPanel(QtWidgets.QWidget):
         send.setIconSize(QtCore.QSize(15, 15))
         send.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         send.setFlat(True)
-        # 粉紫钮下面一层柔光：设计稿里的 box-shadow，Qt 只能靠图形效果给
         glow = QtWidgets.QGraphicsDropShadowEffect(send)
         glow.setBlurRadius(11)
         glow.setColor(QtGui.QColor(196, 110, 158, 97))
@@ -1848,19 +1701,16 @@ class ChatPanel(QtWidgets.QWidget):
         send.setGraphicsEffect(glow)
         send.setObjectName("send")
         send.setCursor(QtCore.Qt.PointingHandCursor)
-        # 待发送附件：一条缩略图/文件名，空着就整条隐藏，不占高度
         self._attachments: list[dict] = []
-        self._clipboard_seq = 0  # 粘进来的图按序命名（粘贴图片-1.png …）
+        self._clipboard_seq = 0
         self._attach_chips: list[QtWidgets.QFrame] = []
         self._attach_bar = QtWidgets.QFrame(frame)
         self._attach_bar.setObjectName("attachbar")
         self._attach_row = QtWidgets.QHBoxLayout(self._attach_bar)
         self._attach_row.setContentsMargins(6, 3, 6, 3)
         self._attach_row.setSpacing(6)
-        self._attach_row.addStretch(1)  # 附件靠左排，别让一条撑满整行
+        self._attach_row.addStretch(1)
         self._attach_bar.hide()
-        # 排队中：这一轮还在跑时你发的话先排在这儿，等它完了自动发。
-        # 和桌面端一样，排队的东西不进正文——正文里出现的必须是已经交给引擎的。
         self._queued: list[dict] = []
         self._queue_chips: list[QtWidgets.QFrame] = []
         self._queue_bar = QtWidgets.QFrame(frame)
@@ -1876,7 +1726,6 @@ class ChatPanel(QtWidgets.QWidget):
         row.addWidget(send)
         layout.addLayout(row)
 
-        # 最底一行只留快捷键提示：这一带正对着「发送」，不放任何可点的东西
         meta_row = QtWidgets.QHBoxLayout()
         meta_row.setContentsMargins(4, 5, 4, 0)
         meta_row.setSpacing(6)
@@ -1885,9 +1734,7 @@ class ChatPanel(QtWidgets.QWidget):
         layout.addLayout(meta_row)
 
         send.clicked.connect(self._emit)
-        # 回车发送放 eventFilter 里判：多行控件没有 returnPressed，还要区分 Shift+回车和输入法组字
 
-        # 边框这一圈（14px 内容边距之外的 frame 空白）由 panel 接管：拖它缩放
         self._frame = frame
         frame.setMouseTracking(True)
         frame.installEventFilter(self)
@@ -1942,7 +1789,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._bg.resize(scaled.size())
         self._bg.move(frame.width() - scaled.width(), frame.height() - scaled.height())
 
-    # ---- 对外接口 ----
 
     def set_models(self, items: list[dict], current: str, *, switching: bool = False) -> None:
         """填模型菜单：一级按供应商分组，二级是那家的模型；按钮上显示当前模型名。
@@ -1950,12 +1796,11 @@ class ChatPanel(QtWidgets.QWidget):
         清单一到就说明刷新结束了，所以顺手把「刷新中…」收回去。
         """
         self._models = list(items)
-        self._current_model_id = current  # 刷新途中重画菜单要用它勾回当前这条
+        self._current_model_id = current
         self._models_refreshing = False
         self._repaint_model_menu()
         text = current_label(self._models, current, fallback="选模型")
         self._model_button.setText(("切换中…" if switching else text) + "  ▾")
-        # 清单空但引擎说了在跑哪个模型时也要能点：菜单里至少还有「刷新模型」
         self._model_button.setEnabled(bool(self._models or current) and not switching)
         if not self._models:
             self._model_button.setToolTip("模型清单还没到；点「设置」可以先配一家")
@@ -1972,11 +1817,10 @@ class ChatPanel(QtWidgets.QWidget):
         """
         self._models_refreshing = bool(refreshing)
         button = self._refresh_button
-        if button is None:  # 菜单还没画过（没开过、清单也没到过），只能整张建一次
+        if button is None:
             self._repaint_model_menu()
             return
         button.setText("刷新中…" if self._models_refreshing else "刷新模型")
-        # 不 setEnabled(False)：菜单里正亮着的那颗控件一禁用，QMenu 就把高亮甩回第一行
         button.setProperty("busy", self._models_refreshing)
         button.style().unpolish(button)
         button.style().polish(button)
@@ -2008,7 +1852,7 @@ class ChatPanel(QtWidgets.QWidget):
                 sub = action.menu()
                 if sub is not None and sub.isVisible():
                     keep_open_sub = self._menu_row_key(action)
-                    inner = sub.activeAction()  # 鼠标停在这家子菜单的哪一个模型上
+                    inner = sub.activeAction()
                     if inner is not None and not inner.isSeparator():
                         keep_sub_item = inner.text()
                     break
@@ -2043,7 +1887,6 @@ class ChatPanel(QtWidgets.QWidget):
             menu.setActiveAction(action)
             sub = action.menu()
             if sub is not None:
-                # 子菜单自己不知道往哪弹：按这一行的右上角算，跟 Qt 平时弹出的位置一致
                 sub.popup(menu.mapToGlobal(menu.actionGeometry(action).topRight()))
                 if wanted_item:
                     for row in sub.actions():
@@ -2064,9 +1907,9 @@ class ChatPanel(QtWidgets.QWidget):
         logger.info("[界面] 清空窗口（%s）", reason or "未说明")
         self.view.clear()
         self._streaming = False
-        self._msgs = []  # 窗口里的消息清单跟着清：悬停条不该再指向已经不存在的段落
-        self._row_stamp_pending = None  # 上一场没落地的行号不能带进新的一场
-        self._reserve_tail_space()  # clear() 把根框架格式冲掉了，文末那一格要重新铺
+        self._msgs = []
+        self._row_stamp_pending = None
+        self._reserve_tail_space()
         self._stream_msg = None
         self._rewind_waiting = False
         self._rewind_after_stop = None
@@ -2078,12 +1921,11 @@ class ChatPanel(QtWidgets.QWidget):
         self._md_fence = False
         self._para_break = False
         self._reason_fold = None
-        self._reason_started = 0.0
+
         self._tool_folds = {}
         self._clarify = None
-        self._clear_queue()  # 换会话了：上一段还没发出去的那几句跟着作废，别串到新会话里
+        self._clear_queue()
         self.stack.clear_all()
-        # 清屏顺带把语音球退回待机：不然它会一直停在「识别中」转圈
         self._voice_orb.set_state(STATE_IDLE)
         self._tool_started.clear()
         self._tool_clock.stop()
@@ -2091,14 +1933,12 @@ class ChatPanel(QtWidgets.QWidget):
         self._folds.reset()
         self._diff_texts = {}
         self._tool_payloads = {}
-        self._tool_images = {}  # 每个工具块已经贴过的图：同一张不重复贴
+        self._tool_images = {}
         self._tool_term_drawn = {}
         self._tool_detail_seen = {}
         self._delegate_cards = {}
         self._delegate_latest = ""
         self._interrupted = False
-        # `view.clear()` 把文档资源也丢了：图标/图片的「已登记」记账得跟着清，
-        # 不清的话记账说登记过、文档里其实没有，清屏之后这些图永远画不出来。
         self._icon_registered.clear()
         self._photos.clear()
         self._photo_keys.clear()
@@ -2107,21 +1947,14 @@ class ChatPanel(QtWidgets.QWidget):
         self._local_photos.clear()
         self._photo_pending.clear()
         self._fence_cache.clear()
-        self._review_count = 0      # 一场对话里的回顾条数跟着新会话重来
+        self._review_count = 0
         self._review_folded = False
-        # 清屏要真的回到「刚开窗」的样子，否则新会话会继承上一场的残留：
-        # 正文记账没清 → 新回答多出整行空白；错误指纹没清 → 同一个错再不显示；
-        # 跟着最新没复位 → 新会话不自动贴底；忙态没清 → 按钮停在上一次的「停止」。
         self._bubble_has_text = False
         self._last_error_key = ""
         self._follow = True
-        # 按钮文案跟着真实忙态走：这里不硬置 False——引擎自己续跑时窗口刚铺完历史，
-        # 硬置会把 on_session_ready 刚设上的「停止」又抹回「发送」。
         self._sync_send_button()
         self.speech_bar.dismiss()
         self._hide_hover()
-        # 清屏后文档只剩末尾那一格，旧位置算出来的「跳到最新」胶囊会留在一个不该有它的地方
-        # （它只在滚动事件里翻显隐，清屏本身不触发滚动）。
         self._hide_jump()
 
     def has_transcript(self) -> bool:
@@ -2152,13 +1985,9 @@ class ChatPanel(QtWidgets.QWidget):
                     continue
                 kind = str(item.get("display_kind") or "")
                 if kind == _DELEGATION_DISPLAY_KIND:
-                    # 引擎把子代理的结果以「用户消息」回灌给模型：原文是给模型看的英文脚手架，
-                    # 界面上只留一行中文说明，不能伪装成「你」说的话。
                     self.append_notice_lines(delegate_view.completion_lines(text))
                     continue
                 if kind in _NOTICE_LABELS:
-                    # 事故恢复注记 / 失败轮的收尾行：同样只留中文说明。
-                    # auto_continue 那句末尾带着原来问的是什么，摘出来一起显示。
                     label = _NOTICE_LABELS[kind]
                     tail = ""
                     if kind == "auto_continue" and _AUTO_CONTINUE_REQUEST in text:
@@ -2173,7 +2002,7 @@ class ChatPanel(QtWidgets.QWidget):
                     self.end_assistant()
         finally:
             self._restoring = False
-        self._follow = True  # 重建出来的历史，从底部开始看
+        self._follow = True
         self._scroll_to_end()
 
     def append_notice_lines(self, lines) -> None:
@@ -2182,27 +2011,23 @@ class ChatPanel(QtWidgets.QWidget):
             self._insert_html(f"<span style='color:#8f9bb0;'>{html.escape(str(line))}</span>")
 
     def append_user(self, message: str, attachments=(), row_id: int | None = None) -> None:
-        self._last_error_key = ""  # 新的一轮：同样的错误再出现就该再说一次
-        message, refs = split_attachment_refs(message)  # 历史里的 @image:/@file:/[screenshot] 标记不能当正文显示
+        self._last_error_key = ""
+        message, refs = split_attachment_refs(message)
         items = [*refs, *attachments]
-        start = self.view.document().characterCount() - 1  # 插入前的文末位置：这条消息从这儿开始
+        start = self.view.document().characterCount() - 1
         self._insert_html(
             f"<span style='color:#c9a6e0;font-size:11px;'><b>{html.escape(_user_display_name())}</b></span>"
             f"<br><span style='color:rgba(214,198,222,168);font-size:12.5px;'>{html.escape(message)}</span>"
         )
         self._begin_message("user", start, message, row_id)
         if attachments:
-            # 附件要跟着这条消息记着：刷新/重发会把它重新贴一遍，不带附件的话气泡当场变小，
-            # 下面的消息整体往上跳——看着就是「刷新之后位置乱了」。
             self._msgs[-1]["attachments"] = list(attachments)
         if row_id is None and self._row_stamp_pending is not None:
-            # 这一条是截断重发刚贴回来的：行号早就回了，补上（不然它再也删不掉/刷不了）
             self._msgs[-1]["row_id"] = self._row_stamp_pending
             self._row_stamp_pending = None
         for item in items:
             self._append_user_attachment(item)
         if not self._restoring:
-            # 自己刚说的话必须看得见：正翻着历史也一样，发完立刻回到底并继续跟随
             self._follow = True
             self._scroll_to_end_later()
             self._hide_jump()
@@ -2214,13 +2039,10 @@ class ChatPanel(QtWidgets.QWidget):
             self._insert_html(f"<br><span style='color:#9aa4b2;'>📎 {html.escape(item['name'])}</span>")
             return
         self._image_seq += 1
-        # 名字+尺寸会撞（两张同分辨率截图都叫 image.png）：后一张 addResource 会把前一张盖掉。
-        # 序号让每个附件天生一个资源名，历史里不会再串图。
         key = f"noesia-image://user-{self._image_seq}"
         self.view.document().addResource(
             QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(key), pixmap
         )
-        # 本地图没有网址：记下原文件（或粘进来的字节），点下载时照它存
         self._local_photos[key] = (
             item.get("name") or Path(item.get("path") or "").name or "图片",
             Path(item["path"]) if item.get("path") else item.get("data") or b"",
@@ -2229,35 +2051,32 @@ class ChatPanel(QtWidgets.QWidget):
         self._insert_html(f"<br><img src='{key}' width='{width}'>")
 
     def begin_assistant(self) -> None:
-        self._end_reasoning_group()  # 思考在前、回答在后：先把那段思考收成「思考了 3s」
+        self._end_reasoning_group()
         self._flush_md()
         start = self.view.document().characterCount() - 1
         self._insert_html("<span style='color:#d9b8cd;font-size:11px;'><b>Noesia</b></span><br>")
         self._begin_message("assistant", start, "", None)
         self._streaming = True
         self._bubble_has_text = False
-        # 注意：这里**不能**放开 `_interrupted`。按停之后引擎还飘在半路的 token 会先到，
-        # 到达时正是由它触发新的一段——在这儿放闸，那段残片就正好被写进新气泡，
-        # 于是「512`（」这种半截回答挂在你新消息下面。放闸只认 turn.done（settle_turn）。
 
     def append_chunk(self, chunk: str) -> None:
         if self._interrupted:
-            return  # 已经叫停了：引擎可能还飘回来几个 token，不再往气泡里写
+            return
         if not self._streaming:
             self.begin_assistant()
             self._bubble_has_text = False
         self._assistant_pending += chunk
         if self._stream_msg is not None:
-            self._stream_msg["text"] += chunk  # 整段复制拿的是原文，不是窗口里折起来的样子
+            self._stream_msg["text"] += chunk
         self._pump_assistant(final=False)
 
     def end_assistant(self) -> None:
         self._end_reasoning_group()
         self._pump_assistant(final=True)
-        self._flush_md()  # 最后那段结构（列表/表格/代码块）没等到空行也要落  # 收尾：缓冲里那半行吐干净
-        self._drop_trailing_blank_line()  # 末尾的 `<br/>` 空行不留在下一段前面
+        self._flush_md()
+        self._drop_trailing_blank_line()
         self._assistant_pending = ""
-        self._streaming = False  # 段落由下一次 _insert_html 的 insertBlock 分隔
+        self._streaming = False
         self._stream_msg = None
 
     def set_media_roots(self, roots) -> None:
@@ -2282,18 +2101,15 @@ class ChatPanel(QtWidgets.QWidget):
                 self._emit_line(data)
             self._assistant_pending = ""
             return
-        # 代码块里绝不能抢画半行：`inline()` 会把 `'1'   + '2'` 压成 `'1' + '2'`、把行尾并进上一段，
-        # 这些残片还会用文档默认的黑字黑底画出来——屏幕上就是一条条纯黑横杠（用户报的「一条条黑的」）。
-        # 围栏自己没到齐时（"`" / "``"）同理，等它齐了再按围栏判断。
         stripped = data.strip()
         hold_partial = (
-            self._md_fence  # 围栏里：半行照正文画会漏字、还会用默认黑字黑底画成黑杠
-            or (not self._md_block and "```".startswith(stripped))  # 围栏自己还没到齐（"`" / "``"）
-            or data.count("**") % 2  # 粗体标记还被切在两半里：先画就会漏出 `**`
-            or data.rstrip().endswith("*")  # 标记只到了一半（行尾一个 `*`），等它配对
-            or data.count("`") % 2  # 行内代码没闭合，同理
-            or _open_link(data)  # 图片/链接的括号还没到齐：先画出来就是那行原始 markdown
-            or markdown_render.is_structural_prefix(data)  # 结构标记只到了一半（`-`、`1.`、`##`）
+            self._md_fence
+            or (not self._md_block and "```".startswith(stripped))
+            or data.count("**") % 2
+            or data.rstrip().endswith("*")
+            or data.count("`") % 2
+            or _open_link(data)
+            or markdown_render.is_structural_prefix(data)
         )
         if (
             data
@@ -2301,9 +2117,6 @@ class ChatPanel(QtWidgets.QWidget):
             and not media_links.might_be_media(data)
             and not markdown_render.is_structural(data)
         ):
-            # 半行先照行内语法画出来（流式要跟得上）；剩下的等换行到了再接着画
-            # 结构行（表格 / 列表 / 标题）不能这么画：半行照行内画会把 "| 2026-…” 这种
-            # 原始 markdown 漏进上一段，表格还会多出一行残缺的行
             self._insert_inline(markdown_render.inline(data))
             data = ""
         self._assistant_pending = data
@@ -2315,10 +2128,9 @@ class ChatPanel(QtWidgets.QWidget):
             return
         if rest:
             self._md_feed(rest)
-        self._flush_md()  # 附件单独占一行：先把没落盘的段落收掉
+        self._flush_md()
         self._insert_media(path)
 
-    # ---- markdown：正文照桌面端那样渲染，不按纯文本铺 ----
 
     def _md_feed(self, line: str) -> None:
         """一行行喂进来：结构行攒着整段画，普通行立刻行内画。
@@ -2336,16 +2148,15 @@ class ChatPanel(QtWidgets.QWidget):
             self._md_block.append(line)
             return
         if not line.strip():
-            # 空行是分段：先把结构段落盘，再断开当前这段（否则两段会连成一句）
             self._flush_md()
             self._break_paragraph()
             return
         if markdown_render.is_structural(line):
             self._md_block.append(line)
-            if len(self._md_block) >= 80:  # 长表格不会一直憋着不显示
+            if len(self._md_block) >= 80:
                 self._flush_md()
             return
-        self._flush_md()  # 结构段结束，先落下
+        self._flush_md()
         self._insert_inline(markdown_render.inline(line) + "<br/>")
 
     def _break_paragraph(self) -> None:
@@ -2374,7 +2185,6 @@ class ChatPanel(QtWidgets.QWidget):
             else:
                 self._insert_html(markdown_render.block(body))
 
-    # ---- 正文里的网络图片：Qt 不下载，得自己取回来注册成文档资源 ----
 
     def _photo_placeholder(self, text: str) -> QtGui.QPixmap:
         """取图期间的占位（灰底一行小字），免得空一块让人不知道发生了什么。"""
@@ -2413,11 +2223,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._photo_pending.add(url)
         try:
             request = QtNetwork.QNetworkRequest(QtCore.QUrl(url))
-            # 有些图床不认没有 UA 的请求
             request.setHeader(
                 QtNetwork.QNetworkRequest.KnownHeaders.UserAgentHeader, "Noesia Agent"
             )
-            request.setTransferTimeout(10000)  # 网络不通时别一直挂着
+            request.setTransferTimeout(10000)
             reply = self._net.get(request)
             reply.finished.connect(lambda: self._photo_arrived(reply, url, key))
         except Exception:
@@ -2427,8 +2236,6 @@ class ChatPanel(QtWidgets.QWidget):
     def _photo_arrived(self, reply, url: str, key: str) -> None:
         """图取回来了：换成真图重画；取不回来就如实说没加载出来。"""
         self._photo_pending.discard(url)
-        # 占位是个矮灰条，真图比它高一大截：换上去正文会长高。
-        # 本来跟着新内容看的，图一落地正文就变高，得继续跟到底，不能把人晾在半空。
         stuck = self._follow
         try:
             failed = reply.error() != QtNetwork.QNetworkReply.NetworkError.NoError
@@ -2440,18 +2247,14 @@ class ChatPanel(QtWidgets.QWidget):
             if broken:
                 pixmap = self._photo_placeholder("图片没加载出来")
             else:
-                # 正文里只放缩略图：想看仔细、想存原图，点开或用右上角的下载
                 limit = max(120, min(_THUMB_WIDTH, self.view.viewport().width() - 40))
                 if pixmap.width() > limit:
                     pixmap = pixmap.scaledToWidth(
                         limit, QtCore.Qt.TransformationMode.SmoothTransformation
                     )
-                self._remember_original(url, data)  # 原图字节留着：点开能看清、能存
+                self._remember_original(url, data)
             if not broken:
-                # 失败不记账：换个网络还能救回来，别把「没加载出来」当成结果缓存住
                 self._photos[url] = pixmap
-            # 长会话里一路看下去不能把每张图都攥着：超过上限就先松掉最早的。
-            # 已经画进文档的那几张不受影响（文档自己是资源的持有者），这里只是不再挡重复下载。
             while len(self._photos) > _PHOTO_CACHE:
                 self._photos.pop(next(iter(self._photos)))
             self.view.document().addResource(
@@ -2460,7 +2263,6 @@ class ChatPanel(QtWidgets.QWidget):
             self.view.document().markContentsDirty(0, self.view.document().characterCount())
             self.view.viewport().update()
             if stuck:
-                # 排版是下一拍才算完的，等它算完再贴底，不然拿到的还是旧的最大值
                 self._scroll_to_end_later()
         except Exception:
             logger.warning("正文图片落地时出错：%s", url, exc_info=True)
@@ -2477,7 +2279,6 @@ class ChatPanel(QtWidgets.QWidget):
         try:
             return self._swap_image_sources(markup)
         except Exception:
-            # 图这块出事不能连累正文：原样插进去，最多是这块图显示不出来
             logger.warning("正文图片处理失败，按原文插入", exc_info=True)
             return markup
 
@@ -2496,15 +2297,12 @@ class ChatPanel(QtWidgets.QWidget):
                 break
             url = markup[found + len(marker) : closing]
             pieces.append(markup[index : found + len(marker)])
-            # HTML 里的 `src` 是转义过的：markdown-it 会把地址中的 `&` 写成 `&amp;`，
-            # 原样拿去请求时服务端收到的是 `w=300&amp;h=200`，参数名变成 `amp;h`，
-            # 签名/尺寸校验直接失败——带 `&` 的 CDN 图整张取不回来，重试也没用。
             url = html.unescape(url)
             if url.lower().startswith(("http://", "https://")):
                 pieces.append(self._photo_key(url))
             else:
                 pieces.append(url)
-            pieces.append('"')  # 值的收尾引号（marker 里只有开引号）
+            pieces.append('"')
             index = closing + 1
         return "".join(pieces)
 
@@ -2607,9 +2405,8 @@ class ChatPanel(QtWidgets.QWidget):
                 "download",
                 "下载",
                 lambda: None,
-                flash=False,  # 存完不换 ✓：由底部提示行报一句「已保存 xxx.png」，跟 desktop 的 toast 一个意思
+                flash=False,
             )
-            # 图片深浅不定，垫一层半透明底，压在浅色照片上也看得清
             self._hover_download.setStyleSheet(
                 "QToolButton { border: none; border-radius: 6px;"
                 " background: rgba(16, 18, 24, 150); padding: 0; }"
@@ -2629,7 +2426,6 @@ class ChatPanel(QtWidgets.QWidget):
         """存这张图的原图。手上有原图字节就直接问存哪儿，没有就先取回来。"""
         url = self._photo_sources.get(key)
         if not url:
-            # 本地图（你发的附件、工具贴出来的图）没有网址：直接读原文件
             local = self._local_photo(key)
             if local is None:
                 self._flash_hint("这张图的原文件找不到了")
@@ -2637,7 +2433,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._save_bytes(*local)
             return
         if url in self._downloading:
-            return  # 取原图那一趟还没回来：连点不再发第二趟、不弹第二个保存框
+            return
         data = self._originals.get(url)
         if data:
             self._save_bytes(_photo_name(url, data), data)
@@ -2713,7 +2509,7 @@ class ChatPanel(QtWidgets.QWidget):
         """点图：开窗看原图。原图字节还在就直接给，松过手的先拿缩略图顶着、同时去取。"""
         url = self._photo_sources.get(key)
         if not url:
-            return  # 用户自己贴的附件走的是另一套，这里不管
+            return
         dialog = PhotoView(_photo_name(url), self.window())
         data = self._originals.get(url)
         if data:
@@ -2723,7 +2519,7 @@ class ChatPanel(QtWidgets.QWidget):
                 try:
                     dialog.exec()
                 finally:
-                    dialog.deleteLater()   # 带 parent 的对话框 exec 完只是藏起来，不销毁
+                    dialog.deleteLater()
                 return
         thumb = self._photos.get(url)
         if thumb is not None:
@@ -2734,7 +2530,7 @@ class ChatPanel(QtWidgets.QWidget):
         try:
             dialog.exec()
         finally:
-            dialog.deleteLater()   # 带 parent 的对话框不销毁，每开一次面板下就多一个
+            dialog.deleteLater()
 
     def _refetch_original(self, url: str, dialog: PhotoView) -> None:
         """原图字节被松手了：单独再取一次，回来直接换到窗口上。"""
@@ -2779,7 +2575,7 @@ class ChatPanel(QtWidgets.QWidget):
         if "\ufffc" not in text:
             return
         if text.replace("\u2028", "").replace("\ufffc", "").strip():
-            return  # 图跟字混在一行：这个行距是给字留的，不动
+            return
         fmt = block.blockFormat()
         if fmt.lineHeightType() != QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value:
             return
@@ -2791,13 +2587,9 @@ class ChatPanel(QtWidgets.QWidget):
         if not markup:
             return
         self._bubble_has_text = True
-        cursor = QtGui.QTextCursor(self.view.document())  # 独立光标：不挪视图，滚动位置就不动
+        cursor = QtGui.QTextCursor(self.view.document())
         cursor.movePosition(QtGui.QTextCursor.End)
         if self._para_break or self._folds.owns(cursor.position()) or self._is_code_block(cursor.block()):
-            # 上一段是折叠段藏起来的正文：另起一段，别把回答接在工具结果后面
-            # （折叠着的时候更糟——回答会一起被藏起来）
-            # 上一段是代码块也一样：代码块一行一段，接着写会把这段说明并进最后一行代码，
-            # 看起来像代码，复制出来也带上它（它此时还没有自己的块）。
             cursor.insertBlock()
             cursor.setCharFormat(QtGui.QTextCharFormat())
             cursor.setBlockFormat(_plain_block_format())
@@ -2822,7 +2614,6 @@ class ChatPanel(QtWidgets.QWidget):
     def _insert_media(self, raw_path: str) -> None:
         """附件单独占一行：文件名 + 大小 + 点击打开（文件不存在就如实说找不到）。"""
         self._bubble_has_text = True
-        # 末尾补一个 <br>：不然后面的话会接在这行附件后面（insertHtml 不会自己换行）
         self._insert_html(media_links.media_link_html(raw_path, self._media_roots) + "<br>")
 
     def _on_anchor(self, url: QtCore.QUrl) -> None:
@@ -2835,9 +2626,9 @@ class ChatPanel(QtWidgets.QWidget):
             fold = self._folds.get(int(target.split(":", 1)[1]))
             if fold is not None:
                 following = self._follow
-                self._folds.toggle(fold.key)  # 抬头上的箭头跟着翻
-                fold.pinned = True  # 他自己点了：之后再跑完一轮也别自动收起/展开
-                if following:  # 展开后内容比原来长：本来跟着底部看，就继续贴住
+                self._folds.toggle(fold.key)
+                fold.pinned = True
+                if following:
                     self._scroll_to_end_later()
             return
         self._open_media(url)
@@ -2849,7 +2640,6 @@ class ChatPanel(QtWidgets.QWidget):
         if not media_links.open_local(Path(path)):
             self.show_error(f"打不开这个文件：{path}")
 
-    # ---- 输入框上方那一叠状态（桌面端 composer 的 status-stack） ----
 
     def show_notice(self, key: str, text: str, *, ttl_ms: int = 0, level: str = "") -> None:
         """引擎的提示（`notification.show`）：按 key 管，带 `ttl_ms` 的到点自己消失。"""
@@ -2870,7 +2660,6 @@ class ChatPanel(QtWidgets.QWidget):
         """「正在调用 <工具>…」—工具真的开跑就撤掉，它只是「马上有东西了」的信号。"""
         self.stack.set_activity(text)
 
-    # ---- 引擎在问「你要选哪个」 ----
 
     def _question_format(self) -> QtGui.QTextCharFormat:
         """问题本身：比选项亮一点、大一点，扫一眼就知道在问什么。"""
@@ -2969,8 +2758,6 @@ class ChatPanel(QtWidgets.QWidget):
         fold = self._folds.new("clarify", self._clarify_head(questions), open_=True)
         self._clarify_gen += 1
         self._clarify = {
-            # 代际：旧卡的锚点还留在文档里，靠它认出「这张卡已经作废」，
-            # 否则点旧卡的选项会拿新卡的题目作答、以新 request_id 发出去。
             "gen": self._clarify_gen,
             "qcount": len(questions),
             "request_id": str(payload.get("request_id") or ""),
@@ -2979,7 +2766,7 @@ class ChatPanel(QtWidgets.QWidget):
             "questions": questions,
             "answers": {},
             "marks": {},
-            "choice_marks": {},  # 每题自己那几行选项：抬头和「跳过」不掺进来，按下标改字才不会错位
+            "choice_marks": {},
             "picks": {},
         }
         for index in range(len(questions)):
@@ -3010,9 +2797,9 @@ class ChatPanel(QtWidgets.QWidget):
         text = " ".join(str(question.get("question") or "").split())
         choices, multi = self._choice_rows(question)
         marks = state["marks"].setdefault(qid, [])
-        if qindex:  # 第 2 题起：上面留一个 3pt 的空行，别让两题黏成一块
+        if qindex:
             self._folds.append_marked(fold, " ", body_format=self._spacer_format())
-        if state["qcount"] > 1:  # 一题时抬头已经说清了，多题才需要「问题 1」这种序号
+        if state["qcount"] > 1:
             marks.append(
                 self._folds.append_marked(fold, f"问题 {qindex + 1}", body_format=self._qlabel_format())
             )
@@ -3024,7 +2811,6 @@ class ChatPanel(QtWidgets.QWidget):
                 )
             )
             return
-        # 题面 + 同一行末尾的小药丸提示（桌面 `singleSelectHint` / `multiSelectHint` 就在这一行右侧）
         marks.append(
             self._folds.append_marked(
                 fold, "",
@@ -3047,7 +2833,7 @@ class ChatPanel(QtWidgets.QWidget):
             if recommended:
                 runs.append((" (Recommended)", self._hint_format()))
             choice_marks.append(self._folds.append_marked(fold, "", runs=runs))
-        if multi:  # 我们按题确认，就放在这题选项下面
+        if multi:
             marks.append(
                 self._folds.append_marked(
                     fold, "✔ 就这样",
@@ -3137,7 +2923,7 @@ class ChatPanel(QtWidgets.QWidget):
         if state is None:
             return
         if request_id and str(state.get("request_id") or "") != str(request_id):
-            return  # 不是这一张卡（新问题已经顶上来）
+            return
         self._settle_clarify("已结束")
 
     def _on_clarify_click(self, rest: str) -> None:
@@ -3146,7 +2932,7 @@ class ChatPanel(QtWidgets.QWidget):
             return
         gen, _, rest = rest.partition(":")
         if gen != str(state.get("gen")):
-            return  # 旧卡上的锚点：这一问已经被新问题顶掉，点了不能再当成新问题的答案
+            return
         if rest == "skip":
             reply_id = state.get("reply_id")
             self._settle_clarify("跳过了")
@@ -3238,8 +3024,6 @@ class ChatPanel(QtWidgets.QWidget):
             if stats["added"] or stats["removed"]:
                 label = f"{label} +{stats['added']} −{stats['removed']}"
         elif view.duration_label and not pending:
-            # 跑着的时候给的时长是 0，会被格式成「1ms」并一直停在那儿；
-            # 这段时间自己按秒走，结果回来再换成后端报的真实时长。
             label = f"{label} · {view.duration_label}"
         if view.status == "error":
             label = f"✗ {label}"
@@ -3247,8 +3031,6 @@ class ChatPanel(QtWidgets.QWidget):
             label = f"! {label}"
 
         if is_file_edit and not pending and view.status != "error" and not view.inline_diff:
-            # 编辑类工具成功了却没 diff：正文没东西可画。但跑起来那一帧已经建过行、挂上秒表了，
-            # 这里必须收尾——只 return 不收表，「编辑 x.py · 1247s」会一直往上跳，看着像还在跑。
             if tool_id:
                 self._tool_started.pop(tool_id, None)
                 if not self._tool_started:
@@ -3261,13 +3043,10 @@ class ChatPanel(QtWidgets.QWidget):
         glyph = self._tool_glyph(view, pending=pending, file_edit=is_file_edit)
         fold = self._tool_folds.get(tool_id) if tool_id else None
         if fold is None:
-            # 子代理卡片默认展开：正要「看清它在跑什么」的时候，收着等于没有
             fold = self._folds.new("tool", label, open_=bool(view.inline_diff) or delegate_event is not None, glyph=glyph)
             if tool_id:
                 self._tool_folds[tool_id] = fold
         elif label != fold.label or self._glyph_url(glyph) != self._glyph_url(fold.glyph):
-            # 图标得跟着状态换：跑着是蓝钟，跑完/出错就换成这个工具自己的图标（灰/红/黄）。
-            # 只在建行时插一次的话，跑过的行会永远挂着那只钟——看着像还在跑。
             fold.glyph = glyph
             self._folds.retitle(fold, label)
 
@@ -3280,23 +3059,18 @@ class ChatPanel(QtWidgets.QWidget):
                     self._tool_clock.stop()
 
         if delegate_event is not None:
-            # 子代理卡片：抬头是「几个任务 · 什么状态」，正文是任务行 + 实时记录 + 运行中的动作
             self._draw_delegate(fold, tool_id, delegate_event, pending=pending)
-            self._settle_insert()  # 子代理卡片也是正文：不贴底就跟不上它继续长
+            self._settle_insert()
             return
 
-        # ---- 正文：顺序固定（终端转录 → 图 → 搜索 → diff → 详情）----
         path = view.subtitle if is_file_edit else None
 
-        # 终端转录等跑完再画：跑着的帧和跑完的帧带的是同一条命令，两边都画就是两行一模一样的
         if (view.terminal_command is not None or view.terminal_exit_code is not None) and not pending:
             if not self._tool_term_drawn.get(fold.key):
                 self._tool_term_drawn[fold.key] = True
                 self._folds.append_runs(fold, self._terminal_rows(view))
 
         if view.image_url and self._tool_images.get(fold.key) != view.image_url:
-            # 同一个工具块会画两次（刚调起来一次、跑完一次）：图只贴一次。
-            # 不挡的话界面上就是上下两张一模一样的图（一次分析看两张截图）。
             self._tool_images[fold.key] = view.image_url
             self._append_image(fold, view.image_url)
 
@@ -3317,15 +3091,12 @@ class ChatPanel(QtWidgets.QWidget):
         if view.inline_diff:
             self._diff_texts[fold.key] = (path, view.inline_diff)
             self._folds.append_runs(fold, self._diff_rows(view.inline_diff, path=path))
-            # `defaultOpen = Boolean(inlineDiff) && !hideCodeDiffs`：带 diff 的工具行默认展开，
-            # 用户自己点过就按用户的来（`pinned`）。
             if not fold.pinned and not fold.open:
                 self._folds.set_open(fold, True)
 
         self._append_detail(fold, view)
         self._settle_insert()
 
-    # ---- 工具正文的画法：ANSI 上色、diff 上色 ----
 
     ANSI_COLORS = {
         "black": "#3f4450",
@@ -3345,8 +3116,6 @@ class ChatPanel(QtWidgets.QWidget):
         "bright-cyan": "#6fcbd6",
         "bright-white": "#f2f4f8",
     }
-    # 增删靠底色认。深绿深红那种实色在这个底上跟背景几乎没差别，等于没标；
-    # 改成高饱和色淡一层叠上去（`#AARRGGBB`，前两位是不透明度），一眼能分出加还是删。
     DIFF_COLORS = {
         "add": ("#55a583", "#2c55a583"),
         "del": ("#e75e78", "#2ce75e78"),
@@ -3390,7 +3159,7 @@ class ChatPanel(QtWidgets.QWidget):
     LABEL_COLOR = "#8f9bb0"
     ACCENT_COLOR = "#7fb0d8"
 
-    GUTTER_COLOR = "#5c6472"  # 行号列 `text-muted-foreground/55`
+    GUTTER_COLOR = "#5c6472"
 
     def _gutter_runs(
         self, old_no: int | None, new_no: int | None, kind: str
@@ -3420,14 +3189,8 @@ class ChatPanel(QtWidgets.QWidget):
         """
         rows: list[list[tuple[str, QtGui.QTextCharFormat]]] = []
         old_no = new_no = 0
-        # 兜底：diff 里可能还带着终端转义（引擎那份是给终端画的）。
-        # 留着会让逐行分类把 `\x1b[..m+xxx` 当上下文，颜色全丢、转义原样显示。
-        # hunk 之前那段文件头（`diff --git`、`index`、`--- a/…`、`+++ b/…`、`a/… → b/…`）
-        # 砍掉 diff 文件头：路径抬头已经写着，画出来只剩噪音。
         for kind, line in diff_rows(strip_diff_file_headers(strip_ansi(diff))):
             if kind == "hunk":
-                # `@@ -120,7 +120,9 @@`：行号从这一段自己报的起点算，不能从 0 一直累加，
-                # 不然「看完整 diff」左栏的号是错的，照着改文件会改错地方。
                 match = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
                 if match:
                     old_no = int(match.group(1)) - 1
@@ -3462,8 +3225,6 @@ class ChatPanel(QtWidgets.QWidget):
                 rows.append([*gutter, (" ", base)])
                 continue
 
-            # 行首那个 `+`/`-`/空格是给解析器看的记号，不是内容：
-            # 去掉，增删靠行底色认，左边不留一列加减号。
             code = stripped[1:] if kind in ("add", "del", "context") else stripped
             if kind in ("add", "del", "context") and code.strip() and numbers:
                 highlighted = code_highlight(code, path)[0]
@@ -3477,26 +3238,22 @@ class ChatPanel(QtWidgets.QWidget):
                     row.append((chunk, fmt))
                 rows.append(row)
             else:
-                # 聊天窗这条路每行只能上一种颜色（内容排在独立滚动区里，按行排版），
-                # 语法色在这里只会让整行偏一个色，看不出增删——整行直接给 diff 色。
                 rows.append([*gutter, (code or " ", base)])
         return rows
 
-    # ---- 抬头左边的小图标 ----
 
     def _icon_pixmap(self, name: str | None, color: str, px: int = 14) -> QtGui.QPixmap | None:
         """把图标名字渲成小图（同一个图标同一颜色只渲一次）。"""
-        key = (name, color, px)
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        key = (name, color, px, dpr)
         cached = self._icon_cache.get(key)
         if cached is not None:
             return cached
 
         svg = icon_svg(name, color)
         if not svg:
-            # 名字不认识（以后新加的工具、旧包里没有这个图标）不该退化成「这一行没有图标」——
-            # 那看起来像界面坏了。退回扳手，至少看得出这是一行工具。
             name = "tools"
-            key = (name, color, px)
+            key = (name, color, px, dpr)
             cached = self._icon_cache.get(key)
             if cached is not None:
                 return cached
@@ -3508,7 +3265,8 @@ class ChatPanel(QtWidgets.QWidget):
             from PySide6.QtSvg import QSvgRenderer
 
             renderer = QSvgRenderer(QtCore.QByteArray(svg.encode("utf-8")))
-            pixmap = QtGui.QPixmap(px, px)
+            pixmap = QtGui.QPixmap(max(1, int(round(px * dpr))), max(1, int(round(px * dpr))))
+            pixmap.setDevicePixelRatio(dpr)
             pixmap.fill(QtCore.Qt.GlobalColor.transparent)
             painter = QtGui.QPainter(pixmap)
             renderer.render(painter)
@@ -3570,7 +3328,6 @@ class ChatPanel(QtWidgets.QWidget):
         fmt.setName(url.toString())
         fmt.setWidth(14)
         fmt.setHeight(14)
-        # 图默认按基线摆，整块会吊在文字上方；改成按行居中，和文字落在一条线上
         fmt.setVerticalAlignment(QtGui.QTextCharFormat.VerticalAlignment.AlignMiddle)
         return fmt
 
@@ -3663,7 +3420,6 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _append_detail(self, fold, view) -> None:
         """详情：错误、stdout/stderr 分节、普通正文三条分支。"""
-        # 同一个工具块会画两次（开始 / 跑完），同样的正文只画一次，不然详情会一模一样地叠两遍
         stamp = (view.status, view.detail or "", view.stdout or "", view.stderr or "")
         if self._tool_detail_seen.get(fold.key) == stamp:
             return
@@ -3699,7 +3455,6 @@ class ChatPanel(QtWidgets.QWidget):
 
         if not view.detail:
             return
-        # 跳过与标题/副标题重复的详情，省得同一句话念两遍
         if looks_redundant(view.title, view.detail) or looks_redundant(view.subtitle, view.detail):
             return
         if view.detail_label:
@@ -3726,11 +3481,9 @@ class ChatPanel(QtWidgets.QWidget):
             self._delegate_cards[key] = card
             self._delegate_latest = key
         if result is not None and not pending:
-            card["rows"] = delegate_view.rows(args, result)  # 状态/用时/模型换成引擎报的
+            card["rows"] = delegate_view.rows(args, result)
         self._delegate_sync(key)
         if result is not None and not pending and delegate_view.is_background(result):
-            # 后台派发：工具这一帧已经「完成」了，但子代理还在跑——抬头按秒走，
-            # 等 `subagent.complete` 回来才收尾。
             self._track_running_tool(key, fold, delegate_view.running_title(args))
 
     def _delegate_sync(self, key: str) -> None:
@@ -3776,7 +3529,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._delegate_sync(key)
         if not str(event.get("kind") or "").endswith("complete"):
             return
-        # 这一张卡收尾了：停掉它的秒表，抬头换成最终状态，不再当「最近在跑的那张」
         self._tool_started.pop(key, None)
         if not self._tool_started:
             self._tool_clock.stop()
@@ -3803,12 +3555,11 @@ class ChatPanel(QtWidgets.QWidget):
         成功不补「完成」：工具跑完紧接着就是她的回答，多一行反而吵。
         """
         if self._tool_progress == "off":
-            return  # 引擎配置成不看工具行
+            return
         self._end_reasoning_group()
         label = summary or name
         if not ok:
             label = f"✗ {label}"
-        # 这条路径没有 ToolView（引擎只给了摘要），图标也得按工具取：不能一律白纸，也不能空着。
         glyph = self._tool_icon_glyph(name, ok=ok)
         fold = self._tool_folds.get(tool_id) if tool_id else None
         if fold is None:
@@ -3849,8 +3600,6 @@ class ChatPanel(QtWidgets.QWidget):
         if not text or not self._show_reasoning:
             return
         self._reasoning_pending += text
-        if not self._reason_started:
-            self._reason_started = time.monotonic()
         if len(self._reasoning_pending) >= 160:
             self.flush_reasoning()
 
@@ -3860,7 +3609,6 @@ class ChatPanel(QtWidgets.QWidget):
         if not text.strip() or not self._show_reasoning:
             return
         if self._reason_fold is None:
-            # 边想边看：桌面端实时的思考段是展开的，跑完也保持展开
             self._reason_fold = self._folds.new("reasoning", _THINKING_LABEL, open_=True)
         self._folds.append(self._reason_fold, text.strip())
         self._settle_insert()
@@ -3871,47 +3619,40 @@ class ChatPanel(QtWidgets.QWidget):
         桌面端对它的处理是「替换式追加」（`appendReasoningDelta(..., replace=true)`）。
         实测（真引擎）：这一帧是在这一轮**正文之后**、`message.complete` 之前到的，
         payload 就是整轮回答的全文快照。所以回答已经落地时直接丢掉——不然回答底下会
-        再冒出一段「思考了片刻」，把那篇回答原样斜体铺第二遍。
+        再冒出一段「已思考」，把那篇回答原样斜体铺第二遍。
         """
         if self._bubble_has_text:
-            return  # 这一轮的正文已经写完了：这是整轮快照，不是新的一段思考
+            return
         if not text.strip() or not self._show_reasoning:
             return
-        if not self._reason_started:
-            self._reason_started = time.monotonic()
         self._reasoning_pending += text
         self.flush_reasoning()
 
     def _end_reasoning_group(self) -> None:
-        """这一段思考结束了（正文/工具行来了，或者本轮收尾）：抬头换成「思考了 3s」并收起。
+        """这一段思考结束了（正文/工具行来了，或者本轮收尾）：抬头换成「已思考」并收起。
 
         实时思考是展开给人看的；回答一开始就把它折成一行——不然每轮回答上面都顶着一大块
         灰字，正文得往下翻才看得见。用户自己点开过的（`pinned`）不动他。
         """
         self.flush_reasoning()
         fold, self._reason_fold = self._reason_fold, None
-        started, self._reason_started = self._reason_started, 0.0
         if fold is None:
             return
-        self._folds.retitle(fold, _thought_label(time.monotonic() - started if started else None))
+        self._folds.retitle(fold, _THOUGHT_DONE)
         if not fold.pinned:
             self._folds.set_open(fold, False)
-            # 收起之后再改一次抬头：箭头得跟着翻成 ▸（retitle 读的是 fold.open）
             self._folds.retitle(fold, fold.label)
 
     def show_error(self, message: str) -> None:
         self._end_reasoning_group()
-        # 注意**不要**动 `_streaming`：回答正在流的时候引擎也会回错误帧（config.get、
-        # process.list 之类），把它清掉，下一段 chunk 就会另起一条「Noesia」——
-        # 一条完整回答被劈成两条，中间夹一行红字，复制/刷新只作用到后半截。
         if not self._streaming:
-            self._assistant_pending = ""  # 没在流的时候清掉上一轮的残片；正在流就留着，那是这轮没渲染完的半句
+            self._assistant_pending = ""
         text = (message or "").strip()
         if not text:
             return
         key = _error_key(text)
         if key == self._last_error_key:
-            return  # 同一条错误只留一条：引擎会为每个请求、每次重试各回一遍
+            return
         self._last_error_key = key
         self._insert_html(
             f"<span style='color:#ff9a9a;'>[错误] {html.escape(message)}</span>"
@@ -3927,7 +3668,7 @@ class ChatPanel(QtWidgets.QWidget):
         """
         text = {"thinking": "思考中…", "speaking": "说话中…", "listening": "听着…"}.get(value, "")
         if not text:
-            text = self._provider_wait  # 状态覆盖不了「在等供应商」那行时，把它留着
+            text = self._provider_wait
         self._state_label.setText(text)
 
     def set_provider_wait(self, text: str) -> None:
@@ -3956,29 +3697,27 @@ class ChatPanel(QtWidgets.QWidget):
         """拖到她下方边缘附近就吸过去：只挪位置、大小一点都不动，并且横向对齐中心线。"""
         anchor = self._anchor
         if anchor is None or not self._is_under_anchor():
-            self._snapped = False  # 离得远：不吸，之后她挪也不跟
+            self._snapped = False
             return
-        # 只认她的中心线：不去挤屏幕边缘，否则一挤就对不齐了
         self.move(anchor.center().x() - self.width() // 2, anchor.bottom() + 1)
-        self._snapped = True  # 吸上了：之后她挪/缩，聊天窗一直跟着走
+        self._snapped = True
 
     def show_near(self, anchor: QtCore.QRect | None = None) -> None:
         """贴着头像窗右侧出现；没有锚点就靠在屏幕右侧中部。"""
         screen = QtGui.QGuiApplication.primaryScreen()
         area = screen.availableGeometry() if screen else QtCore.QRect(0, 0, 1920, 1080)
-        self._snapped = False  # 摆放之前先不认「吸着」，摆完再按实际位置判断
+        self._snapped = False
         self.set_anchor(anchor)
         saved = self._saved_pos()
-        if saved is not None:  # 上次放过的地方就是它该在的地方，别再贴到右边去
+        if saved is not None:
             self.move(saved)
             self.show()
             self.raise_()
             self.activateWindow()
             self.input.setFocus()
-            # 摆好、显示出来才量得准：上次就是吸在她下面的，这次接着跟（精确对齐，不留偏移）
             self._settle_snap()
             return
-        width, height = self.width(), self.height()  # 面板可缩放，定位要按当前尺寸算
+        width, height = self.width(), self.height()
         if anchor is not None:
             x = min(anchor.right() + 12, area.right() - width - 8)
             y = max(area.top() + 8, min(anchor.center().y() - height // 2, area.bottom() - height - 8))
@@ -4002,7 +3741,6 @@ class ChatPanel(QtWidgets.QWidget):
         else:
             self._snapped = False
 
-    # ---- 内部 ----
 
     def _body_format(self) -> QtGui.QTextCharFormat:
         fmt = QtGui.QTextCharFormat()
@@ -4016,13 +3754,11 @@ class ChatPanel(QtWidgets.QWidget):
         段末的底色又会渗到下一段普通文字上，悬停复制的命中判定跟着失真。按块画就没有这些花样：
         块格式给底色与缩进、字符格式给等宽字体和 pygments 的着色，再打一个 `_CodeMark` 供命中。
         """
-        self._para_break = False  # 代码块自己会开段，空行记的账在这里结清
+        self._para_break = False
         block_format = QtGui.QTextBlockFormat()
         block_format.setBackground(QtGui.QColor(markdown_render.CODE_BACKGROUND))
         block_format.setLeftMargin(10)
         block_format.setRightMargin(8)
-        # 上下边距只留给首尾两块：每块都带的话，块与块之间那段留白不画底色，
-        # 一整段代码就断成一条一条的色带。
         block_format.setTopMargin(0)
         block_format.setBottomMargin(0)
         head_format = QtGui.QTextBlockFormat(block_format)
@@ -4032,8 +3768,8 @@ class ChatPanel(QtWidgets.QWidget):
         base.setFontPointSize(9)
         base.setForeground(QtGui.QColor("#d7dae5"))
 
-        self._drop_trailing_blank_line()  # 上一行末尾的 `<br/>` 空行，紧接着代码块时就是白留一行
-        cursor = QtGui.QTextCursor(self.view.document())  # 独立光标：不挪视图，滚动位置就不动
+        self._drop_trailing_blank_line()
+        cursor = QtGui.QTextCursor(self.view.document())
         cursor.movePosition(QtGui.QTextCursor.End)
         if not self.view.document().isEmpty():
             cursor.insertBlock()
@@ -4054,7 +3790,7 @@ class ChatPanel(QtWidgets.QWidget):
             tokens = colored[index] if index < len(colored) else []
             tokens = [token for token in tokens if token[0]]
             if not tokens:
-                cursor.insertText(" ", base)  # 空行也要占一行的高度
+                cursor.insertText(" ", base)
                 continue
             for text, color, bold in tokens:
                 fmt = QtGui.QTextCharFormat(base)
@@ -4077,11 +3813,9 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _insert_html(self, markup: str) -> None:
         if not markup.strip():
-            # 空片段也是片段：硬插一次会留下一个空段（14px 行高 + 5px 间距），
-            # 屏幕上就是一句回复和下面的列表之间那一大截空白。
             return
         document = self.view.document()
-        cursor = QtGui.QTextCursor(document)  # 独立光标：不挪视图，滚动位置就不动
+        cursor = QtGui.QTextCursor(document)
         cursor.movePosition(QtGui.QTextCursor.End)
         heading = _HEADING_RE.match(markup)
         if heading:
@@ -4091,23 +3825,18 @@ class ChatPanel(QtWidgets.QWidget):
         quote_format = None
         if not document.isEmpty():
             if _starts_own_block(markup):
-                # 列表 / 表格 / 分隔线：Qt 自己开新段，这里再开一次就是凭空多一个空段
                 self._drop_trailing_blank_line()
-                # 光标停在列表项里时插新的列表，Qt 会当成同一个列表接着排：
-                # 无序后面跟有序，`二` 和 `甲` 会落进同一个块（实测 text 变成 "二\u2028甲"）。
-                # 先退到一个不属于任何列表的空段，再让 Qt 自己开。
                 if document.lastBlock().textList() is not None:
                     cursor.insertBlock()
                     cursor.setBlockFormat(_plain_block_format())
                 first_new = document.blockCount()
             else:
-                cursor.insertBlock()  # 行内片段不会自己断开，得显式开段
-                # 新段不能沿用上一段的格式：上一段是代码块时，底色会跟着过来，整段说明都画成代码
+                cursor.insertBlock()
                 cursor.setCharFormat(QtGui.QTextCharFormat())
                 quote = markup.lstrip().lower().startswith(_QUOTE_TAG)
                 block_format = _plain_block_format()
                 if quote:
-                    block_format.setLeftMargin(12)  # 引用：缩进一点，跟正文分开
+                    block_format.setLeftMargin(12)
                 cursor.setBlockFormat(block_format)
                 if quote:
                     quote_format = QtGui.QTextCharFormat()
@@ -4116,14 +3845,10 @@ class ChatPanel(QtWidgets.QWidget):
         start = cursor.position()
         cursor.insertHtml(self._adopt_images(markup))
         if quote_format is not None:
-            # insertHtml 会把手上的字符格式换成片段自己的，颜色得插完再刷到这段范围上
             _paint_range(cursor, start, cursor.position(), quote_format)
         if first_new is not None:
-            # 段间距只由块格式给（5px），所以 Qt 新开的这几段也要设成普通段落
             block = document.findBlockByNumber(first_new)
             while block.isValid():
-                # 列表项不能重设块格式：Qt 把「属于哪个 QTextList」存在 objectIndex 里，
-                # 重设就把块从列表里摘出来，圆点/序号/缩进全没了。它们的间距由列表样式给。
                 if block.textList() is None:
                     QtGui.QTextCursor(block).setBlockFormat(_plain_block_format())
                     self._relax_image_line(block)
@@ -4154,7 +3879,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._para_break = False
         start = cursor.position()
         cursor.insertHtml(self._adopt_images(inner))
-        _paint_range(cursor, start, cursor.position(), char_format)  # insertHtml 会换掉手上的格式
+        _paint_range(cursor, start, cursor.position(), char_format)
         self._settle_insert()
 
     def _scroll_to_end(self) -> None:
@@ -4166,7 +3891,7 @@ class ChatPanel(QtWidgets.QWidget):
         这个过程会发 `valueChanged`，那是我自己滚的，不是用户往上翻——用 `_self_scroll`
         挡一下，否则每滚一次就把「跟随」状态误判成「用户离开了底部」。
         """
-        self.view.document().documentLayout().documentSize()  # 逼一次排版：拿到的 maximum 才是新的
+        self.view.document().documentLayout().documentSize()
         bar = self.view.verticalScrollBar()
         self._self_scroll = True
         try:
@@ -4193,14 +3918,13 @@ class ChatPanel(QtWidgets.QWidget):
         最大值，按位置判就一块都跟不上。
         """
         if self._restoring:
-            return  # 整窗重铺历史：几千条逐条滚会让 singleShot 堆成一座山，铺完在 set_history 末尾滚一次
+            return
         if self._follow:
-            self._scroll_to_end_later()  # 排版还没落，当拍滚不到新长出来那截
+            self._scroll_to_end_later()
             self._hide_jump()
         else:
             self._show_jump()
 
-    # ---- 没看完：底下那颗「滚动到底部」 ----
 
     def _jump_pill(self) -> _JumpPill:
         """那颗胶囊——第一次要用才建，之后一直复用。"""
@@ -4227,14 +3951,13 @@ class ChatPanel(QtWidgets.QWidget):
     def _show_jump(self) -> None:
         """底下还有没看完的：把胶囊摆出来。"""
         if self.view.verticalScrollBar().maximum() <= 0:
-            # 一屏装得下，谈不上「没看完」
             self._hide_jump()
             return
         pill = self._jump_pill()
-        self._place_jump()  # 可见不等于摆在点子上
+        self._place_jump()
         if pill.isVisible():
             return
-        pill.raise_()  # 正文里有图，别让图盖住它
+        pill.raise_()
         pill.show()
 
     def _hide_jump(self) -> None:
@@ -4267,21 +3990,18 @@ class ChatPanel(QtWidgets.QWidget):
         """滚动条动了：到没到底既决定胶囊的存亡，也决定还跟不跟随新内容。"""
         self._hide_hover()
         if self._self_scroll:
-            return  # 是我自己滚到底的，不算用户的意思
+            return
         if self._at_end():
             self._follow = True
             self._hide_jump()
             return
         if self._range_changing and not self._user_scroll:
-            # 位置是 Qt 自己挪的（首帧显示、排版变高、窗口缩放），不是用户往上翻：
-            # 跟随状态不变；本来就在跟随的话，把差的那一截补回去。
             if self._follow and not self._restoring:
                 self._scroll_to_end_later()
             return
-        self._follow = False  # 用户真的往上翻了
+        self._follow = False
         self._show_jump()
 
-    # ---- 念出来（TTS）开关 ----
 
     def set_voice_mode(self, mode: str) -> None:
         """切档并落盘：静音写 enabled=false，另两档写 enabled=true + mode。"""
@@ -4296,13 +4016,9 @@ class ChatPanel(QtWidgets.QWidget):
             else:
                 save_voice(enabled=True, mode=mode)
             if mode != "interactive":
-                # 互动档那条提示（输入框上方状态条）跟着档位一起撤：不撤的话切回纯语音还挂着，
-                # 看着像没切过来。
                 self.clear_status_notice("avatar")
-            # 语音那条提示不分档位一起撤：切到静音以后「缺 Key」这句话就没有意义了，
-            # 留着会一直挂在输入框上方（用户实际报的就是这个）。
             self.clear_status_notice("speech")
-        except Exception as exc:  # 存不下来也别让界面卡住
+        except Exception as exc:
             self.show_error(f"语音档位没存住：{exc}")
         self.voice_mode_changed.emit(mode)
 
@@ -4360,23 +4076,18 @@ class ChatPanel(QtWidgets.QWidget):
             add(*_REASONING_OFF)
             self._reasoning_menu.addSeparator()
         for value, text in _REASONING_LEVELS:
-            # 菜单一律只写档名：箭头会让整列看起来像「最小→低、中→低……」一团乱。
-            # 「这条路由实际发哪档」只放在按钮提示里说一句，菜单保持干净。
             add(value, text)
         label = next((text for value, text in _REASONING_LEVELS if value == current), "")
         if current == _REASONING_OFF[0]:
             label = _REASONING_OFF[1]
         self._reasoning_button.setEnabled(True)
         if pending:
-            # 恢复的会话在首条消息之前不知道档位：菜单照列，但一项都不勾、也不拿默认值冒充
             self._reasoning_button.setToolTip("推理强度：等会话回报当前档（发一句话后显示）")
         elif wire and wire != current:
-            # 这条路没有这一档时，引擎会降档发出去：提示里说明，菜单上不画箭头
             self._reasoning_button.setToolTip(f"推理强度：{label}（这条路实际按「{names.get(wire, wire)}」发送）")
         else:
             self._reasoning_button.setToolTip(f"推理强度：{label or '引擎默认'}")
 
-    # ---- 念出来的那条进度（只关声音，不动这一轮对话）----
 
     def speech_preparing(self) -> None:
         self.speech_bar.show_preparing()
@@ -4393,24 +4104,15 @@ class ChatPanel(QtWidgets.QWidget):
     def stop_streaming(self) -> None:
         """叫住这一轮：手上这段先收尾（半条回答留着），之后飘回来的字丢掉，末尾留一个「已停止」。"""
         if not (self._busy or self._streaming or self._assistant_pending or self._tool_started):
-            # 本来就没有一轮在跑：不关闸。关了以后没有 turn.done 来开它，
-            # 接下来整场对话都收不到字（语音模式「先说话再发」就撞这个）。
             return
         already_stopped = self._interrupted
         if self._streaming:
             self.end_assistant()
         self._interrupted = True
-        # 这一轮已经作废：手里那张「等你选一个」的卡不会再有人来接答案。
-        # 不清的话它一直挂在「等回答」上，你下一句话会被当成这张卡的答案吃掉、
-        # 不当新一轮发出去——屏幕上就是发了没反应（2026-11-03 查到的）。
         self._clarify = None
-        # 按停的那一刻，手上还在跑的工具行也要收尾：表停、钟换成它自己的图标、标成「已停止」。
-        # 不然行下面写着已停止，上面那只钟还在跳秒，看着像根本没停住。
         self._settle_running_tools("已停止")
         if already_stopped:
-            return  # 同一轮连按两下，只留一个标记
-        # 引擎不会替我们标注（那句 "Operation interrupted…" 是取消元数据，前面已经拦掉了），
-        # 这里自己补一行灰字，让人一眼看出「这条不是说完的，是被我叫住的」。
+            return
         self._insert_html(
             "<span style='color:rgba(255,255,255,120); font-size:11px;'>已停止</span>"
         )
@@ -4449,14 +4151,14 @@ class ChatPanel(QtWidgets.QWidget):
         running = bool(self._tool_started)
         self._settle_running_tools("没跑完")
         if not (running or self._streaming or self._assistant_pending or self._busy):
-            return  # 本来就没在跑：别在空会话里硬塞一条
+            return
         if self._interrupted:
-            return  # 已经写过「已停止」，别叠第二条
+            return
         self._interrupted = True
-        self._clarify = None  # 这一轮废了：那张等回答的卡也跟着作废（原因同 stop_streaming）
+        self._clarify = None
         if self._streaming:
             self.end_assistant()
-        self.set_provider_wait("")  # 变量和底部那行字一起清：只清变量会永远挂着「等待供应商…」
+        self.set_provider_wait("")
         self._insert_html(
             f"<span style='color:rgba(255,255,255,120); font-size:11px;'>{html.escape(reason)} · 这一轮没跑完</span>"
         )
@@ -4470,11 +4172,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._busy = bool(busy)
         self._sync_send_button()
         if not self._busy:
-            # 这一轮结束了：「正在调用 X…」那句是靠 tool.start 撤掉的，
-            # 按停时那个工具的 start 永远不会来了，不清就一直挂在输入框上方，看着像还在跑
             self.set_activity("")
-            # 「在等供应商，2s 后第 1/3 次」同理：只有异常路径清过它，正常/失败收尾之前都不清，
-            # 于是上一轮的重试倒计时会一直挂在这轮的错误提示旁边，两句话互相矛盾。
             self.set_provider_wait("")
 
     def open_turn_gate(self) -> None:
@@ -4494,7 +4192,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._interrupted = False
         pending, self._rewind_after_stop = self._rewind_after_stop, None
         if pending is not None:
-            # 刚叫停的那一轮是为了「从这条重来」：别再把它排队的那句接上
             self._emit_rewind(pending[0], pending[1], pending[2])
             return
         self._drain_queue()
@@ -4508,24 +4205,24 @@ class ChatPanel(QtWidgets.QWidget):
         typing = bool(self.input.toPlainText().strip() or self._attachments)
         if self._busy:
             if self._rewind_waiting:
-                return "停止"  # 这次重发正在跑：正文已经交给引擎，这个键就是停止，别再排一条一样的
+                return "停止"
             return "排队" if typing else "停止"
         if self._rewind_waiting:
-            return "重发中"  # 请求发出去了还没落地：这会儿按下去也不会再发一次（见 _emit）
+            return "重发中"
         return "发送"
 
     def _sync_send_button(self) -> None:
 
         if not hasattr(self, "_send_button"):
-            return  # 按钮还没建（__init__ 里文本框先连接）：等 set_busy 时再来一次
+            return
         label = self._send_label()
         if label == "排队":
-            # 排队时按钮上就写「排队」：只换个图标看不出来点下去是排队还是发送
             self._send_button.setIcon(QtGui.QIcon())
             self._send_button.setText("排队")
             self._send_button.setFixedWidth(52)
         else:
-            icon = icon_pixmap("stop" if label == "停止" else "arrow-up", "#2b1520", 15)
+            icon = icon_pixmap("stop" if label == "停止" else "arrow-up", "#2b1520", 15,
+                               self.devicePixelRatioF())
             self._send_button.setIcon(QtGui.QIcon(icon) if icon is not None else QtGui.QIcon())
             self._send_button.setText("")
             self._send_button.setFixedWidth(32)
@@ -4535,7 +4232,6 @@ class ChatPanel(QtWidgets.QWidget):
             else "发送"
         )
 
-    # ---- 排队：这一轮还在跑时你说的话，先排着，轮次完了自动发 ----
 
     def _enqueue(self, text: str, attachments: list[dict], from_input: bool = True,
                  source: str = "typed") -> None:
@@ -4593,7 +4289,7 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _clear_queue(self) -> None:
         if not hasattr(self, "_queue_chips"):
-            return  # 还没建队列区（__init__ 早期清屏）：没东西可清
+            return
         for chip in self._queue_chips:
             chip.setParent(None)
             chip.deleteLater()
@@ -4618,7 +4314,6 @@ class ChatPanel(QtWidgets.QWidget):
             self.attachment_picked.emit(attachments)
         self.submitted.emit(text, str(entry.get("source") or "typed"))
 
-    # ---- 附件：「＋」菜单、粘贴、拖进来，三条路进同一个地方 ----
 
     def _show_attach_menu(self) -> None:
         """「＋」弹菜单：位置照桌面端——贴着按钮往上弹，别盖住输入框。"""
@@ -4646,7 +4341,7 @@ class ChatPanel(QtWidgets.QWidget):
         dialog = self._url_dialog()
         accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
         url = dialog.textValue().strip()
-        dialog.deleteLater()   # 带 parent 的对话框不销毁，每开一次面板下就多一个
+        dialog.deleteLater()
         if not accepted:
             return
         if url:
@@ -4671,7 +4366,7 @@ class ChatPanel(QtWidgets.QWidget):
         try:
             dialog.exec()
         finally:
-            dialog.deleteLater()   # 带 parent 的对话框 exec 完只是藏起来，不销毁
+            dialog.deleteLater()
 
     def _snippets_dialog(self) -> QtWidgets.QDialog:
         dialog = QtWidgets.QDialog(self.window(), QtCore.Qt.WindowType.Window)
@@ -4745,11 +4440,11 @@ class ChatPanel(QtWidgets.QWidget):
         close.setToolTip("不发了")
         close.clicked.connect(lambda _checked=False, target=item: self._drop_attachment(target))
         line.addWidget(close)
-        self._attach_row.insertWidget(self._attach_row.count() - 1, chip)  # 排在那根弹簧前面
+        self._attach_row.insertWidget(self._attach_row.count() - 1, chip)
         self._attachments.append(item)
         self._attach_chips.append(chip)
         self._attach_bar.show()
-        self._sync_send_button()  # 只挂了附件也算有内容：忙的时候那个键该是「排队」
+        self._sync_send_button()
 
     def _drop_attachment(self, item: dict) -> None:
         """撤掉一条（还没发出去）。按对象认，别按文件名认——同名两张图是两回事。"""
@@ -4762,7 +4457,7 @@ class ChatPanel(QtWidgets.QWidget):
         chip.deleteLater()
         if not self._attachments:
             self._attach_bar.hide()
-        self._sync_send_button()  # 撤掉最后一条：忙的时候那个键该从「排队」变回「停止」
+        self._sync_send_button()
 
     def drop_attachment_by_name(self, name: str) -> None:
         """引擎说这个附件没收下：从条上撤掉，别让人以为发出去了。"""
@@ -4777,7 +4472,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attach_chips.clear()
         self._attachments.clear()
         self._attach_bar.hide()
-        self._sync_send_button()  # 附件撤光了：忙的时候那个键该变回「停止」
+        self._sync_send_button()
 
     @staticmethod
     def _attachment_pixmap(item: dict):
@@ -4785,7 +4480,6 @@ class ChatPanel(QtWidgets.QWidget):
         if item.get("kind") != "image":
             return None
         if item.get("data"):
-            # 粘进来的图只有字节，没有文件：内存里直接解出来画缩略图
             pixmap = QtGui.QPixmap()
             return pixmap if pixmap.loadFromData(item["data"], "PNG") else None
         path = item.get("path") or ""
@@ -4856,7 +4550,7 @@ class ChatPanel(QtWidgets.QWidget):
         """
         fm = self.input.fontMetrics()
         line = max(1, fm.lineSpacing())
-        pad = 12                      # 上下各 6px，跟样式表 #input 的 padding 对上
+        pad = 12
         doc = self.input.document()
         layout = doc.documentLayout()
         total = 0.0
@@ -4881,55 +4575,44 @@ class ChatPanel(QtWidgets.QWidget):
         attachments = list(self._attachments)
         if self._busy:
             if self._rewind_waiting:
-                self._stop_turn()  # 这次重发正在跑：这个键是停止（正文已经在引擎那边了，不重复发）
+                self._stop_turn()
             elif message or attachments:
-                self._enqueue(message, attachments)  # 这一轮跑完再发：正文里先不出现
+                self._enqueue(message, attachments)
             else:
-                self._stop_turn()  # 框里空着：这会儿这个键就是「停止」
+                self._stop_turn()
             return
         if self._rewind_waiting:
-            return  # 上一次截断重发还没落地：这会儿再发会把同一段贴两遍
+            return
 
-        if not message and not attachments:  # 只粘了图/只选了文件也能发（跟桌面一样）
+        if not message and not attachments:
             return
         self.input.clear()
         self._sync_send_button()
         self._clear_attachments()
         self.append_user(message, attachments)
         if attachments:
-            # 到这一刻才交给引擎：没点发送的附件既不会落盘、也不会被模型看见
             self.attachment_picked.emit(attachments)
         self.submitted.emit(message, "typed")
 
-    # ---- 语音输入 ----
 
     def _init_voice_input(self) -> None:
         """建录音器。音频接口在这台机器上用不了就把按钮关掉，不影响打字。"""
         self._voice_mode_on = False
         self._recorder = None
         self._voice_prefs = None
-        # 系统级按住说话：窗口在后台也收得到，靠低层键盘钩子（细节见 global_hotkey.py）
         self._global_ptt = global_hotkey.GlobalHotkey(self)
-        # 安全桌面（Ctrl+Alt+Del）那一下钩子收不到 keyup，修饰键记账会残留，
-        # 此后所有组合都匹配不上。隔几秒按真实键态重记一次。
-        # 兜底：事件可能丢（系统截走 keyup、切窗口、安全桌面），每 150ms 问一次真实键态。
-        # 按下和松开仍然由事件立刻触发，这个定时器只负责发现「已经该收了但没人来说」。
-        self._hold_armed = False   # 按下了但还没收到松开：只有这种才需要定时器兜底
-        self._hold_seen_down = False  # 这个环境读不读得到键态，读得到兜底才可信
-        self._hold_started_at = 0.0   # 这一轮按下的时刻，用来兜住「永远等不到松开」
-        self._hold_lost_at = 0.0   # 定时器第一次发现键不在手上的时刻
+        self._hold_armed = False
+        self._hold_seen_down = False
+        self._hold_started_at = 0.0
+        self._hold_lost_at = 0.0
         self._ptt_watch = QtCore.QTimer(self)
         self._ptt_watch.setInterval(150)
         self._ptt_watch.timeout.connect(self._hold_watch)
         self._global_ptt.pressed.connect(self._hold_begin)
         self._global_ptt.released.connect(self._hold_end)
         self._voice_draft_focus = False
-        # 语音模式下把子控件的焦点策略全收走，退出时按原样还回去：
-        # 面板靠 keyPressEvent 接空格，但只要任何一个按钮拿着焦点，空格就先被它吃掉
-        # （「新会话」那颗按钮就是——按一下直接开新会话）。
         self._voice_focus_backup: dict = {}
         self._audio_released = False
-        # 「按住说话的键」：单独一颗键帽外形的按钮，点开在弹窗里改；外形不随键名变
         self._ptt_button = QtWidgets.QToolButton(self._inputbox)
         self._ptt_button.setObjectName("icon")
         self._ptt_button.setIcon(_glyph_icon("keycap"))
@@ -4949,10 +4632,10 @@ class ChatPanel(QtWidgets.QWidget):
             recorder.device_lost.connect(self._on_voice_device_lost)
             remembered = voice_input_prefs.device_guid()
             if remembered:
-                recorder.preload(remembered)  # 只记住选择，不在这里开流
+                recorder.preload(remembered)
             self._recorder = recorder
             self._voice_prefs = voice_input_prefs
-        except Exception:  # noqa: BLE001 - 音频初始化失败不该让整个面板起不来
+        except Exception:  # noqa: BLE001
             logger.warning("[语音] 录音器起不来", exc_info=True)
             self._mic_button.setEnabled(False)
             self._mic_button.setToolTip("这台机器的音频接口用不了，语音输入先关着")
@@ -4966,21 +4649,16 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self._voice_mode_on = on
         if on:
-            # 记下切走前焦点在不在输入框，切回来要还给她
             self._voice_draft_focus = self.input.hasFocus()
             self._voice_orb.set_state(STATE_IDLE)
             self.input.hide()
-            # 整条输入区只留球：＋、审批、思考、喇叭全收起来，球居中才有「轮到说话」的样子
             for button in (self._attach_button, self._approval_button,
                            self._reasoning_button, self._voice_button, self._send_button):
                 button.hide()
-            self._box_row.setContentsMargins(9, 7, 4, 7)  # 球别贴着上下边框
+            self._box_row.setContentsMargins(9, 7, 4, 7)
             self._set_inputbox_voice(True)
             self._voice_orb.show()
             self._float_mode_button(True)
-            # 空格要留给「按住说话」：面板自己拿着焦点，**所有**子控件都不许吃空格。
-            # 只关麦克风按钮和聊天记录区是不够的——头部那排按钮（尤其「新会话」）都是
-            # 默认可聚焦的，鼠标点一下面板恰好点在它上面，之后按空格就是「按下那个按钮」。
             self._voice_focus_backup = {}
             for child in self.findChildren(QtWidgets.QWidget):
                 policy = child.focusPolicy()
@@ -4995,19 +4673,19 @@ class ChatPanel(QtWidgets.QWidget):
             )
             try:
                 self._recorder.open_stream()
-            except Exception as exc:  # noqa: BLE001 - 开流崩了别让整条输入区跟着塌
+            except Exception as exc:  # noqa: BLE001
                 logger.warning("[语音] 打开录音流失败", exc_info=True)
                 self._voice_flash(f"麦克风打不开：{exc}")
             self.voice_input_opened.emit()
-            self._apply_global_ptt()  # 进了语音模式才挂系统级钩子：不开语音时不碰键盘
+            self._apply_global_ptt()
             self._ptt_watch.start()
         else:
             self._ptt_watch.stop()
-            self._global_ptt.stop()  # 回到打字：钩子立刻卸掉，别占着键
+            self._global_ptt.stop()
             try:
                 self._recorder.cancel()
                 self._recorder.close_stream()
-            except Exception:  # noqa: BLE001 - 收流失败也得把界面退回打字，不能卡在语音布局里
+            except Exception:  # noqa: BLE001
                 logger.warning("[语音] 关录音流失败", exc_info=True)
             self._voice_orb.hide()
             self._voice_orb.set_state(STATE_IDLE)
@@ -5017,17 +4695,15 @@ class ChatPanel(QtWidgets.QWidget):
             self._box_row.setContentsMargins(9, 0, 4, 0)
             self._set_inputbox_voice(False)
             self._float_mode_button(False)
-            # 焦点策略按进语音模式时记下的原样还回去，打字模式的 Tab 导航才不受影响
             for child, policy in self._voice_focus_backup.items():
                 try:
                     child.setFocusPolicy(policy)
-                except RuntimeError:  # 控件连 C++ 对象一起没了（菜单重建之类）
+                except RuntimeError:
                     pass
             self._voice_focus_backup = {}
             self._mic_button.setFocusPolicy(QtCore.Qt.StrongFocus)
             self.view.setFocusPolicy(QtCore.Qt.StrongFocus)
             self.input.show()
-            # 藏起来的时候量不到宽度，显示之后重新按当前宽度算行数
             QtCore.QTimer.singleShot(0, self._fit_input_height)
             self._mic_button.setIcon(_glyph_icon("mic"))
             self._mic_button.setToolTip("语音输入（右键选麦克风）")
@@ -5069,7 +4745,6 @@ class ChatPanel(QtWidgets.QWidget):
     def _set_inputbox_voice(self, on: bool) -> None:
         """切输入条的样子：语音模式下它只是球的托盘，不要框也不要底色。"""
         self._inputbox.setProperty("voice", on)
-        # 属性变了 Qt 不会自己重算样式，得手动 unpolish/polish 一遍
         style = self._inputbox.style()
         style.unpolish(self._inputbox)
         style.polish(self._inputbox)
@@ -5080,12 +4755,11 @@ class ChatPanel(QtWidgets.QWidget):
             return
         try:
             endpoint = recorder.current()
-        except Exception as exc:  # noqa: BLE001 - 枚举设备崩了也得让人看到，不能按了没反应
+        except Exception as exc:  # noqa: BLE001
             logger.warning("[语音] 取麦克风失败", exc_info=True)
             self._voice_flash(f"没法确认用哪只麦克风：{exc}")
             return
         if endpoint is None:
-            # 先分清「没麦」和「在开」：两种都说成「还在准备」会让人一直等下去
             self._voice_flash("这台电脑现在找不到能用的麦克风，右键能选别的设备")
             return
         self._voice_orb.set_state(STATE_RECORDING)
@@ -5097,11 +4771,9 @@ class ChatPanel(QtWidgets.QWidget):
             self._voice_flash(f"录音起不来：{exc}")
             return
         if not started:
-            # 流还在打开（蓝牙要先唤醒链路，几百毫秒）：这次按下不算数，球退回去
             self._voice_orb.set_state(STATE_IDLE)
             self.show_notice("voice-input", "麦克风还在准备，稍等一下再说", ttl_ms=2500, level="warn")
             return
-        # 真开始录了才掐朗读：她正在念的时候开口，这段录音里全是她自己的声音
         self.voice_record_started.emit()
 
     def _voice_hold_end(self) -> None:
@@ -5113,11 +4785,10 @@ class ChatPanel(QtWidgets.QWidget):
             self._voice_flash("说话太短了，按住多说一会儿")
             return
         if peak_of(pcm) <= SILENT_PEAK:
-            # 整段都是数字静音：设备没在收音，跟「没说话」是两回事，得分开说
             self._voice_flash(f"「{recorder.endpoint_name()}」没收到声音，看看是不是戴歪了")
             return
         try:
-            path = self._voice_temp_path()   # mkdir 也可能失败（只读盘/被占/满了），一起接住
+            path = self._voice_temp_path()
             write_wav(pcm, path)
         except OSError as exc:
             self._voice_flash(f"录音存不下来：{exc}")
@@ -5131,8 +4802,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_orb.set_state(STATE_ERROR)
 
         def _back_to_idle() -> None:
-            # 只收自己那条：这 1.6 秒里人可能已经重新按住开录了，
-            # 无条件置 IDLE 会把录音中的球按回去，松手时就再也收不到「停」。
             if self._voice_orb.state() == STATE_ERROR:
                 self._voice_orb.set_state(STATE_IDLE)
 
@@ -5171,21 +4840,14 @@ class ChatPanel(QtWidgets.QWidget):
         if not text:
             self._voice_flash("这句没听清，再说一次")
             return
-        self._voice_orb.set_state(STATE_IDLE)  # 球先回待机，能接着按住说下一句
+        self._voice_orb.set_state(STATE_IDLE)
         if self._busy:
-            # 语音是插话，不是排队：这一轮不能掐死。掐了插进去的这句跟着一起作废——
-            # 日志实测 `/steer ... as new user message` 之后 9 毫秒就
-            # `Turn ended: reason=interrupted_by_user`，屏幕上就是一个回答都没有。
-            # 所以只把手上这段收尾、把你的话插进去，这句话照常发出去（不带 queued），
-            # 引擎按「纠正」递进这一轮，她接着往下说，后面的字进新的一段。
-            # 闸也不关：这一轮还在跑，关了就把它剩下的字也丢了。
             if self._streaming:
                 self.end_assistant()
             self.append_user(text, [])
             self.submitted.emit(text, "voice")
             return
         self.append_user(text, [])
-        # 标成 voice：这一条是模型听出来的，可能有错字，不能拿去当学词的语料
         self.submitted.emit(text, "voice")
 
     def voice_transcribe_failed(self, message: str, source_path: str = "") -> None:
@@ -5203,7 +4865,7 @@ class ChatPanel(QtWidgets.QWidget):
         try:
             recorder.cancel()
             recorder.shutdown()
-        except Exception:  # noqa: BLE001 - 收尾失败不该挡住程序退出
+        except Exception:  # noqa: BLE001
             logger.debug("[语音] 收尾失败", exc_info=True)
 
     @staticmethod
@@ -5215,7 +4877,6 @@ class ChatPanel(QtWidgets.QWidget):
         except OSError:
             logger.debug("[语音] 删不掉临时录音 %s", path, exc_info=True)
 
-    # ---------------------------------------------------------- 按住说话的键
 
     def _ptt_sequence(self) -> QtGui.QKeySequence:
         """按住说话用的键；没配过或配坏了就当空格。"""
@@ -5223,11 +4884,10 @@ class ChatPanel(QtWidgets.QWidget):
         if self._voice_prefs is not None:
             try:
                 stored = self._voice_prefs.hotkey()
-            except Exception:  # noqa: BLE001 - 配置读坏了也得能按住说话
+            except Exception:  # noqa: BLE001
                 stored = ""
         if stored:
             sequence = QtGui.QKeySequence(stored)
-            # Qt 拿到不认识的字符串不报错，只是转回来是空的：这种当没配过
             if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.PortableText):
                 return sequence
         return QtGui.QKeySequence(QtCore.Qt.Key_Space)
@@ -5236,7 +4896,6 @@ class ChatPanel(QtWidgets.QWidget):
         """给人看的键名：空格 / F2 / Ctrl+空格。"""
         return _key_name(self._ptt_sequence())
 
-    # ---- 系统级按住说话 ----
 
     def _global_ptt_sequence(self) -> QtGui.QKeySequence:
         """系统级按住说话的键；没配过或配坏了就用 Shift+空格。"""
@@ -5244,7 +4903,7 @@ class ChatPanel(QtWidgets.QWidget):
         if self._voice_prefs is not None:
             try:
                 stored = self._voice_prefs.global_hotkey()
-            except Exception:  # noqa: BLE001 - 配置读坏了也得能按住说话
+            except Exception:  # noqa: BLE001
                 stored = ""
         if stored:
             sequence = QtGui.QKeySequence(stored)
@@ -5264,7 +4923,6 @@ class ChatPanel(QtWidgets.QWidget):
         mods, vk = native
         ok, why = global_hotkey.probe(mods, vk)
         if not ok:
-            # 不替人换键：被占就是这个键用不了，说清楚让他自己改
             logger.warning("[语音] 系统级快捷键 %s 被占用：%s", self._global_ptt_label(), why)
             self.show_notice(
                 "voice-input",
@@ -5276,8 +4934,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._global_ptt.set_sequence(mods, vk)
         self._global_ptt.start()
         if not self._global_ptt.running:
-            # 探过之后还装不上（钩子被系统拒）：不能只写日志——用户按这颗键会一点反应都没有，
-            # 还以为自己按错了。说清楚「后台用不了、窗口里照常」。
             logger.warning("[语音] 系统级快捷键装不上（错误码 %s）", self._global_ptt._last_error)
             self.show_notice(
                 "voice-input",
@@ -5324,7 +4980,7 @@ class ChatPanel(QtWidgets.QWidget):
         if not self._voice_mode_on:
             return
         if self._voice_orb.state() != STATE_RECORDING:
-            self._hold_armed = True    # 只记「按下了、还没收到松开」
+            self._hold_armed = True
             self._hold_seen_down = False
             self._hold_lost_at = 0.0
             self._hold_started_at = time.monotonic()
@@ -5357,7 +5013,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._voice_hold_end()
             return
         if self._hold_key_down():
-            self._hold_seen_down = True   # 这个环境读得到键态，下面那条才可信
+            self._hold_seen_down = True
             self._hold_lost_at = 0.0
             return
         if not self._hold_lost_at:
@@ -5375,12 +5031,11 @@ class ChatPanel(QtWidgets.QWidget):
         accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
         window_sequence = dialog.window_sequence()
         global_sequence = dialog.global_sequence()
-        dialog.deleteLater()   # 带 parent 的对话框不销毁，每开一次面板下就多一个
+        dialog.deleteLater()
         if not accepted:
             return
         if self._voice_prefs is not None:
             try:
-                # 存 PortableText：换系统语言也认得回来；空格存空串跟默认值同写法
                 if window_sequence is not None:
                     portable = window_sequence.toString(QtGui.QKeySequence.PortableText)
                     if portable:
@@ -5388,7 +5043,6 @@ class ChatPanel(QtWidgets.QWidget):
                 if global_sequence is not None:
                     portable = global_sequence.toString(QtGui.QKeySequence.PortableText)
                     if portable:
-                        # 默认就是 Shift+Space，选回它也存空串
                         self._voice_prefs.remember_global_hotkey(
                             "" if portable == "Shift+Space" else portable
                         )
@@ -5396,7 +5050,7 @@ class ChatPanel(QtWidgets.QWidget):
                 logger.warning("[语音] 记不住快捷键：%s", exc)
                 self.show_notice("voice-input", f"快捷键没存上：{exc}", ttl_ms=5000, level="warn")
         self._refresh_ptt_button()
-        self._apply_global_ptt()  # 换了系统级键要当场重装，别等下次开语音
+        self._apply_global_ptt()
         self._mic_button.setToolTip(
             f"语音已开：按住球、{self._ptt_label()}（窗口内）或 "
             f"{self._global_ptt_label()}（系统级）说话，松手就发"
@@ -5417,7 +5071,7 @@ class ChatPanel(QtWidgets.QWidget):
         current_guid = current.guid if current else ""
 
         endpoints = recorder.devices()
-        group = QtGui.QActionGroup(menu)  # 下面「跟随系统默认」也要进这一组，所以先建好
+        group = QtGui.QActionGroup(menu)
         group.setExclusive(True)
         if not endpoints:
             empty = menu.addAction("没找到能用的麦克风")
@@ -5435,12 +5089,11 @@ class ChatPanel(QtWidgets.QWidget):
         menu.addSeparator()
         follow = menu.addAction("跟随系统默认")
         follow.setCheckable(True)
-        # 跟上面那些麦克风同一组：选了具体设备就不该同时勾着「跟随系统默认」
         follow.setActionGroup(group)
         follow.setChecked(not recorder.chosen_guid())
         follow.triggered.connect(lambda _checked=False: self._choose_mic(""))
         menu.exec(self._mic_button.mapToGlobal(pos))
-        menu.deleteLater()   # 带 parent 的菜单不销毁，每右键一次就多挂一整套
+        menu.deleteLater()
 
     def _choose_mic(self, guid: str) -> None:
         recorder = self._recorder
@@ -5459,9 +5112,7 @@ class ChatPanel(QtWidgets.QWidget):
         else:
             self.show_notice("voice-input", "麦克风跟随系统默认", ttl_ms=3000)
 
-    # ---- 交互：拖动 / Esc 收起 ----
 
-    # ---- 尺寸上限与位置 ----
 
     def _max_size(self) -> tuple[int, int]:
         """别让面板大到超出屏幕：宽 90% 屏宽、高 85% 屏高。"""
@@ -5497,9 +5148,9 @@ class ChatPanel(QtWidgets.QWidget):
     def _save_geometry(self) -> None:
         try:
             self._settings.setValue("panel/size", self.size())
-            self._settings.setValue("panel/pos", self.pos())  # 下次打开回到你上次放的地方
+            self._settings.setValue("panel/pos", self.pos())
             self._settings.sync()
-        except Exception:  # 目录只读/被杀软锁住：位置丢了就丢了，不能把窗口带崩
+        except Exception:
             logger.warning("聊天窗位置没存下来：%s", self._settings.fileName(), exc_info=True)
 
     def _saved_pos(self) -> QtCore.QPoint | None:
@@ -5528,15 +5179,13 @@ class ChatPanel(QtWidgets.QWidget):
         if title is not None:
             title.setText(TITLE_FULL if self.width() >= TITLE_FULL_MIN_WIDTH else TITLE_SHORT)
         self._place_background()
-        self._place_jump()  # 窗口一变，贴底的胶囊跟着重新贴底
-        self._replace_msg_actions()  # 正文重排后，悬停条也得跟着落回它那一行
+        self._place_jump()
+        self._replace_msg_actions()
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
-        # 隐藏时的 resize 不会立刻派发，显示出来时再对一次宽度
         super().showEvent(event)
         self._sync_popup_width()
 
-    # ---- 交互：拖动 / 边缘缩放 / Esc 收起 ----
 
     def _hit_edges(self, local: QtCore.QPoint):
         return edges_at(local, self.size(), margin=RESIZE_MARGIN)
@@ -5584,7 +5233,7 @@ class ChatPanel(QtWidgets.QWidget):
             QtCore.QEvent.Type.DragMove,
         ):
             if self._drop_paths(event.mimeData()):
-                event.acceptProposedAction()   # 接住：光标才会变成「可以放这儿」
+                event.acceptProposedAction()
                 return True
         elif kind is QtCore.QEvent.Type.Drop:
             paths = self._drop_paths(event.mimeData())
@@ -5613,7 +5262,6 @@ class ChatPanel(QtWidgets.QWidget):
             inp.document().isEmpty() and not getattr(self, "_ime_composing", False)
         )
 
-    # ---- 悬停小动作：代码块复制 / 工具行看完整 diff ----
 
     def _hover_at(self, pos: QtCore.QPoint) -> None:
         """鼠标在正文里移动：先判出它落在哪个区域，换了区域才换按钮。
@@ -5623,16 +5271,14 @@ class ChatPanel(QtWidgets.QWidget):
         上一个区域的按钮在换区时整体收掉，一次。
         """
         if self._over_hover_button():
-            return  # 鼠标压在悬停条上：别在它下面把按钮收掉（那一下连提示都弹不出来）
+            return
         if self._in_msg_band(pos):
-            return  # 走到这条消息末尾下方那一格（按钮就停在那儿）：保持不动，一收就永远点不到
+            return
         zone, block = self._zone_at(pos)
         if zone == self._zone:
-            return  # 没换区域：按钮就在原地，鼠标动一下不必重做
-        self._hide_hover()  # 换区：上一个区域的按钮一次收干净
+            return
+        self._hide_hover()
         if zone is None or zone[0] != "msg":
-            # 离开消息区（走到空白、代码块、图片上）就把整条动作栏收掉：
-            # 不收的话它会留在上一条消息下面，看着就是「按钮跑到别处/乱七八糟」
             self._hide_msg_actions()
         self._zone = zone
         if zone is not None and block is not None:
@@ -5645,7 +5291,6 @@ class ChatPanel(QtWidgets.QWidget):
             return None, None
         if self._code_fence_at(block) is not None:
             return ("code", block.blockNumber()), block
-        # 图片块带着工具正文的标记，但它自己是一张图：先按图片处理
         if self._block_has_image(block):
             hit = self._photo_at(pos)
             return (("photo",) + hit) if hit else None, block
@@ -5655,10 +5300,7 @@ class ChatPanel(QtWidgets.QWidget):
         msg = self._message_at(block)
         if msg is not None:
             if not str(msg.get("text") or "").strip():
-                # 这条还没吐出字（刚刷新、刚开始一轮）：空段落不算任何区域，
-                # 否则鼠标停在它上面会认领到上一条消息，把别人的按钮亮出来
                 return None, block
-            # 一条消息占好几段，用消息本身认，别用块号——那样在一条里上下挪会一直换区、按钮直闪
             return ("msg", id(msg)), block
         return None, block
 
@@ -5686,7 +5328,6 @@ class ChatPanel(QtWidgets.QWidget):
         first, last = self._marked_run(block, key)
         payload = self._tool_payloads.get(key)
         if payload is None and key in self._diff_texts:
-            # 没算出 payload（例如只有 diff）就拿 diff 当复制内容，文案用「复制内容」
             payload = (tool_tr("assistant.tool.copyContent"), self._diff_texts[key][1])
         if payload and payload[1].strip():
             self._show_hover_copy(payload[1], payload[0], first, last, edge=True)
@@ -5717,7 +5358,7 @@ class ChatPanel(QtWidgets.QWidget):
         return False
 
     def _block_at(self, pos: QtCore.QPoint) -> QtGui.QTextBlock | None:
-        if not self.view.rect().contains(pos):
+        if not self.view.viewport().rect().contains(pos):
             return None
         return self.view.cursorForPosition(pos).block()
 
@@ -5736,7 +5377,7 @@ class ChatPanel(QtWidgets.QWidget):
         last = block
         while last.next().isValid() and self._is_code_block(last.next()):
             last = last.next()
-        cache_key = (first.blockNumber(), last.blockNumber())
+        cache_key = (first.position(), last.position())
         text = self._fence_cache.get(cache_key)
         if text is None:
             lines: list[str] = []
@@ -5747,7 +5388,7 @@ class ChatPanel(QtWidgets.QWidget):
                     break
                 current = current.next()
             text = markdown_render.code_text("\n".join(lines)).strip("\n")
-            if len(self._fence_cache) > 64:   # 只记最近看过的几块，别让缓存自己长大
+            if len(self._fence_cache) > 64:
                 self._fence_cache.clear()
             self._fence_cache[cache_key] = text
         if not text.strip():
@@ -5776,10 +5417,17 @@ class ChatPanel(QtWidgets.QWidget):
         layout = self.view.document().documentLayout()
         top = layout.blockBoundingRect(first)
         bottom = layout.blockBoundingRect(last)
+        widest = top.width()
+        current = first
+        while current.isValid():
+            widest = max(widest, layout.blockBoundingRect(current).width())
+            if current == last:
+                break
+            current = current.next()
         rect = QtCore.QRect(
             int(min(top.left(), bottom.left())),
             int(top.top()),
-            int(max(top.width(), bottom.width())),
+            int(widest),
             int(bottom.bottom() - top.top()),
         )
         rect.translate(-self.view.horizontalScrollBar().value(), -self.view.verticalScrollBar().value())
@@ -5821,7 +5469,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._place_hover(self._hover_expand, first, last,
                           offset_x=-(HoverActionButton.BUTTON_PX + 2), edge=True)
 
-    # ---- 消息级动作：复制整段 / 引用 / 编辑重发 / 重新生成 ----
 
     def _begin_message(self, role: str, start: int, text: str, row_id) -> None:
         """给刚插进来的那条消息的开头块打标记，并记进清单。
@@ -5837,20 +5484,16 @@ class ChatPanel(QtWidgets.QWidget):
         msg = {"role": role, "text": text, "row_id": row_id}
         msg["mark"] = _MsgMark(msg)
         block.setUserData(msg["mark"])
-        # 两条消息的按钮都挂在末尾下方，所以每条后面都留出一格
         if self._msgs:
             head_format = block.blockFormat()
             head_format.setTopMargin(HoverActionButton.BUTTON_PX + 10)
             QtGui.QTextCursor(block).setBlockFormat(head_format)
         if role == "user":
-            # 你说的话和她在同一列左起：靠气泡和字号分出谁在说，不靠左右分栏
             user_format = block.blockFormat()
             user_format.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
             user_format.setLeftMargin(ChatView.BUBBLE_PAD_X)
-            user_format.setRightMargin(ChatView.BUBBLE_PAD_X)
-            # 下边距留够：气泡往下画 8px，下面那行（「思考中」之类）还要再让 8px 才不贴脸
+            user_format.setRightMargin(ChatView.BUBBLE_PAD_X + 24)
             user_format.setBottomMargin(ChatView.BUBBLE_PAD_Y + 10)
-            # topMargin 留着不动：上一条是回答时，这块里已经有 34px 的按钮位，盖掉按钮就压字上了
             QtGui.QTextCursor(block).setBlockFormat(user_format)
         self._msgs.append(msg)
         if role == "assistant":
@@ -5929,9 +5572,6 @@ class ChatPanel(QtWidgets.QWidget):
             candidate = self._skip_blank_back(previous)
             owner = self._message_at(candidate)
             if owner is not None and owner is not msg:
-                # 退到上一条消息身上了（这条回答的尾巴那几段还空着，比如刚刷新完、字还没回来）：
-                # 就停在自己这一条里，宁可贴在末尾空段上，也不把按钮挂到别人的气泡底下——
-                # 桌面端每条消息自带一条动作栏，压根没有「跨到别条」这种可能。
                 break
             tail = candidate
         return tail
@@ -5996,20 +5636,13 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self._ensure_msg_buttons(len(specs))
         if self._msg_shown is not msg:
-            # 悬停条换到别的消息了：上一行留下的提示是独立小窗，不会自己走
             QtWidgets.QToolTip.hideText()
         self._msg_shown = msg
-        # 条子挂在消息**最后一行**上：用户那条并排在这行右端（右边空着），回答另起一行挂在下面，
-        # 都不压字。末尾那一行必须整行在屏幕里，否则不挂——不然按钮会漂在窗口中间。
         head = self._msg_head_block(msg, block)
         if head is None:
-            # 这条消息在文档里已经找不到自己那一段（刷新时整条重来过）：一条都不摆。
-            # 以前这里退回「鼠标所在的块」，条子就挂到上面那条消息的气泡底下——刷新几次之后
-            # 「按钮位置不对」正是这么来的。
             self._hide_msg_actions()
             return
         tail = self._msg_tail_block(msg) or head
-        # 尾巴要落在「真正的正文」上：工具行、代码块属于它们自己，别把整条消息的按钮挂到那儿
         while (
             tail is not None
             and tail.isValid()
@@ -6021,7 +5654,6 @@ class ChatPanel(QtWidgets.QWidget):
                 break
             tail = previous
         if self._message_at(tail) not in (None, msg) and tail is not head:
-            # 算出来的尾巴其实属于别的消息：退回自己抬头那一行，绝不跨条挂
             tail = head
         tail_rect = self._block_rect(tail, tail)
         view_height = self.view.viewport().height()
@@ -6037,15 +5669,11 @@ class ChatPanel(QtWidgets.QWidget):
         band_height = tail_rect.height() + HoverActionButton.BUTTON_PX + 10
         self._msg_band = QtCore.QRect(0, tail_rect.top(), self.view.viewport().width(), band_height)
         buttons = self._msg_buttons[: len(specs)]
-        if len(buttons) < len(specs):  # _ensure_msg_buttons() 刚建过，这里只是让类型检查看得见
+        if len(buttons) < len(specs):
             return
         for spare in self._msg_buttons[len(specs):]:
-            # 上一条消息要两颗、这一条只要一颗：多出来的必须收掉，不然它就留在上一条的
-            # 老位置上，看着像这条消息的按钮飞到了别处
             spare.hide()
-        # 按钮簇：你说的那条摆进气泡右下角（垫一层气泡色把字尾盖住）；
-        # 她的回答另起一行贴右侧。都右对齐、从右往左排。
-        step = HoverActionButton.BUTTON_PX + 6  # 桌面端 gap-1.5
+        step = HoverActionButton.BUTTON_PX + 6
         bubble = self.view.bubble_rect(head) if inline else None
         for index, (icon, tip, slot, usable) in enumerate(specs):
             button = buttons[index]
@@ -6053,7 +5681,8 @@ class ChatPanel(QtWidgets.QWidget):
             button.set_enabled(usable)
             button.set_backdrop(bubble is not None)
             if bubble is not None:
-                button.place_at(bubble.toRect(), offset_x=-index * step, bottom_align=True)
+                button.place_at(bubble.toRect(), offset_x=-index * step, bottom_align=True,
+                                margin=ChatView.BUBBLE_PAD_Y)
                 button.show()
                 button.raise_()
                 continue
@@ -6062,8 +5691,6 @@ class ChatPanel(QtWidgets.QWidget):
             )
 
     def _hide_msg_actions(self) -> None:
-        # 内容重铺、历史变动时都会从这里收掉悬停条：区域记忆一并作废，
-        # 否则鼠标还停在同一条消息里，再动也不会重新亮出来
         self._zone = None
         self._msg_band = None
         self._msg_shown = None
@@ -6076,8 +5703,6 @@ class ChatPanel(QtWidgets.QWidget):
         if msg is None or not self._msg_buttons:
             return
         if not any(item is msg for item in self._msgs):
-            # 这条消息已经被截断掉了（刷新时整条重来）：条子跟着作废，
-            # 别拿着旧字典去算位置——算出来的坐标落在别人的行上
             self._hide_msg_actions()
             return
         head = self._msg_head_block(msg, None)
@@ -6100,11 +5725,10 @@ class ChatPanel(QtWidgets.QWidget):
             "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
             "恢复并重新运行",
         ):
-            return  # 取消就是不动：历史一条都不删
+            return
         self._hide_msg_actions()
         text = str(msg.get("text") or "")
         if self._busy:
-            # 这一轮还在流：桌面端是先叫停再恢复，停稳了（settle_turn）才真发出去
             self._rewind_after_stop = (msg, text, False)
             self._stop_turn()
             return
@@ -6176,11 +5800,10 @@ class ChatPanel(QtWidgets.QWidget):
             "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
             "恢复并重新运行",
         ):
-            return  # 取消就是不动：历史一条都不删
+            return
         self._hide_msg_actions()
         text = str(user_msg.get("text") or "")
         if self._busy:
-            # 这一轮还在流：先叫停，停稳了（settle）再按这条重跑
             self._rewind_after_stop = (user_msg, text, True)
             self._stop_turn()
             return
@@ -6195,14 +5818,13 @@ class ChatPanel(QtWidgets.QWidget):
         self._truncate_from(msg)
         self.append_user(text, attachments=msg.get("attachments") or ())
         if self.input.toPlainText().strip() == text.strip():
-            # 这段正文已经进了对话，输入框别再留一份（不然看着像没发出去）
             self.input.clear()
-        self._sync_send_button()  # 等待态结束：按钮从「重发中」恢复
+        self._sync_send_button()
 
     def cancel_rewind(self) -> None:
         """这次截断重发没成立（被拒 / 换了会话）：正文留在框里，发送键恢复原样。"""
         self._rewind_waiting = False
-        self._row_stamp_pending = None  # 那一下的行号作废：别落到之后别的消息上
+        self._row_stamp_pending = None
         self._sync_send_button()
 
     def _truncate_from(self, msg: dict) -> None:
@@ -6221,8 +5843,6 @@ class ChatPanel(QtWidgets.QWidget):
         cursor = QtGui.QTextCursor(document)
         start = target.position()
         if start > 0:
-            # 连同它前面那个换行一起选：只删正文的话，Qt 会把那段空块留在文末，
-            # 每刷新一次就多一行空白，上面的消息整体往下挪一截——就是「刷新之后错位」。
             start -= 1
         cursor.setPosition(start)
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
@@ -6237,12 +5857,11 @@ class ChatPanel(QtWidgets.QWidget):
         self._md_block = []
         self._md_fence = False
         self._reason_fold = None
-        # 工具行的状态跟着一起抹：秒表还在 tick 一个已经不在文档里的标签，
-        # fold 留着还会让 `has_transcript()` 永远为真，界面就以为这里有工具过程可看。
         self._tool_started.clear()
         self._tool_folds.clear()
         self._tool_clock.stop()
         self._folds.drop_invalid()
+        self._fence_cache.clear()
         self._hide_msg_actions()
 
     def stamp_user_row(self, row_id: int) -> None:
@@ -6251,9 +5870,6 @@ class ChatPanel(QtWidgets.QWidget):
             if msg.get("role") == "user" and msg.get("row_id") is None:
                 msg["row_id"] = int(row_id)
                 return
-        # 截断重发时这个回包比正文先到（窗口要等第一段文字才动），新消息还没贴上去：
-        # 先记着，等 `append_user` 贴的时候再落。不留这一步，那条消息永远没有行号，
-        # 「刷新 / 重新发送」用过一次就再也不出现了。
         self._row_stamp_pending = int(row_id)
 
     def bind_turn_receipt(self, receipt: dict) -> None:
@@ -6276,10 +5892,9 @@ class ChatPanel(QtWidgets.QWidget):
         waiting = [m for m in self._msgs if m.get("role") == "user" and m.get("row_id") is None]
         if not waiting:
             return
-        # 回执按顺序给这一轮的用户行（含 steer 行）：只取末尾还没绑上的那几条
         for msg, rid in zip(waiting, ints[-len(waiting):]):
             msg["row_id"] = rid
-        self._row_stamp_pending = None  # 已经有真行号了，之前存的别留给下一条
+        self._row_stamp_pending = None
 
     def is_busy(self) -> bool:
         return bool(self._busy)
@@ -6294,11 +5909,12 @@ class ChatPanel(QtWidgets.QWidget):
         if rect.height() <= 0:
             button.hide()
             return
-        # 按钮不压滚动条：右边界一律收到可用宽度以内
+        if not below and rect.top() < 0:
+            button.hide()
+            return
         bar = self.view.verticalScrollBar()
         usable = self.view.viewport().width() - (bar.width() if bar.isVisible() else 0)
         if edge:
-            # 代码块、工具输出的底色整行铺满：贴内容的右边界，不是字的末尾
             rect.setRight(usable)
         else:
             rect.setRight(min(rect.right(), usable))
@@ -6361,28 +5977,25 @@ class ChatPanel(QtWidgets.QWidget):
             ):
                 start = self._press_pos
                 point = event.position().toPoint()
-                # 拖过一段的是在选字，不是点图；按下没挪动才算「点这张图」
                 still = start is not None and (point - start).manhattanLength() <= 5
                 if still:
                     hit = self._photo_at(point)
                     if hit:
-                        # 松手这会儿还在处理事件，延到下一拍再开窗
                         QtCore.QTimer.singleShot(0, lambda k=hit[0]: self._open_photo(k))
             elif kind in (QtCore.QEvent.Type.Leave, QtCore.QEvent.Type.Wheel):
                 if kind is QtCore.QEvent.Type.Leave and self._over_hover_button():
-                    return super().eventFilter(obj, event)  # 压在悬停按钮上：不算离开正文
+                    return super().eventFilter(obj, event)
                 self._hide_hover()
                 self.view.viewport().unsetCursor()
                 if kind is QtCore.QEvent.Type.Wheel:
-                    self._user_scroll_now()  # 真滚动发生在下面放行之后
+                    self._user_scroll_now()
             elif kind is QtCore.QEvent.Type.Resize:
-                self._place_jump()  # 正文区尺寸变了（输入框长高、窗口拉宽），胶囊重新贴底
-                self._replace_msg_actions()  # 行重新折过了，悬停条跟着重摆
+                self._place_jump()
+                self._replace_msg_actions()
                 if self._follow and not self._restoring:
-                    self._scroll_to_end_later()  # 窗口变小、正文变高：跟着看的话别停在半空
+                    self._scroll_to_end_later()
             return super().eventFilter(obj, event)
         if obj is self.view and event.type() is QtCore.QEvent.Type.KeyPress:
-            # 方向键 / PageUp 翻正文：同样算用户自己滚的
             if event.key() in _SCROLL_KEYS:
                 self._user_scroll_now()
             return super().eventFilter(obj, event)
@@ -6395,21 +6008,17 @@ class ChatPanel(QtWidgets.QWidget):
             elif kind is QtCore.QEvent.Type.FocusOut:
                 self._mark_input_focus(False)
             elif kind is QtCore.QEvent.Type.InputMethod:
-                # 组字中的回车是「确认候选词」，不是发送——不然打「nihao」按回车会直接发出去
                 self._ime_composing = bool(event.preeditString())
-                self._sync_input_ph()  # 组字也算有内容：提示立刻让开，别压着拼音
+                self._sync_input_ph()
             elif kind is QtCore.QEvent.Type.KeyPress:
                 if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter) and not getattr(
                     self, "_ime_composing", False
                 ):
                     if event.modifiers() & QtCore.Qt.ShiftModifier:
-                        return super().eventFilter(obj, event)  # 放行：插一个换行
+                        return super().eventFilter(obj, event)
                     self._emit()
-                    return True                                 # 吞掉，别让它再插一个换行
+                    return True
                 if self._is_paste_key(event):
-                    # Ctrl+V / Shift+Insert：剪贴板是图或文件就接成附件；是纯文字就放回去让它自己粘。
-                    # 注意 `text/uri-list`（资源管理器 Ctrl+C）在 Qt 里 hasText() 也为真，
-                    # 所以「有 urls」要先按文件算，不能让纯文字那条把它挡掉。
                     mime = QtWidgets.QApplication.clipboard().mimeData()
                     plain_text = bool(
                         mime is not None
@@ -6428,15 +6037,13 @@ class ChatPanel(QtWidgets.QWidget):
                 if self._handle_input_drag(event):
                     return True
             elif kind is QtCore.QEvent.Type.Resize:
-                self._fit_input_height()   # 宽度变了软换行的位置就变，行数要重算
+                self._fit_input_height()
             return super().eventFilter(obj, event)
         if getattr(self, "input", None) is not None and obj is self.input.viewport():
-            # 拖放通常落在这儿：多行控件是滚动区，拖进来的目标其实是 viewport
             if self._handle_input_drag(event):
                 return True
             return super().eventFilter(obj, event)
         if obj is getattr(self, "_inputbox", None) and event.type() is QtCore.QEvent.Type.Resize:
-            # 语音模式下那颗「切回打字」的按钮是浮在右上角的，输入框一变宽就得重摆
             if self._mic_button.parent() is self._inputbox:
                 self._place_mode_button()
             return super().eventFilter(obj, event)
@@ -6481,8 +6088,7 @@ class ChatPanel(QtWidgets.QWidget):
             self.setGeometry(rect_after_resize(self.geometry(), self._resize_edge, size))
             return
         if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
-            # 拖的过程只跟手，不吸——吸住会从指头底下溜走，松手时才归位
-            self._snapped = False  # 自己动手拖过，就不再算「吸在她下面」
+            self._snapped = False
             self.move(pos - self._drag_offset)
             return
         self._sync_edge_cursor(event.position().toPoint())
@@ -6498,19 +6104,19 @@ class ChatPanel(QtWidgets.QWidget):
         self.unsetCursor()
         self._edge_cursor_shape = None
         if dragged and not resized:
-            self._snap_under_anchor()  # 松手这一下才吸：拖的时候它得跟着手走
+            self._snap_under_anchor()
         if resized or dragged:
             self._save_geometry()
         super().mouseReleaseEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
-        self._global_ptt.stop()  # 程序关掉必须把钩子卸了，不然键盘一直被我们截着
-        self._hold_end()           # 正在录就收尾，麦克风不能跟着程序一起留着
+        self._global_ptt.stop()
+        self._hold_end()
         self._save_geometry()
         super().closeEvent(event)
 
     def hideEvent(self, event: QtGui.QHideEvent) -> None:  # noqa: N802
-        self._save_geometry()  # Esc 收起、切走都算「上次关掉的位置」
+        self._save_geometry()
         super().hideEvent(event)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
@@ -6520,7 +6126,7 @@ class ChatPanel(QtWidgets.QWidget):
                 self._hold_begin()
             return
         if event.key() == QtCore.Qt.Key_Escape:
-            self.hide()  # 只收起，进程和对话都留着
+            self.hide()
             return
         super().keyPressEvent(event)
 

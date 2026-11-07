@@ -287,8 +287,6 @@ def _start_agent_build(sid: str, session: dict) -> None:
             # A client can route "no provider is set up" to its setup flow instead of a dead-end
             # error toast — but only if it can tell. The sentence is for the reader, the code is
             # for the client; older clients keep matching the text.
-            # 两种失败都算「还没配供应商」：agent_init 直接抛的 ProviderNotConfiguredError，
-            # 以及深层 auth 探测抛的 AuthError(code="no_provider_configured")（本机启动时的实际路径）。
             no_provider = (isinstance(e, ProviderNotConfiguredError)
                            or getattr(e, "code", "") == "no_provider_configured")
             _emit("error", sid, {

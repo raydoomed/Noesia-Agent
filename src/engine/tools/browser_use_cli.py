@@ -214,7 +214,6 @@ def _use_gateway(browser_cfg: dict) -> bool:
     picker row (``cloud_provider: noesia``) or the pre-picker ``use_gateway: true`` flag. Reading only
     the legacy flag missed every picker-configured gateway, and the direct-API branch it fell into
     holds no credentials in managed mode (#108310)."""
-    # 托管网关已删，浏览器只走直连 key（BROWSER_USE_API_KEY）。
     _ = browser_cfg
     return False
 

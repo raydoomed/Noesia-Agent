@@ -49,7 +49,6 @@ app.processEvents()
 out["send_after"] = send_text()
 out["is_busy_false"] = panel.is_busy()
 
-# 状态提示：显示/撤销
 panel.show_notice("turn", "HTTP 403: 没有权限", level="error")
 app.processEvents()
 out["stack_visible"] = panel.stack.isVisible()
@@ -58,7 +57,6 @@ panel.clear_status_notice("turn")
 app.processEvents()
 out["stack_after_clear"] = panel.stack.isVisible()
 
-# 机器行不许画成正文
 panel.set_busy(True)
 before = panel.view.toPlainText()
 panel.append_chunk("[System note: memory write skipped]\n")
@@ -68,7 +66,6 @@ after = panel.view.toPlainText()
 out["machine_lines_visible"] = ("System note" in after) or ("not processed" in after)
 out["machine_delta_chars"] = len(after) - len(before)
 
-# 正常正文 + MEDIA 附件行
 panel.append_chunk(f"这是正常回答。\nMEDIA:{REPO}/assets/preview.png\n")
 app.processEvents()
 text_now = panel.view.toPlainText()
@@ -78,7 +75,6 @@ panel.end_assistant()
 panel.set_busy(False)
 app.processEvents()
 
-# 停止按钮真的发信号
 sb = getattr(panel, "_send_btn", None)
 out["send_btn_found"] = sb is not None
 if sb is not None:

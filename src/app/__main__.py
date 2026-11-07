@@ -36,19 +36,19 @@ def _tell_user(message: str, log: Path | None) -> None:
     text = message if log is None else f"{message}\n\n详细记录：{log}"
     print(text, file=sys.stderr)
     if os.environ.get("NOESIA_NO_DIALOG"):
-        return  # 测试、脚本里不想被一个模态框挂住
+        return
     try:
         import ctypes
 
         ctypes.windll.user32.MessageBoxW(None, text, "Noesia 起不来", 0x10)
-    except Exception:  # noqa: BLE001 - 非 Windows / 没有 user32：stderr 已经写过了
+    except Exception:  # noqa: BLE001
         pass
 
 
 def main() -> int:
     try:
         from .main import main as run
-    except Exception:  # noqa: BLE001 - 导入期什么都可能抛：配置、依赖、Qt 初始化
+    except Exception:  # noqa: BLE001
         detail = traceback.format_exc()
         log = _log_startup_error(detail)
         last = detail.strip().splitlines()[-1] if detail.strip() else "未知错误"

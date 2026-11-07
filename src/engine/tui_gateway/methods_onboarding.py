@@ -123,9 +123,6 @@ def _provider_configured(scope: dict) -> bool:
                 return False
         except AuthError:  # no_provider_configured
             return False
-        # 有 Key 不等于能聊天：还得真选了一个模型（设置里「启用」过）。没有模型就开场，
-        # 引导卡会落在一个连模型都没有的会话上——用户看到的是「还没选模型就 onboard 了」。
-        # 这里直接读配置（本函数绑在 server 命名空间上，`_load_cfg`/`os` 都从那儿来）。
         cfg_model = _load_cfg().get("model")
         if isinstance(cfg_model, dict):
             chosen = str(cfg_model.get("default") or "").strip()

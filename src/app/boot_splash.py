@@ -22,7 +22,6 @@ LINE = "她住在你的桌面上。"
 SUB = "会聊天，会记事，也会替你动手干活。"
 SKIP_HINT = "点击或按 Esc 跳过"
 
-# 底色：照 banner 的暖墨，不是纯黑——纯黑会把她的肤色压成一片灰
 INK_TOP = QtGui.QColor(42, 32, 40)
 INK_MID = QtGui.QColor(26, 20, 27)
 INK_EDGE = QtGui.QColor(11, 8, 13)
@@ -30,8 +29,6 @@ CREAM = QtGui.QColor(244, 232, 226)
 ROSE = QtGui.QColor(217, 167, 155)
 FAIL = QtGui.QColor(255, 120, 120)
 
-# 时间轴（秒）；改节奏只动这里，别再往 paintEvent 里塞魔法数字
-# 前奏留够、字幕落定后留一拍：仪式感靠的是这个停顿，不是加特效
 T_BASE = (0.00, 1.00)
 T_SWEEP = (0.60, 3.20)
 T_FACE = (1.20, 4.20)
@@ -60,9 +57,9 @@ class BootSplash(QtWidgets.QWidget):
     只属于启动阶段：`finish()` 之后就销毁，不参与后面的任何逻辑。
     """
 
-    MIN_VISIBLE_MS = int(T_END * 1000)  # 演完再收：演一半被切走，看着像卡了一下
+    MIN_VISIBLE_MS = int(T_END * 1000)
 
-    skipped = QtCore.Signal()  # 用户点了或按了 Esc：别再演，直接把窗口放出来
+    skipped = QtCore.Signal()
 
     def __init__(
         self,
@@ -93,11 +90,10 @@ class BootSplash(QtWidgets.QWidget):
         self._place_window()
 
         self._timer = QtCore.QTimer(self)
-        self._timer.setInterval(33)  # 30fps：跟待机视频同时跑也不抢
+        self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
 
-    # ---- 对外 ----
     def set_step(self, text: str) -> None:
         """换一句「现在在做什么」。界面上只留最新一句，不堆历史。"""
         self._step = text
@@ -140,7 +136,7 @@ class BootSplash(QtWidgets.QWidget):
         fade.setEasingCurve(QtCore.QEasingCurve.InOutSine)
         fade.valueChanged.connect(self._on_fade)
         fade.finished.connect(then)
-        self._fade = fade  # 挂在窗口上，别被 GC 掉
+        self._fade = fade
         fade.start()
 
     def _on_fade(self, value) -> None:
@@ -155,8 +151,7 @@ class BootSplash(QtWidgets.QWidget):
         self._timer.stop()
         self.skipped.emit()
 
-    # ---- 输入 ----
-    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt 约定
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt
         if event.key() in (
             QtCore.Qt.Key_Escape,
             QtCore.Qt.Key_Space,
@@ -172,9 +167,7 @@ class BootSplash(QtWidgets.QWidget):
         self.skip()
         event.accept()
 
-    # ---- 内部 ----
     def _place_window(self) -> None:
-        # 一块居中的面板，不是铺满屏：盖上整个屏幕会像切走了桌面
         screen = QtGui.QGuiApplication.screenAt(QtGui.QCursor.pos()) or QtGui.QGuiApplication.primaryScreen()
         if screen is None:
             self.setFixedSize(960, 540)
@@ -190,7 +183,6 @@ class BootSplash(QtWidgets.QWidget):
         )
 
     def _tick(self) -> None:
-        # 演完了就降频：只留左下角那颗呼吸点，别拿 30fps 空转整屏重画
         if self._now() >= T_END and self._timer.interval() < 100:
             self._timer.setInterval(120)
         self.update()
@@ -226,7 +218,6 @@ class BootSplash(QtWidgets.QWidget):
             self._portrait = None
             return None
 
-        # 立绘按「宽度填满左半幅」缩，上下裁掉多余：照高度铺会被人像两边的透明边拖瘦
         target_w = max(1, int(width * 0.52))
         scaled = source.scaledToWidth(target_w, QtCore.Qt.SmoothTransformation)
         crop_h = min(scaled.height(), max(1, int(height * 1.06)))
@@ -234,7 +225,6 @@ class BootSplash(QtWidgets.QWidget):
         canvas.fill(QtGui.QColor(0, 0, 0, 0))
         painter = QtGui.QPainter(canvas)
         painter.drawPixmap(0, 0, scaled, 0, 0, target_w, crop_h)
-        # 两次 DestinationIn 相乘＝取交集：右边淡出、底下淡出，其余原样
         painter.setCompositionMode(QtGui.QPainter.CompositionMode_DestinationIn)
         right = QtGui.QLinearGradient(0, 0, canvas.width(), 0)
         right.setColorAt(0.00, QtGui.QColor(0, 0, 0, 255))
@@ -242,7 +232,6 @@ class BootSplash(QtWidgets.QWidget):
         right.setColorAt(0.62, QtGui.QColor(0, 0, 0, 150))
         right.setColorAt(0.92, QtGui.QColor(0, 0, 0, 0))
         painter.fillRect(canvas.rect(), right)
-        # 底部渐隐按「面板高度的三成」算，别按画布比例——画布比面板高，比例算出来太短
         fade = height * 0.30 + max(0, canvas.height() - height)
         bottom = QtGui.QLinearGradient(0, canvas.height(), 0, max(0.0, canvas.height() - fade))
         bottom.setColorAt(0.00, QtGui.QColor(0, 0, 0, 0))
@@ -253,13 +242,12 @@ class BootSplash(QtWidgets.QWidget):
         self._portrait = canvas
         return canvas
 
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt 约定
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt
         if self._fade_progress >= 1.0:
             painter = QtGui.QPainter(self)
             self._render(painter)
             painter.end()
             return
-        # 淡出期间先画到离屏图再整体降不透明度贴回来：窗口级 opacity 各平台表现不一
         shot = QtGui.QPixmap(self.size())
         shot.fill(QtCore.Qt.transparent)
         inner = QtGui.QPainter(shot)
@@ -280,7 +268,7 @@ class BootSplash(QtWidgets.QWidget):
         frame = QtCore.QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QtGui.QPainterPath()
         path.addRoundedRect(frame, radius, radius)
-        painter.setClipPath(path)  # 透明底：圆角外面得露出桌面，不能画满
+        painter.setClipPath(path)
 
         self._paint_backdrop(painter, width, height, _ease(now, T_BASE))
         self._paint_portrait(painter, now, width, height)
@@ -288,7 +276,6 @@ class BootSplash(QtWidgets.QWidget):
         self._paint_copy(painter, now, width, height)
         self._paint_status(painter, now, width, height)
 
-        # 收边：一道极细的亮线，不然面板和桌面糊在一起
         painter.setClipping(False)
         painter.setBrush(QtCore.Qt.NoBrush)
         painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 26), max(1.0, u)))
@@ -317,19 +304,17 @@ class BootSplash(QtWidgets.QWidget):
         if portrait is None:
             return
         x = int(-width * 0.03)
-        y = int(height * 0.02)  # 头顶留一点空：顶到边上，脸就显得被怼着
+        y = int(height * 0.02)
         painter.save()
         painter.setOpacity(visible)
         painter.drawPixmap(x, y, portrait)
-        # 从暗里亮起来：整块人像先压一层黑，随进度退到零
         shade = int(255 * 0.72 * (1.0 - visible))
         if shade > 0:
             painter.fillRect(
                 QtCore.QRect(x, y, portrait.width(), portrait.height()),
                 QtGui.QColor(10, 8, 12, shade),
             )
-        # 面板下三分之一压回背景色：立绘底边正好落在面板边，白衣服会被裁成一条亮边
-        painter.setOpacity(1.0)  # 这层是遮罩，不能跟着人物一起淡
+        painter.setOpacity(1.0)
         fade_h = height * 0.34
         settle = QtGui.QLinearGradient(0, height, 0, height - fade_h)
         settle.setColorAt(0.00, QtGui.QColor(11, 8, 13, 255))
@@ -361,7 +346,6 @@ class BootSplash(QtWidgets.QWidget):
         painter.restore()
 
     def _paint_copy(self, painter: QtGui.QPainter, now: float, width: int, height: int) -> None:
-        # 字号一律按面板宽折算：效果稿是按 960 宽的舞台调的，直接套高度系数会小一半
         u = width / 960.0
         left = int(width * 0.55)
         box_w = int(width * 0.40)
@@ -400,7 +384,6 @@ class BootSplash(QtWidgets.QWidget):
         block_h = kicker_h + gap_kicker + title_h + gap_rule + line_h + gap_line + sub_h
         y = (height - block_h) / 2.0
 
-        # 小字抬头
         kicker = _ease(now, (T_WORD[0] - 0.20, T_WORD[0] + 0.55))
         if kicker > 0:
             painter.save()
@@ -415,7 +398,6 @@ class BootSplash(QtWidgets.QWidget):
             painter.restore()
         y += kicker_h + gap_kicker
 
-        # 名字 + AGENT 小标
         word = _ease(now, T_WORD)
         if word > 0:
             painter.save()
@@ -440,7 +422,6 @@ class BootSplash(QtWidgets.QWidget):
             painter.restore()
         y += title_h + gap_rule
 
-        # 细分隔线：从左往右长出来
         rule = _ease(now, T_RULE)
         if rule > 0:
             painter.save()
@@ -494,7 +475,6 @@ class BootSplash(QtWidgets.QWidget):
         dot_gap = 13 * u
 
         painter.save()
-        # 呼吸点：失败时定住变红，正常时慢慢亮暗
         if self._failed:
             dot_alpha = 230
         else:
@@ -510,7 +490,6 @@ class BootSplash(QtWidgets.QWidget):
         painter.setPen(FAIL if self._failed else QtGui.QColor(244, 232, 226, 150))
         painter.drawText(QtCore.QPointF(x + dot_gap, y + metrics.ascent()), self._step)
 
-        # 跳过的提示：得让人一眼知道这不是个卡住的画面
         if not self._failed and not self._skipped:
             hint = _ease(now, (3.00, 4.00))
             if hint > 0:

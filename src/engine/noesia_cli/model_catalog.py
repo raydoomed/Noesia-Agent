@@ -24,7 +24,7 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DEFAULT_CATALOG_URL = (
-    "")  # Noesia 没有对外站点：清单走仓库内的静态表，不发任何请求
+    "")
 # The docs site sits behind a CDN, which occasionally 403s non-browser clients (bot
 # challenge); the raw GitHub copy is the same manifest and is not bot-gated.
 DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = ()
@@ -212,7 +212,7 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
     """Parsed model catalog manifest, or ``{}`` on failure — never raises, so the CLI works offline
     (callers treat a missing provider/model as "use the in-repo fallback")."""
     cfg = _load_catalog_config()
-    if not cfg["enabled"] or not cfg["url"]:  # 空 URL = 不联网，直接用仓库内静态表
+    if not cfg["enabled"] or not cfg["url"]:
         return {}
     ttl_seconds = max(0.0, cfg["ttl_hours"] * 3600.0)
     disk_data, disk_mtime = _read_disk_cache()

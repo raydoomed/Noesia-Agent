@@ -349,8 +349,6 @@ def _(rid, params: dict) -> dict:
     pconfig = PROVIDER_REGISTRY.get(slug)
     if pconfig is not None and pconfig.auth_type != "api_key":
         return _err(rid, 4003, f"{pconfig.name} uses {pconfig.auth_type} auth — run `noesia model` to configure")
-    # 注册表故意不收的供应商（openrouter 按登录态/凭据池走的）照样吃 API Key：变量名问引擎
-    # 自己的供应商表，问不出来才算真的不认识这家。
     key_env_vars = provider_key_env_vars(slug)
     if not key_env_vars:
         return _err(rid, 4002, f"unknown provider: {slug}")
@@ -390,7 +388,6 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4001, "slug is required")
     pconfig = PROVIDER_REGISTRY.get(slug)
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
-    # 注册表外的（openrouter）也要删干净：变量名问供应商表，不然「断开」只清登录态、Key 还在。
     env_vars = provider_key_env_vars(slug)
     # Ask the .env lock about every var before removing any: a refusal part-way through left the earlier stores
     # stripped. A locked var that holds nothing is no refusal (a package-managed install keeps keys in auth.json).

@@ -44,7 +44,7 @@ class NameDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self._on_name = on_name
         self._answered = False
-        self._drag_offset: QtCore.QPoint | None = None  # 按住卡片拖动时的抓点
+        self._drag_offset: QtCore.QPoint | None = None
 
         self.setWindowFlags(
             QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint
@@ -111,29 +111,27 @@ class NameDialog(QtWidgets.QDialog):
         finally:
             self.close()
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
-        # 无边框卡片（FramelessWindowHint）不自己处理就没法拖：按在标题/空白处才抓，
-        # 输入框和按钮自己吃掉按下事件，所以打字和点按钮不会把窗拖走。
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt
         if event.button() == QtCore.Qt.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt
         if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt
         self._drag_offset = None
         super().mouseReleaseEvent(event)
 
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt
         if not self._answered:
             self._answered = True
-            self._on_name("")  # 关掉 = 这次不答，引擎记 TimedOut 继续
+            self._on_name("")
         super().closeEvent(event)
 
-    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt
         if event.key() == QtCore.Qt.Key_Escape:
             self._answer("")
             return

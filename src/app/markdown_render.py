@@ -16,26 +16,13 @@ import re
 from functools import lru_cache
 from typing import Any
 
-# 需要「连着几行一起看」的行首标记：列表项、引用、表格、标题、缩进续行
 _STRUCTURAL = re.compile(r"^(\s{2,}|[-*+]\s|\d+[.)]\s|>|\||#{1,6}\s)")
 
-# 「结构标记写到一半」的样子：流式切分常常把 `- 项` 切成 `-` + ` 项`。
-# 只认真的可能长成结构行的半截，别把正文里的 `-` 独行之外的东西也扣下。
 _STRUCTURAL_PREFIX = re.compile(r"^\s*(?:[|>`]|[-*+]|\d+[.)]?|#{1,6})$")
 
-# 代码块的底色：悬停复制按钮要靠它认出“这块是代码”（见 `chat_panel._is_code_block`）。
-# 代码块底色：一层淡白紫叠在卡片底上，不是一块死黑——
-# 纯黑在深紫底上会跳出来，像贴了一张黑纸。
 CODE_BACKGROUND = "#14ece6ef"
 
-# 代码块**一行一段**画（`<p>`），不用 `<pre>`：往已有内容的文档里追加 `<pre>` 时，
-# Qt 的 HTML 片段导入会丢掉第一段（有时是前几段）的底色，悬停复制的命中判定就认不出代码；
-# 而每行一个 `<p>` 时，外围块底色 + 字符底色双保险，追加多少次都不丢。
 #
-# 这里**不能写 `white-space:pre`**：Qt 一看见它就不给这一行换行，长一点的代码行
-# （ASCII 图、带中文注释的一行）直接把文档撑得比视口宽，聊天窗底下就冒出横向滚动条。
-# 缩进靠 `_nbsp()` 把文本里的空格换成 `&nbsp;` 保住——既不被 HTML 压成一个空格，
-# 也不挡住换行（行太宽时 `WrapAtWordBoundaryOrAnywhere` 允许断在任意处）。
 _CODE_STYLE = (
     f"background-color:{CODE_BACKGROUND};color:#d7dae5;font-family:Consolas,'Cascadia Mono',monospace;"
     "font-size:9pt;margin:0 0 0 6px;"
@@ -54,7 +41,7 @@ def _parser() -> Any:
     for rule in ("table", "strikethrough"):
         try:
             md.enable(rule)
-        except Exception:  # noqa: BLE001 - 老版本没有这条规则就算了
+        except Exception:  # noqa: BLE001
             pass
     md.options["highlight"] = _highlight
     return md
@@ -105,7 +92,7 @@ def _highlight(code: str, lang: str, _attrs: str = "") -> str:
         lexer = get_lexer_by_name(lang) if lang else None
         if lexer is not None:
             body = highlight(code, lexer, HtmlFormatter(noclasses=True, style="monokai", nowrap=True))
-    except Exception:  # noqa: BLE001 - 高亮失败不影响可读性
+    except Exception:  # noqa: BLE001
         body = ""
     if not body:
         body = html.escape(code)
@@ -118,7 +105,7 @@ def inline(text: str) -> str:
         return ""
     try:
         return _parser().renderInline(text)
-    except Exception:  # noqa: BLE001 - 解析出错就原样显示，不能吞掉用户的内容
+    except Exception:  # noqa: BLE001
         return html.escape(text)
 
 
@@ -165,8 +152,6 @@ def split_fences(text: str) -> list[tuple[str, str, str]]:
     return [segment for segment in segments if segment[2].strip() or segment[0] == "code"]
 
 
-# 块级元素一律不带上下边距：Qt 的富文本导入给 `<p>` 默认 12px、`<ul>`/`<ol>` 12px，
-# 段间距本来由块格式（`_plain_block_format()` 的 5px）统一给，两边各给一次就是屏幕上那一大截空白。
 _FLUSH_STYLE = "margin:0;"
 _LIST_STYLE = "margin:0;-qt-list-indent:1;"
 

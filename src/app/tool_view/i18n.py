@@ -13,13 +13,11 @@ from typing import Any
 from app.tool_view.labels import LABELS
 from app.tool_view.labels_extra import EXTRA
 
-# 生成脚本的源里没有后加的引擎工具：把它们并进来，别让行标题露出 `assistant.tool.titles.xxx.done`
 for _locale, _items in EXTRA.items():
     LABELS.setdefault(_locale, {}).update(_items)
 
 DEFAULT_LOCALE = "en"
 
-# 当前语言的全局状态
 _runtime_locale = DEFAULT_LOCALE
 
 

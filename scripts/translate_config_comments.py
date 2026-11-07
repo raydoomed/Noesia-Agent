@@ -92,12 +92,10 @@ def main() -> None:
             try:
                 result, usage = translate([note for _, note in chunk], key)
                 break
-            except Exception as exc:  # noqa: BLE001 - 网络抖动重试
+            except Exception as exc:  # noqa: BLE001
                 print(f"  批次 {start} 第 {attempt + 1} 次失败：{exc}")
                 time.sleep(2 * (attempt + 1))
         else:
-            # 放弃的批次记下来：以前 continue 之后照样打印「译文 N 条」并退 0，
-            # 磁盘上是「一半新一半旧」，调用方根本分不出这次翻完没翻完。
             print(f"  批次 {start} 放弃（{len(chunk)} 条）")
             dropped.append(start)
             continue
@@ -111,7 +109,6 @@ def main() -> None:
 
     print(f"译文 {len(translated)} 条；tokens in={tokens_in} out={tokens_out}")
     if dropped:
-        # 非 0 退出：这批没翻完，文件是不完整状态，别让人以为已经落好了
         print(f"有 {len(dropped)} 个批次失败，{OUT.name} 只写进去了成功的部分——重跑一次补齐")
         raise SystemExit(1)
 

@@ -874,16 +874,12 @@ def _resume_response(
     status: str = "idle", hydrating: bool | None = None, started_at=None, auto_continue=None,
 ) -> dict:
     """Common resume payload; omit_messages counts ``count_source`` (client still learns the stored size)."""
-    # 恢复的会话是懒加载的：agent 还没建，档位只存在会话行里（resume 时解析进 `resume_runtime_overrides`）。
-    # 这里把它当成 `session.info` 的一个字段报给界面——不报的话界面只能拿全局默认冒充（显示中、实际低）。
     info = dict(info or {})
     if "reasoning_effort" not in info:
         stored_reasoning = (record.get("resume_runtime_overrides") or {}).get("reasoning_config_override")
         if not isinstance(stored_reasoning, dict):
             stored_reasoning = record.get("create_reasoning_override")
         if isinstance(stored_reasoning, dict):
-            # 档位名和「这条路实际会发的那档」一起算：选了 ultra 而路由只到 max 时，界面自己拼显示，
-            # 不写死任何模型的档位表。
             from gateway.session_local import effort_fields
             fields = effort_fields(
                 stored_reasoning, "", info.get("model"), info.get("provider"),
@@ -892,7 +888,6 @@ def _resume_response(
             info["reasoning_effort"] = fields["reasoning_effort"]
             info["reasoning_effort_wire"] = fields["reasoning_effort_wire"]
         else:
-            # 没存过档位就回空串：界面据此退回全局默认（那场会话本来就会按默认跑），不能一直显示「未知」。
             info["reasoning_effort"] = ""
     if messages is None:
         messages = ctx.messages(display)

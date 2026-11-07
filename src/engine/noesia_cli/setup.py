@@ -30,7 +30,7 @@ from noesia_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
 
-from noesia_constants import repo_root  # 项目根（pyproject.toml 那层），不是引擎树 ...\src\engine
+from noesia_constants import repo_root
 
 PROJECT_ROOT = repo_root()
 

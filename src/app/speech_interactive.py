@@ -21,7 +21,7 @@ from app.speech_stream import TARGET_RATE, stream_pcm
 
 logger = logging.getLogger(__name__)
 
-FRAME_BYTES = TARGET_RATE * 2 // 50  # 20ms 一帧：960 字节，Vidu 组件版要求的节奏
+FRAME_BYTES = TARGET_RATE * 2 // 50
 
 
 class _Puller(QtCore.QRunnable):
@@ -41,7 +41,7 @@ class _Puller(QtCore.QRunnable):
         except SpeechError as exc:
             self._owner._failed.emit(self._seq, str(exc))
             return
-        except Exception as exc:  # noqa: BLE001 — 线程里兜底，别静默死掉
+        except Exception as exc:  # noqa: BLE001
             self._owner._failed.emit(self._seq, f"合成失败：{exc}")
             return
         self._owner._pull_done.emit(self._seq)
@@ -50,8 +50,8 @@ class _Puller(QtCore.QRunnable):
 class StreamSpeaker(QtCore.QObject):
     """一段话一个流：到了就喂声卡，念完报 finished，被叫停报 stopped。"""
 
-    started = QtCore.Signal(str)  # 开始出声的纯文字
-    progress = QtCore.Signal(int, int)  # 已播毫秒 / 已知总毫秒（流式，总长会变）
+    started = QtCore.Signal(str)
+    progress = QtCore.Signal(int, int)
     finished = QtCore.Signal()
     stopped = QtCore.Signal()
     failed = QtCore.Signal(str)
@@ -70,50 +70,39 @@ class StreamSpeaker(QtCore.QObject):
         play_local: bool = True,
     ) -> None:
         super().__init__(parent)
-        # limit_fn：本地声音能播到第几个字节的"许可证"。
-        # 云端把我们推上去的音频原样回传，回来的那份有毛刺不能听（实测每秒一下断点），
-        # 但它告诉我们"云端现在念到哪了"。所以：播我们自己的干净 PCM，
-        # 播到"云端也已经回传到这个位置"为止 —— 声音和画面同一条时间轴，且没有毛刺。
         self._limit_fn = limit_fn
         self._limit_deadline = 0.0
         self._limit_off = limit_fn is None
         self._play_local = play_local
         self._quiet_fn = quiet_fn
-        # idle_fn：云端多久没回任何一个字节（连静音都不来）。安静 ≠ 断流：
-        # 前者是念完了，后者是 RTC 那头没数据了，得当场收尾，别让球卡在「播放中」。
         self._idle_fn = idle_fn
         self._play_start = None
-        self._on_chunk = on_chunk  # 给数字人用的转发钩子（主线程调用）
+        self._on_chunk = on_chunk
         self._chunk.connect(self._on_chunk_internal)
         self._pull_done.connect(self._on_pull_done)
         self._failed.connect(self._on_failed_internal)
 
         self._pool = QtCore.QThreadPool(self)
-        # 串行是为了不几句一起抢额度，但**不能只给一条线程**：停止/换句只是把
-        # seq 推一格，正在跑的那次合成看不到（它可能卡在等第一个字节上），
-        # 新句子就得排队等它。留两条：旧的自动作废，新的立刻开始。
-        # 纯语音那条（speech_speaker.py）早就这么改了，互动这条当时漏了。
         self._pool.setMaxThreadCount(2)
 
         self._seq = 0
         self._active = False
         self._pulling = False
-        self._announced = False   # 这一句的 started 发过没有：第一片 PCM 到了才算开口
-        self._text = ""           # 这一句原文，started 要带着它一起发
+        self._announced = False
+        self._text = ""
         self._pending: deque[bytes] = deque()
         self._sink: QtMultimedia.QAudioSink | None = None
         self._io = None
         self._fed_bytes = 0
         self._total_bytes = 0
         self._fmt: QtMultimedia.QAudioFormat | None = None
-        self._carry = b""  # 转发给数字人时攒着的半个 20ms 帧
-        self._write_stalls = 0  # 声卡连续几次一个字节都不收（写不进 = 设备没了，不能一直等）
+        self._carry = b""
+        self._write_stalls = 0
 
         self._ticker = QtCore.QTimer(self)
-        self._ticker.setInterval(20)  # 和 Vidu 的分片节奏一致
+        self._ticker.setInterval(20)
         self._ticker.timeout.connect(self._pump)
 
-    # ---- 对外 ----
 
     @property
     def playing(self) -> bool:
@@ -127,12 +116,10 @@ class StreamSpeaker(QtCore.QObject):
         """开始念；返回 False 表示没问题但没内容。"""
         if not text or not text.strip():
             return False
-        self._stop(silent=True)  # 换新一句：只是清场，别对外说"念完了"
+        self._stop(silent=True)
         self._seq += 1
         seq = self._seq
         if not self._play_local:
-            # 声音交给 RTC：远端音频和画面是同一个流、同一个抖动缓冲，同步由 SDK 保证，
-            # 我们只负责把 PCM 推上去驱动口型。别的项目（网页 + ali rtc sdk）就是这么做的。
             self._fmt = None
             self._active = True
             self._pulling = True
@@ -146,7 +133,7 @@ class StreamSpeaker(QtCore.QObject):
             self._pool.start(_Puller(text, seq, self))
             return True
         self._limit_off = self._limit_fn is None
-        self._limit_deadline = time.monotonic() + 3.0  # 云端 3 秒还没回音频，就别等了
+        self._limit_deadline = time.monotonic() + 3.0
         fmt = QtMultimedia.QAudioFormat()
         fmt.setSampleRate(TARGET_RATE)
         fmt.setChannelCount(1)
@@ -154,7 +141,7 @@ class StreamSpeaker(QtCore.QObject):
         device = QtMultimedia.QMediaDevices.defaultAudioOutput()
         sink = QtMultimedia.QAudioSink(device, fmt, self)
         sink.setVolume(1.0)
-        sink.setBufferSize(max(fmt.bytesForDuration(100_000), 4800))  # 缓冲越小，声音越贴画面
+        sink.setBufferSize(max(fmt.bytesForDuration(100_000), 4800))
         io = sink.start()
         if io is None:
             sink.deleteLater()
@@ -189,18 +176,15 @@ class StreamSpeaker(QtCore.QObject):
         self._io = None
         self._fed_bytes = 0
         self._announced = False
-        self._carry = b""  # 上一句不足 20ms 的残帧不能拼到下一句开头（口型起点会错位）
+        self._carry = b""
         if was_active and not silent:
             self.stopped.emit()
 
-    # ---- 内部 ----
 
     def _on_chunk_internal(self, seq: int, pcm: bytes) -> None:
         if not self.alive(seq) or not pcm:
             return
         if not self._announced:
-            # 第一片音频到了才算真的开口，和纯语音那条一致。提前发的话语音条会先亮、
-            # 还会把「语音出错」的提示提前撤掉，中间那段其实一片声音都还没有。
             self._announced = True
             self.started.emit(self._text)
         self._pending.append(pcm)
@@ -219,9 +203,6 @@ class StreamSpeaker(QtCore.QObject):
             self._carry = self._carry[FRAME_BYTES:]
 
     def _on_pull_done(self, seq: int) -> None:
-        # `_active` 也要看：按下停止之后，工作线程的完成通知还可能晚一步投递过来。
-        # 不看的话会再走一遍收尾，界面先收到 `stopped` 又收到 `finished`
-        # （互动档按秒计费，那一下等于把会话又挂住几秒）。
         if seq == self._seq and self._active:
             self._pulling = False
             self._pump()
@@ -236,7 +217,7 @@ class StreamSpeaker(QtCore.QObject):
         if sink is not None:
             try:
                 sink.stop()
-            except Exception:  # noqa: BLE001 - 设备已经没了，停失败不影响收尾
+            except Exception:  # noqa: BLE001
                 logger.debug("[语音] 关声卡失败", exc_info=True)
             sink.deleteLater()
         self.failed.emit(message)
@@ -261,27 +242,19 @@ class StreamSpeaker(QtCore.QObject):
 
     def _pump(self) -> None:
         if not self._active:
-            return  # 已经停止/收尾：晚到的定时器和完成回调都别再往下走（会重复发 finished）
+            return
         if not self._play_local:
-            # 声音由 RTC 出：进度按时间走（远端回传会一路多送静音，不能当进度用），
-            # 收尾看"远端还响不响"（她真的念完了才安静）。
             now = time.monotonic()
             dur = self._total_bytes / (TARGET_RATE * 2) if self._total_bytes else 0.0
             got = int(self._limit_fn() or 0) if self._limit_fn is not None else 0
             if self._play_start is None and (got > 0 or not self._pulling):
-                self._play_start = now  # 第一份远端音频到了 = 她开口了
+                self._play_start = now
             elapsed = (now - (self._play_start or now)) if self._play_start else 0.0
             done = min(int(elapsed * TARGET_RATE * 2), self._total_bytes)
             self._fed_bytes = done
-            # 互动档给不出可信的"总时长"（实际念多久由 Vidu 决定，和 TTS 的 PCM 长度不一样），
-            # 硬给一个就会出现 0:06/0:04 这种；传 0 = 只显示已播时间 + 不确定进度条。
             self.progress.emit(int(elapsed * 1000), 0)
             quiet = float(self._quiet_fn() or 0) if self._quiet_fn is not None else 0.0
             idle = float(self._idle_fn() or 0) if self._idle_fn is not None else 0.0
-            # 收尾：① TTS 合成完（长度才是真的）② 真的听见过她出声
-            #       ③ 远端静了 1.5 秒（句中停顿一般不到 1 秒半）或 时间已过句长 +2 秒
-            #       ④ 云端连帧都不回了（断流）：安静和断流不是一回事，前者是念完，后者是没数据
-            # 每一条都写日志，下次出问题能直接从日志看出是哪条提前收的。
             if self._play_start is not None and not self._pulling:
                 why = ""
                 if dur == 0:
@@ -311,11 +284,8 @@ class StreamSpeaker(QtCore.QObject):
                 break
             written = self._io.write(self._pending[0])
             if written <= 0:
-                # 声卡缓冲满时会返回 0，下次再来是对的；但设备被拔掉/被独占/切到无效设备
-                # 时它会**一直**返回 0 或 -1，那时 `_pending` 永远不空、`played_us` 不前进、
-                # `finished` 也不发：语音条永久停在「正在朗读」。连续 3 秒不进去就当场收尾。
                 self._write_stalls += 1
-                if self._write_stalls >= 150:  # 20ms × 150 = 3 秒
+                if self._write_stalls >= 150:
                     logger.warning("[语音] 声卡写不进去（%s 字节），收尾", written)
                     self._fail_local("声音送不到扬声器：设备可能被拔掉或被别的程序占了")
                     return
@@ -328,7 +298,6 @@ class StreamSpeaker(QtCore.QObject):
         fed_us = int(self._fmt.durationForBytes(self._fed_bytes))
         played_us = int(self._sink.processedUSecs())
         self.progress.emit(int(played_us / 1000), int(fed_us / 1000))
-        # 数据拉完了、缓冲喂空了、设备也真的播到头，才算念完（不提前掐尾巴）
         if not self._pulling and not self._pending and played_us + 20_000 >= fed_us:
             self._ticker.stop()
             self._sink.stop()

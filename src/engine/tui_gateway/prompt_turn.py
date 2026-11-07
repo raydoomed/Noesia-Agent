@@ -1202,7 +1202,7 @@ def _run_prompt_submit(
                 # because an interrupted turn never reaches `message.complete`.
                 try:
                     _emit("turn.done", sid, {"status": status})
-                except Exception:  # 收尾帧发不出去也不能连累下面的清理
+                except Exception:
                     logger.debug("failed to emit turn.done", exc_info=True)
                 # Backstop for turns that never reached a terminal frame.
                 if st.receipt_committed:

@@ -17,7 +17,7 @@ from PySide6 import QtCore, QtTest, QtWidgets  # noqa: E402
 
 from app.speech_interactive import StreamSpeaker  # noqa: E402
 
-LEAD = 1.4          # 云端开始回音频的延迟（实测）
+LEAD = 1.4
 RATE_BYTES = 24000 * 2
 
 
@@ -61,7 +61,6 @@ marks: dict[str, float] = {}
 speaker.started.connect(lambda _t: marks.setdefault("start", time.monotonic()))
 speaker.finished.connect(lambda: marks.setdefault("finish", time.monotonic()))
 
-# 先量这句话本身有多长（只跑一次 TTS，不播）
 speaker.speak(TEXT)
 deadline = time.monotonic() + 30
 while time.monotonic() < deadline:
@@ -72,8 +71,6 @@ total = speaker._total_bytes
 dur = total / RATE_BYTES
 speaker.stop()
 if dur <= 0:
-    # 解码链任何一步失败（写 ffmpeg stdin 报 OSError 之类），`_total_bytes` 就停在 0：
-    # 拿 0 去比会打出「晚 13 秒」这种假结论，还退 0。测量没成功就明说，别给结论。
     raise SystemExit("[失败] 这句话一个字节都没解出来：解码链断了（看上面的异常），这次测量无效")
 
 cloud = Cloud()

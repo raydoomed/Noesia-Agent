@@ -318,7 +318,7 @@ def _latch_first_install() -> None:
 
         if onboarding_run.latch_first_install():
             logger.info("onboarding: recorded the first-install decision")
-    except Exception:  # 引导记录失败不该拦住引擎启动
+    except Exception:
         logger.warning("onboarding: could not record the first-install decision", exc_info=True)
 
 
@@ -334,7 +334,7 @@ def _seed_bundled_skills() -> None:
         result = sync_skills(quiet=True)
         if result.get("copied"):
             logger.info("skills: seeded %d bundled skills", len(result["copied"]))
-    except Exception:  # 播种失败不该拦住引擎启动，技能缺失下次启动还能补
+    except Exception:
         logger.warning("skills: could not seed bundled skills", exc_info=True)
 
 

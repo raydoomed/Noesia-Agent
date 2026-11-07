@@ -50,7 +50,7 @@ def release(project_root, pid: int) -> tuple[bool, str]:
     阻塞（最多几秒），只在后台线程里调。`project_root` 给 None 就只处理 pid，
     ——认不出项目根时宁可少动，也不去扫全局进程表乱杀。
     """
-    from app.engine_wire import close_console_sessions, quit_process  # 模块函数，不是 EngineWire 的方法
+    from app.engine_wire import close_console_sessions, quit_process
 
     notes: list[str] = []
     if project_root is not None:

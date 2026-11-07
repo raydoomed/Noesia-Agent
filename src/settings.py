@@ -19,15 +19,9 @@ from pathlib import Path
 
 ENV_HOME = "NOESIA_HOME"
 
-# 代码在哪。不受 NOESIA_HOME 影响：代码和资源跟着仓库走。
 ROOT = Path(__file__).resolve().parents[1]
-# 外壳的唯一配置，和它的模板（模板跟着仓库走；改名或挪位置要两处一起改）
 APP_CONFIG = Path("data") / "settings" / "app.json"
 APP_TEMPLATE = Path("app.example.json")
-# 窗口大小/位置（她 + 聊天窗）落这里：项目 data/ 下的 INI。
-# 不用 QSettings 的默认写法——Windows 上那会写进 HKCU\Software 注册表。
-# 这里**刻意**手写 `ROOT / WINDOW_STATE`、不走引擎家目录那套解析：窗口档跟着仓库走，
-# 换 `NOESIA_HOME` 也不该把「窗放在屏幕哪儿」挪到别的地方。
 WINDOW_STATE = Path("data") / "settings" / "window.ini"
 
 
@@ -95,7 +89,6 @@ def app_config_path(root: Path | None = None) -> Path:
     return (Path(root) if root else ROOT) / APP_CONFIG
 
 
-# ---- 读配置：缺什么说什么，不填默认值 ----
 
 def _at(data: dict, dotted: str, path: Path):
     node = data
@@ -145,9 +138,6 @@ def _read(path: Path, root: Path) -> dict:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(template.read_text(encoding="utf-8"), encoding="utf-8")
         except OSError as exc:
-            # 首次运行写不进去（`data` 建不出来、装到只读盘、`data` 这个位置是个文件）。
-            # 裸 OSError 会让 `noesia check-config` 打一屏 traceback、GUI 直接双击无反应；
-            # 同一个「配置不可用」必须抛同一个类型，才有人能接住它并说人话。
             raise ConfigError(f"配置 {path} 写不进去：{exc}") from None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -172,8 +162,6 @@ def _build(data: dict, path: Path) -> Settings:
         ),
 
         engine=_Engine(
-            # 空串等于没写：`Path("")` 会安静地变成当前目录，引擎就在源码树里干活。
-            # 回落值就是 `data/settings/app.json` 模板里那三个标准值。
             core_path=_non_empty_str(data, "engine.core_path", path, "src/engine"),
             home=_non_empty_str(data, "engine.home", path, "data/NoesiaHome"),
             workdir=_non_empty_str(data, "engine.workdir", path, "data/workspace"),
@@ -211,10 +199,8 @@ def ensure_runtime(*, root: Path | str, home: Path | str, workdir: Path | str) -
     return created
 
 
-# 导入即读配置：读不到就当场报错，别让界面带着半套参数跑起来。
 SETTINGS, RESOLVER = load_settings()
 
-# 兼容旧调用点的名字：类型别名和入口名保持可用。
 PathResolver = Resolver
 AvatarSection = _Avatar
 ReferenceSection = _Reference

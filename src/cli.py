@@ -34,11 +34,11 @@ def _engine_selection(cfg, root: Path) -> tuple[str, str]:
         core = str(engine_core(cfg, root))
         if core not in sys.path:
             sys.path.insert(0, core)
-        from agent.agent_factory import current_selection  # noqa: PLC0415 - 依赖引擎路径
+        from agent.agent_factory import current_selection  # noqa: PLC0415
 
         model, provider = current_selection()
         return str(model or ""), str(provider or "")
-    except Exception:  # noqa: BLE001 - 自检/启动提示不该因为引擎还没装就崩
+    except Exception:  # noqa: BLE001
         return "", ""
 
 

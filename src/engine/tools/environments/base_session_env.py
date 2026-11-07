@@ -82,10 +82,6 @@ def _export_dump_excluding_session_vars(tmp_path: str, excluded_names: Iterable[
         # on the backend and outlive the private dir it protects.
         "${!NOESIA_RPC_*} NOESIA_KERNEL_DIR "
         f"NOESIA_UI_SESSION_ID{extra_unset} 2>/dev/null; "
-        # 用户自己的凭证也别进快照：`.env` 里的 Key 早已在进程环境里，每条命令都由
-        # ``os.environ.copy()`` 重新注入，unset 掉不影响任何工具；留着就是明文落盘
-        # （快照会被 source，还会被 read_file 读进 sessions 存档）。按「名字结尾」判断，
-        # 不看是哪家提供商——以后接新引擎不用改这里。
         "for __noesia_secret in $(compgen -v | grep -Ei "
         "'(_API_?KEY|_TOKEN|_SECRET|_SECRETS|_PASSWORD|_PASSWD|_CREDENTIAL|_CREDENTIALS|_PRIVATE_KEY)$'); "
         "do unset \"$__noesia_secret\"; done; "

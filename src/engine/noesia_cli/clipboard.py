@@ -17,8 +17,6 @@ from noesia_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-# 一次「粘贴图片」要问两次剪贴板（有没有图、把图取出来），每次起 powershell 都会闪一个 cmd 黑窗。
-# CREATE_NO_WINDOW 才不闪；它是 Windows 专有参数，POSIX 传了会 ValueError，只能按平台给。
 _NO_WINDOW = (
     {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)}
     if sys.platform == "win32" else {}

@@ -307,7 +307,7 @@ def get_default_model_for_provider(provider: str) -> str:
     labeled = get_preferred_silent_default_model(provider)
     if labeled:
         return labeled
-    live = provider_catalog_ids(provider)  # 只读磁盘缓存，不发请求
+    live = provider_catalog_ids(provider)
     return live[0] if live else ""
 
 
@@ -413,8 +413,6 @@ def fetch_openrouter_models(
                 profile_slot_set(_me, "_openrouter_catalog_cache", disk)
             return list(disk)
     if cache_only:
-        # 读路径从来不端仓库内那份静态表：它是白名单/提示，不是"当前在售且支持工具调用"的清单。
-        # 只给这台机器上次真正从 live 校验通过的那份，一次都没有就空着。
         return list(cached or _read_openrouter_catalog_disk(allow_stale=True) or [])
 
     # Remote catalog manifest first, in-repo snapshot when unreachable; the live /v1/models filter
@@ -424,13 +422,10 @@ def fetch_openrouter_models(
         remote = get_curated_openrouter_models()
     except Exception:
         remote = None
-    fallback = list(remote or [])  # 只认目录清单给的顺序；没有就按 live 自己的顺序
+    fallback = list(remote or [])
 
     live = _fetch_live_catalog_index(_OPENROUTER_CATALOG_URL, timeout, _urlopen_model_catalog_request)
     if live is None:
-        # 拉不到 live（401/403/超时）就只给上次真正校验通过的那份。以前这里退 `fallback`
-        # （仓库内白名单 73 条，不校验在售、不校验工具调用），结果失败时菜单反而多出十几个
-        # 已经下架或不支持工具的模型——用户看到的就是"数字自己变了"。
         return list(cached or _read_openrouter_catalog_disk(allow_stale=True) or [])
     live_items, live_by_id = live
 
@@ -442,8 +437,6 @@ def fetch_openrouter_models(
 
     curated: list[tuple[str, str]] = []
     silent_default = get_preferred_silent_default_model("openrouter")
-    # 线上有什么就列什么：随包推荐表只决定「排前面」，不再决定「谁能出现」。
-    # 以前被它挡住的新模型（上游刚发、表里还没有）永远进不来，看着就像清单是死的。
     ordered_ids = [pid for pid, _ in fallback if pid in live_by_id]
     ordered_ids += [pid for pid in live_by_id if pid not in set(ordered_ids)]
     for preferred_id in ordered_ids:
@@ -461,7 +454,6 @@ def fetch_openrouter_models(
         curated.append((preferred_id, desc))
 
     if not curated:
-        # 一条都没过校验（live 全变了/全不支持工具调用）：同样不端白名单冒充清单。
         return list(cached or _read_openrouter_catalog_disk(allow_stale=True) or [])
     if not curated[0][1]:
         curated[0] = (curated[0][0], "recommended")
@@ -489,10 +481,9 @@ def fetch_ai_gateway_models(
 
     from noesia_constants import AI_GATEWAY_BASE_URL
 
-    fallback: list = []  # 没有随包推荐表了：只按 live 清单自己的顺序
+    fallback: list = []
     live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
     if live is None:
-        # 拉不到（401/403/超时）：只给上次真的拿到的清单，不端仓库内的推荐表冒充"当前可用"。
         return list(_ai_gateway_catalog_cache or [])
     _, live_by_id = live
 
@@ -692,8 +683,6 @@ def curated_models_for_provider(
     """
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
-        # 它有自己的实时全量清单（``fetch_openrouter_models``，元素是 (id, 名称) 对，
-        # 不是纯 id），退役的照样要删——按 id 过一遍，再把活下来的行原样带回去
         rows = fetch_openrouter_models(force_refresh=force_refresh)
         kept = _drop_retired_models(normalized, [str(mid) for mid, _ in rows])
         if len(kept) == len(rows):
@@ -704,9 +693,7 @@ def curated_models_for_provider(
     # Try live API first (Codex, Noesia, etc. all support /models)
     live = provider_model_ids(normalized, force_refresh=force_refresh)
     if live:
-        # 实时清单就是清单：不再补静态表（补进来的那些没人校验在售）
         return [(m, "") for m in _merge_live_with_catalog(normalized, live)]
-    # 这次没问到：空着（行还在，只是没有模型），让界面/上层如实说"没取到"。
     return []
 
 
@@ -790,8 +777,6 @@ def detect_static_provider_for_model(
     if resolved_provider not in {"custom", "openrouter"}:
         default_models = _provider_catalog_names(resolved_provider)
         if resolved_provider in _PROVIDER_LABELS and default_models and resolved_provider not in current_keys:
-            # 只按 remote 标注的默认走；没有标注就用 live 清单的第一条（cost-safe 的偏好在
-            # ``get_default_model_for_provider`` 里，它现在只认 remote 目录的 ``default: true``）。
             return (resolved_provider, get_default_model_for_provider(resolved_provider) or default_models[0])
 
     # A model in the current provider's own catalog never suggests switching.
@@ -1110,7 +1095,7 @@ def _deprecated_model_ids(normalized: str) -> set[str]:
         from agent.models_dev import deprecated_model_ids
 
         return {str(m).strip().lower() for m in deprecated_model_ids(normalized) if str(m).strip()}
-    except Exception:  # noqa: BLE001 - 目录拿不到就不删任何东西
+    except Exception:  # noqa: BLE001
         return set()
 
 
@@ -1208,8 +1193,6 @@ def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
             return live
     except Exception:
         pass
-    # 这次没问出东西：返回 None（"这家没取到"），不要把随包白名单当 live 清单端出去——
-    # 那 56 条 vs 白名单是对不上的，菜单会自己跳数字；上层会退回上次真正拿到的磁盘清单。
     return None
 
 
@@ -1246,8 +1229,6 @@ def _stepfun_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]
     ``merge_profile_catalog`` already serves the curated floor as a placeholder.
     """
     live = _api_key_provider_live(normalized, force_refresh)
-    # 只给实时抓到的：StepFun 的 /models 漏列 Standard API 的模型是它自己的事，
-    # 我们不再拿随包静态表去补——补进来的那些没校验在售，菜单里就是一批旧名字。
     return live or None
 
 
@@ -1259,9 +1240,7 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> Optional[list[st
         cfg_api_key = str(model_cfg.get("api_key", "") or "").strip()
     live = _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None)
     if not live:
-        # 这次没探到：None（"没取到"），上层退回上次真正拿到的磁盘清单。
         return None
-    # 只给实时抓到的；不再把随包静态表合进来（那份没人校验在售）。
     return live
 
 
@@ -1289,8 +1268,6 @@ def _openai_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]
         return None
     if not is_official_openai_host(base):
         return live
-    # 官方 OpenAI 的 /v1/models 把 embeddings/whisper/tts 也列出来：只按「不是生成模型」剔掉，
-    # 不再用随包静态表去交叉过滤（那份名单会随版本变旧，等于把老模型顶回菜单）。
     return _chat_catalog_rows(live)
 
 
@@ -1403,7 +1380,6 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         return merge_profile_catalog(normalized, profile, list(live) if live else None,
                                      allow_curated=False)
     if not (profile.auth_type == "api_key" and profile.base_url):
-        # 这类家的 fallback_models 是随包写死的名单，不是「现在能用什么」：不端出去。
         return None
     api_key, base_url = _api_key_credentials(normalized)
     return probe_profile_catalog(normalized, profile, api_key, base_url or profile.base_url or None)
@@ -1429,7 +1405,7 @@ def merge_profile_catalog(normalized: str, profile, live: Optional[list[str]], *
     菜单里混着一批没校验在售、甚至已经下架的模型。现在一律不合：拿到什么就是什么，
     一个都没拿到就返回 None（"这次没取到"），由上层的磁盘缓存或界面如实说话。
     """
-    del profile, allow_curated  # 签名留着：调用方还按老样子传，语义已经只剩 live
+    del profile, allow_curated
     rows = list(live) if live else None
     return _drop_delisted_opencode_models(normalized, rows)
 
@@ -1556,14 +1532,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         relayed = _relay_model_catalog(normalized, relay)
         if relayed:
             return _chat_catalog_rows(relayed)
-        # 配了中转就是有 live 源（问的就是中转自己）：这次没答上来就空着，让上层用这家上次
-        # 真正从中转拿到的磁盘清单，而不是端出仓库里那份跟中转无关的静态表。
         return []
     fetcher = _PROVIDER_CATALOG_FETCHERS.get(normalized)
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)
         if models is not None:
-            # 实时清单既会留着一批上游已退役的 id，也会漏掉刚上新/在另一套 API 上的模型
             return _chat_catalog_rows(_merge_live_with_catalog(normalized, models))
     try:
         models = _profile_live_catalog(normalized)
@@ -1573,10 +1546,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         return _chat_catalog_rows(_merge_live_with_catalog(normalized, models))
 
     if _profile_has_live_source(normalized):
-        # 这家能问（provider profile 自带 fetch_models），只是这次没问出东西：不端静态表。
         return []
-    # 没有 live 源的家也返回空：仓库里那份随包名单不是「这台机器现在能用的模型」，
-    # 端出来就是过时清单。界面对空清单照实说「这家这次没取到」。
     return []
 
 
@@ -1692,7 +1662,7 @@ def _provider_credential_part(label: str, path: Path, provider: str) -> str:
             if slug in pool:
                 parts.append(f"pool.{slug}=" + json.dumps(pool[slug], sort_keys=True, default=str))
     for slug in sorted(wanted):
-        if slug in doc:  # credentials.json 是平铺的：{provider: {...}}
+        if slug in doc:
             parts.append(f"{slug}=" + json.dumps(doc[slug], sort_keys=True, default=str))
     return f"{label}=" + ("|".join(parts) if parts else "none")
 

@@ -99,18 +99,12 @@ class ToolView:
     icon: str | None = None
     image_url: str | None = None
     preview_target: str | None = None
-    # 输出本身含 ANSI 转义的工具（terminal/execute_code），渲染层要过 ANSI 解析器。
     renders_ansi: bool | None = None
-    # 原始查询词，显示在结构化搜索结果上方。
     search_query: str | None = None
     search_hits: list[SearchResultRow] | None = None
-    # 后端把 stderr 当独立流返回时（terminal / execute_code），单独成块展示。
     stderr: str | None = None
-    # Terminal 专用：展开转录里显示成提示符的命令。
     terminal_command: str | None = None
-    # Terminal 专用：后端报告的进程退出码。
     terminal_exit_code: float | None = None
-    # 有值时渲染层按 stdout / stderr 分节，忽略合并后的 detail。
     stdout: str | None = None
     title_action: ToolTitleAction | None = None
 

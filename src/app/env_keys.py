@@ -16,7 +16,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# (id, 界面上显示的名字, .env 里的变量名, 归属)
 PROVIDERS: tuple[tuple[str, str, str, str], ...] = (
     ("elevenlabs", "ElevenLabs", "ELEVENLABS_API_KEY", "speech"),
     ("doubao", "豆包", "DOUBAO_API_KEY", "speech"),
@@ -58,7 +57,6 @@ def read(key: str) -> str:
 
 def write(key: str, value: str) -> None:
     """只改 `.env` 里这一个变量那一行，别的行原样留着。"""
-    # 不再生成 `.env.bak`：留着它等于在家目录里多一份明文凭证，用户还得自己收拾。
 
     value = value.strip()
     env = env_file()
@@ -73,8 +71,6 @@ def write(key: str, value: str) -> None:
             continue
         kept.append(line)
     kept.append(f"{key}={value}")
-    # 临时文件 + replace：直接覆盖时中途失败会留下一个空的 `.env`，
-    # 所有厂商的 Key 一起没，用户还看不出是哪一步坏的。
     body = "\n".join(kept) + "\n"
     tmp = env.with_name(f".{env.name}.{os.getpid()}.tmp")
     try:
@@ -86,7 +82,7 @@ def write(key: str, value: str) -> None:
         except OSError:
             pass
         raise
-    os.environ[key] = value  # 本进程立刻生效，不用等重启
+    os.environ[key] = value
 
 
 def read_provider(provider: str) -> str:

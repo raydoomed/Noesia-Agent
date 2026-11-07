@@ -46,7 +46,6 @@ def refresh_token(token_data: dict) -> dict:
         "client_id": token_data["client_id"],
         "client_secret": token_data["client_secret"],
         "refresh_token": token_data["refresh_token"],
-        # 刷新令牌走请求体：有的 OAuth 中转只放请求头会被判 invalid_request，放 body 才是通用做法。
         "grant_type": "refresh_token",
     }).encode()
 

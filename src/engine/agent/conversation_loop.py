@@ -731,7 +731,7 @@ def _soul_prompt_stale(agent, stored_prompt: str) -> bool:
         from agent.system_prompt import _agent_home
 
         home = _agent_home(agent)
-    except Exception as exc:  # noqa: BLE001 - 认不出自己的 home 就别猜，维持现有缓存
+    except Exception as exc:  # noqa: BLE001
         logger.debug("SOUL.md re-check skipped (no home): %s", exc, exc_info=True)
         return False
     if home is None:
@@ -747,7 +747,7 @@ def _soul_prompt_stale(agent, stored_prompt: str) -> bool:
         from agent.prompt_builder import load_soul_md
 
         injected = load_soul_md(getattr(agent, "context_length", None), home_override=home)
-    except Exception as exc:  # noqa: BLE001 - 读不出注入文本就只能认定改过
+    except Exception as exc:  # noqa: BLE001
         logger.debug("SOUL.md re-check: injected text unavailable: %s", exc, exc_info=True)
         return True
     return not (injected and injected in stored_prompt)
@@ -778,12 +778,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     reusable = bool(stored_prompt) and _stored_prompt_matches_runtime(agent, stored_prompt)
     if reusable and _soul_prompt_stale(agent, stored_prompt):
-        # SOUL.md 在磁盘上被改过（设置页保存，或用户自己在资源管理器里编辑）：这一轮重拼，
-        # 下一轮起就命中新缓存。只在这一轮付一次前缀缓存失效的代价。
         stored_state = "soul_edit"
-        # 一轮性提醒：这一轮随用户消息带一句「以新的为准」。同一条会话里她可能已经说过与新人设
-        # 相反的话，历史里那些比提示词第一行更近、更响，光换提示词压不住。这句不预设改的是什么
-        # （名字、语气、边界都可能），只说以新内容为准；只活一轮，不进系统提示词，前缀缓存不受影响。
         agent._soul_update_note = (
             "人设文件 SOUL.md 刚刚被改过：以它现在的内容为准。"
             "此前对话里与它不一致的说法作废，按新的来。"

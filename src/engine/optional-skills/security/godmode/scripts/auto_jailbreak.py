@@ -185,7 +185,6 @@ MODEL_STRATEGIES = {
             ),
         },
     },
-    # Noesia 自有模型：本身不过滤，给干净的提示词即可
     "noesia": {
         "order": ["prefill_only"],
         "system_templates": {},

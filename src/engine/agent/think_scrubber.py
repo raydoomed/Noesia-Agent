@@ -19,7 +19,6 @@ __all__ = ["THINK_CLOSE_TAGS", "THINK_OPEN_TAGS", "THINK_TAG_NAMES", "StreamingT
 # the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
 # these; a tag added here is covered everywhere. Consumers match case-insensitively, so the
 # literal tags are lowercase. The CJK names cover models (MiniMax-M3) that emit Chinese reasoning
-# tags: 思考 (think), 反思 (reflect), 推理 (reason), 推敲 (deliberate).
 THINK_TAG_NAMES: tuple[str, ...] = (
     "think", "thinking", "reasoning", "thought", "REASONING_SCRATCHPAD",
     "思考", "反思", "推理", "推敲",

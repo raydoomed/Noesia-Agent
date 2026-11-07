@@ -90,7 +90,7 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
         return True
     if (cached := _ACP_PROBE_CACHE.get(command)) is not None:
         return cached
-    from noesia_cli._subprocess_compat import windows_hide_flags  # 桌面端引擎没有控制台，探测子进程要自己藏窗口
+    from noesia_cli._subprocess_compat import windows_hide_flags
 
     try:
         probe = subprocess.run(
@@ -101,8 +101,6 @@ def _acp_supported(command: str, args: list[str]) -> bool | None:
             capture_output=True, text=True, encoding="utf-8",
             errors="replace", timeout=5,
             stdin=subprocess.DEVNULL,
-            # 引擎在桌面端是无控制台进程（pythonw）：不隐藏就新开一个控制台窗口，
-            # copilot-shim 更会连带弹出 Windows Terminal——用户看到的就是「cmd 闪一下」。
             creationflags=windows_hide_flags(),
             check=False,
         )

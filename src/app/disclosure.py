@@ -55,17 +55,17 @@ def _inherit_clean(fmt: QtGui.QTextBlockFormat) -> QtGui.QTextBlockFormat:
 @dataclass
 class Fold:
     key: int
-    kind: str  # 谁在用：reasoning / tool / …
+    kind: str
     label: str
     open: bool
     head_block: QtGui.QTextBlock = field(default=None, repr=False)
     has_body: bool = False
-    pinned: bool = False  # 用户自己点过开合：别再替他自动收起/展开
-    glyph: object | None = field(default=None, repr=False)  # 抬头左边的小图标（QTextImageFormat）
-    scroll: QtWidgets.QTextBrowser | None = field(default=None, repr=False)  # 长内容的独立滚动块
-    slot: QtGui.QTextBlock | None = field(default=None, repr=False)  # 它在正文里占的那块空位
-    chunks: list[tuple[str, QtGui.QColor | None, QtGui.QColor | None]] = field(default_factory=list, repr=False)  # 已经收进来的行（文字 + 前景 + 底色）
-    drawn: int = 0  # 已经铺到控件里的行数：只补新增的那几行，不整段重铺
+    pinned: bool = False
+    glyph: object | None = field(default=None, repr=False)
+    scroll: QtWidgets.QTextBrowser | None = field(default=None, repr=False)
+    slot: QtGui.QTextBlock | None = field(default=None, repr=False)
+    chunks: list[tuple[str, QtGui.QColor | None, QtGui.QColor | None]] = field(default_factory=list, repr=False)
+    drawn: int = 0
 
 
 class Folds:
@@ -86,11 +86,10 @@ class Folds:
         self._gap = gap
         self._host = host
         self._items: dict[int, Fold] = {}
-        self._marks: list[_BodyMark] = []  # 保住 Python 侧引用：块只存指针
+        self._marks: list[_BodyMark] = []
         self._seq = 0
         self._uid = 0
 
-    # ---- 查询 ----
 
     def get(self, key: int) -> Fold | None:
         return self._items.get(key)
@@ -132,7 +131,6 @@ class Folds:
             block = block.next()
         return out
 
-    # ---- 建段 / 喂正文 ----
 
     def new(self, kind: str, label: str, *, open_: bool = False, glyph=None) -> Fold:
         cursor = self._end_cursor()
@@ -145,9 +143,7 @@ class Folds:
             cursor.insertImage(glyph)
             cursor.insertText(" ")
         cursor.insertText(head_text(label, fold.open), self._head_link(fold))
-        fold.head_block = self._doc.findBlock(head_pos)  # 插入后再取：句柄跟着块走，不怕位置变
-        # 抬头这一行按固定行高走：不给的话这行高度跟着图标走（14px），
-        # 字挤在里面对着图标也看不出居中
+        fold.head_block = self._doc.findBlock(head_pos)
         head_format = fold.head_block.blockFormat()
         head_format.setLineHeight(18, QtGui.QTextBlockFormat.LineHeightTypes.FixedHeight.value)
         QtGui.QTextCursor(fold.head_block).setBlockFormat(head_format)
@@ -166,7 +162,7 @@ class Folds:
             self._start_block(cursor, margin=0)
             return cursor
         cursor = QtGui.QTextCursor(self._doc)
-        cursor.setPosition(after.position() + after.length() - 1)  # 码元数：emoji 占两个
+        cursor.setPosition(after.position() + after.length() - 1)
         cursor.insertBlock()
         block_format = _inherit_clean(cursor.blockFormat())
         block_format.setTopMargin(0)
@@ -189,14 +185,12 @@ class Folds:
         cursor.insertText(text, body_format or self._body_format)
         end = cursor.position()
         fold.has_body = True
-        # 文本里的换行会额外切出段来：每一块都得打上标记，不然折叠着还能看见半截
         block = self._doc.findBlock(start)
         while block.isValid() and block.position() <= end:
             mark = self._mark(fold)
             block.setUserData(mark)
             block.setVisible(fold.open)
             block = block.next()
-        # 段落可见性变了，布局得重排：只改块标志不会让高度自己失效（会露出一大块空白）
         self._doc.markContentsDirty(0, self._doc.characterCount())
 
     def append_marked(
@@ -228,13 +222,8 @@ class Folds:
         block = self._block_of(mark)
         if block is None:
             return
-        # 选中「块里的字」而不是整块：`BlockUnderCursor` 连着段尾分隔符一起选，
-        # 换字会把这一块并到上一块里去（两行子代理挤成一行）
         cursor = QtGui.QTextCursor(block)
         cursor.setPosition(block.position())
-        # 用 `block.length() - 1`（Qt 的码元数）而不是 `len(block.text())`（码点数）：
-        # 一个 emoji 在 Python 里算 1、在 Qt 里算 2，用 len 会把位置落在行中间，
-        # 上一行末字被切到下一行开头，而且每追加一次就再错一次。
         cursor.setPosition(block.position() + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.insertText(text, body_format or self._body_format)
         self._doc.markContentsDirty(0, self._doc.characterCount())
@@ -272,9 +261,9 @@ class Folds:
             scroll.set_rows(fold.chunks)
             fold.drawn = len(fold.chunks)
         elif len(fold.chunks) > fold.drawn:
-            scroll.add_rows(fold.chunks[fold.drawn :])  # 只补新来的，前面那些不动
+            scroll.add_rows(fold.chunks[fold.drawn :])
             fold.drawn = len(fold.chunks)
-        scroll.setVisible(fold.open)  # 这块是刚建的时候也要按当前开合摆好
+        scroll.setVisible(fold.open)
         fold.has_body = True
         self._sync_slot(fold)
 
@@ -299,14 +288,13 @@ class Folds:
             block = self._doc.findBlock(start)
         cursor = QtGui.QTextCursor(block)
         fmt = _inherit_clean(block.blockFormat())
-        fmt.setTopMargin(6)  # 上面可能是图片或一行说明，紧贴着会糊成一块
+        fmt.setTopMargin(6)
         fmt.setBottomMargin(0)
         fmt.setLineHeight(height, QtGui.QTextBlockFormat.LineHeightTypes.FixedHeight.value)
         cursor.setBlockFormat(fmt)
-        # 设格式之后旧的那个 block 句柄就作废了，得按位置重新拿一次
         block = self._doc.findBlock(cursor.block().position())
         if not isinstance(block.userData(), _BodyMark):
-            block.setUserData(self._mark(fold))  # 只标一次：每次都标会一直往 _marks 里堆
+            block.setUserData(self._mark(fold))
         block.setVisible(fold.open)
         fold.slot = block
         self._doc.markContentsDirty(block.position(), block.length())
@@ -314,7 +302,7 @@ class Folds:
     def _mark(self, fold: Fold) -> _BodyMark:
         self._uid += 1
         mark = _BodyMark(fold.key, self._uid)
-        self._marks.append(mark)  # 保住 Python 侧引用：块只存指针
+        self._marks.append(mark)
         return mark
 
     def _block_of(self, mark: _BodyMark) -> QtGui.QTextBlock | None:
@@ -350,7 +338,7 @@ class Folds:
             cursor = self._end_cursor()
             self._start_block(cursor, margin=0)
         else:
-            cursor.setPosition(after.position() + after.length() - 1)  # 码元数：emoji 占两个
+            cursor.setPosition(after.position() + after.length() - 1)
             cursor.insertBlock()
             block_format = _inherit_clean(cursor.blockFormat())
             block_format.setTopMargin(0)
@@ -384,8 +372,6 @@ class Folds:
         if not rows:
             return
         if fold.kind == "tool" and self._host is not None:
-            # 带图的段不能进那个滚动区：那里只排文字，图会整张不见。
-            # 抬头的小图标也是图片字符，但它不是图，不该把整段赶回正文。
             has_image = any(
                 isinstance(fmt, QtGui.QTextImageFormat)
                 and not fmt.name().startswith("noesia-icon://")
@@ -395,8 +381,6 @@ class Folds:
             if not has_image:
                 self._append_scroll_runs(fold, rows)
                 return
-        # `start` 必须取**另起一段之后**的位置：取在那之前，`findBlock(start)` 落在抬头块
-        # 的末尾，抬头会被一起标成正文块——折叠着的时候整行（连标题）跟着消失。
         cursor = self._body_cursor(fold)
         start = cursor.position()
         for index, row in enumerate(rows):
@@ -404,7 +388,7 @@ class Folds:
                 self._start_block(cursor, margin=0)
             for text, fmt in row:
                 if isinstance(fmt, QtGui.QTextImageFormat):
-                    cursor.insertImage(fmt)  # 图片没有文字，只能整段插图
+                    cursor.insertImage(fmt)
                 elif text:
                     cursor.insertText(text, fmt)
         end = cursor.position()
@@ -417,20 +401,19 @@ class Folds:
             block = block.next()
         self._doc.markContentsDirty(0, self._doc.characterCount())
 
-    # ---- 开合 / 改名 ----
 
     def toggle(self, key: int) -> bool | None:
         fold = self._items.get(key)
         if fold is None:
             return None
         self.set_open(fold, not fold.open)
-        self.retitle(fold, fold.label)  # 箭头得跟着翻
+        self.retitle(fold, fold.label)
         return fold.open
 
     def set_open(self, fold: Fold, open_: bool) -> None:
         fold.open = bool(open_)
         if not fold.has_body:
-            return  # 还没正文：只影响箭头
+            return
         for block in self.body_blocks(fold):
             block.setVisible(fold.open)
         if fold.scroll is not None:
@@ -450,7 +433,7 @@ class Folds:
         pos = block.position()
         cursor = QtGui.QTextCursor(self._doc)
         cursor.setPosition(pos)
-        cursor.setPosition(pos + block.length() - 1, QtGui.QTextCursor.KeepAnchor)  # 码元数，不是 len()
+        cursor.setPosition(pos + block.length() - 1, QtGui.QTextCursor.KeepAnchor)
         if fold.glyph is not None:
             cursor.insertImage(fold.glyph)
             cursor.insertText(" ")
@@ -458,7 +441,6 @@ class Folds:
         fold.label = label
         fold.head_block = self._doc.findBlock(pos)
 
-    # ---- 内部 ----
 
     def _find_head(self, fold: Fold) -> QtGui.QTextBlock | None:
         """抬头块丢了（例如整份文档重建过）就按锚点找回来。"""

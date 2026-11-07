@@ -826,9 +826,6 @@ DEFAULT_CONFIG = {
     "display": {
         "compact": False,
         "personality": "",
-        # 退出对话界面后要不要把控制台窗口一起关掉：own = 只关「为 noesia 单开」的窗口（双击 exe /
-        # 快捷方式）；always = 连「共用窗口」里那个 cmd 也一起关（Windows Terminal 的标签页仍然不动，
-        # 关它会把整个终端带走）；never = 只退程序。规则见 noesia_cli/console_window.py。
         "exit_closes_window": "own",
         "resume_display": "full",
         # Recap tuning for /resume and startup resume.
@@ -2014,7 +2011,7 @@ DEFAULT_CONFIG = {
     # release. Default URL is served by the docs-site GitHub Pages deploy.
     "model_catalog": {
         "enabled": True,
-        "url": "",  # 空 = 不联网（Noesia 没有对外站点）
+        "url": "",
         # Disk cache TTL in minutes. The gateway refreshes in the background on this cadence; the
         # CLI refetches on the next /model or `noesia model` once the cache is older. Network
         # failures silently use the stale cache. Legacy `ttl_hours` is honoured if set.

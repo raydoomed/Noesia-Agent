@@ -12,14 +12,12 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-#: 气泡：圆角、内边距。文字左右各让 12，气泡边正好落在视口边上。
 BUBBLE_RADIUS = 12
 BUBBLE_PAD_X = 12
 BUBBLE_PAD_Y = 8
 BUBBLE_FILL = QtGui.QColor(243, 172, 206, 44)
 BUBBLE_EDGE = QtGui.QColor(243, 172, 206, 72)
 
-#: 过程行（「思考了片刻」、工具抬头）的静止/悬停灰。
 SCAFFOLD_IDLE = QtGui.QColor(236, 230, 239, 110)
 SCAFFOLD_HOVER = QtGui.QColor(236, 230, 239, 163)
 
@@ -27,7 +25,7 @@ SCAFFOLD_HOVER = QtGui.QColor(236, 230, 239, 163)
 class ChatView(QtWidgets.QTextBrowser):
     """排字的那一层。气泡自己画，长内容自己摆。"""
 
-    scrolled = QtCore.Signal()  # 正文滚了：贴在字上的那些小按钮位置就作废了
+    scrolled = QtCore.Signal()
 
     BUBBLE_RADIUS = BUBBLE_RADIUS
     BUBBLE_PAD_X = BUBBLE_PAD_X
@@ -46,13 +44,11 @@ class ChatView(QtWidgets.QTextBrowser):
         self.document().documentLayout().documentSizeChanged.connect(self._mark_stale)
         self.document().contentsChanged.connect(self._mark_stale)
 
-    # ---- 外部接线 ----
 
     def attach_folds(self, folds) -> None:
         """把折叠段登记表接进来：长内容要按它们占的空位摆。"""
         self._folds = folds
 
-    # ---- 气泡 ----
 
     def _mark_stale(self, *_args) -> None:
         self._bubbles_stale = True
@@ -61,13 +57,11 @@ class ChatView(QtWidgets.QTextBrowser):
         super().resizeEvent(event)
         self._bubbles_stale = True
         if self._folds is not None:
-            # 宽度变了：里面滚着的那些得按新宽度重新量，不然还按老宽度占着地方
             self._folds.relayout()
         self._relayout_tools()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:  # noqa: N802
         super().scrollContentsBy(dx, dy)
-        # 字挪了，挂在字上的控件要跟着挪；挂在字上的小按钮索性收掉，等鼠标再过来
         self._relayout_tools()
         self.scrolled.emit()
 
@@ -133,7 +127,6 @@ class ChatView(QtWidgets.QTextBrowser):
             return None
         return self._bubbles[index].translated(0, -self.verticalScrollBar().value())
 
-    # ---- 长内容 ----
 
     def _relayout_tools(self) -> None:
         """长内容按它在正文里占的那块空位摆好；收起时整块不显示。"""
@@ -157,7 +150,6 @@ class ChatView(QtWidgets.QTextBrowser):
             widget.setGeometry(rect.toRect())
             widget.show()
 
-    # ---- 画 ----
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
         if self._bubbles_stale:

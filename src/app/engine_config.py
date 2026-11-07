@@ -22,9 +22,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# 「读不出来就别写」这一段保护是靠调用方的 `except (OSError, yaml.YAMLError)` 兜住的。
-# 中文 Windows 上 config.yaml 很常被记事本/旧编辑器存成 GBK 或带 BOM 的 UTF-8，硬解 UTF-8
-# 抛的是 `UnicodeDecodeError`——它哪一个都接不住，于是保护分支不执行，坏文件被默认值覆盖。
 _BAD_TEXT = "这份文件不是能识别的文本（既不是 UTF-8 也不是 GBK）：另存为 UTF-8 后重开设置"
 
 
@@ -34,7 +31,7 @@ def _read_text(path: Path) -> str:
     两种编码都不成，就当成「读不出来」抛 `OSError`：既有的保护分支会照常执行
     （不写盘、保留原文件），用户看到的也是一句能懂的中文，而不是 `0xd6 in position 2`。
     """
-    data = path.read_bytes()  # 读不出来（文件锁、权限）照样抛 OSError，交给调用方
+    data = path.read_bytes()
     for encoding in ("utf-8-sig", "gb18030"):
         try:
             return data.decode(encoding)
@@ -69,7 +66,6 @@ _HEADER = (
 
 _WIDTH = 100
 
-# 旧版本生成的只读参考文件（已被本文件取代），启动时顺手清掉，别在目录里留两份
 _LEGACY_REFERENCE = "config.default.yaml"
 _LEGACY_MARK = "# 引擎配置全量默认值"
 _SNAPSHOT_REL = ("data", "runtime", "config-defaults.json")
@@ -85,9 +81,9 @@ def _is_ours(path: Path) -> bool:
 def _merge_leaf(new_default: Any, disk: Any, was_default: Any, override: Any, missing: object) -> Any:
     """单个键怎么取值：用户改过就用磁盘的，没改过就跟 engine.config，再不然跟新默认。"""
     if disk is not missing and isinstance(disk, dict) and not isinstance(new_default, dict):
-        return disk  # 磁盘上是段、默认表里是标量：以磁盘的结构为准（引擎归一整段写进来的）
+        return disk
     if disk is not missing and not (was_default is not missing and disk == was_default):
-        return disk  # 用户改过（或快照丢了，宁可保留用户的）
+        return disk
     return new_default if override is missing else override
 
 
@@ -106,8 +102,6 @@ def _merge(defaults: Any, disk: Any, snapshot: Any, overrides: Any, missing: obj
             overrides.get(key, missing),
             missing,
         )
-    # 磁盘上有、引擎默认表里没有的键也要留住：引擎自己会读它们（典型是 CLI 写的
-    # `agent.reasoning_effort`——思考档位就存在这儿），删掉等于替用户改配置。
     for key, value in disk.items():
         if key in defaults:
             continue
@@ -126,10 +120,6 @@ def _merge(defaults: Any, disk: Any, snapshot: Any, overrides: Any, missing: obj
     return merged
 
 
-# 「默认值本身就是开关」的键：引擎是看 raw config 里有没有这一段来决定要不要提供某个功能的，
-# 写出来就等于替用户按了开关。最典型的是 `moa.presets`：引擎对所有人都会合成一份 `default`
-# preset，可只要它出现在 config.yaml 里，模型清单就会多出一家 `moa`，选中还会切换失败。
-# 所以这些键在值等于引擎默认时就别写进文件（用户自己配了别的值才写）。
 _OPTIN_KEYS: tuple[tuple[str, ...], ...] = (("moa", "presets"),)
 
 
@@ -149,10 +139,6 @@ def _prune_optin(merged: dict[str, Any], defaults: dict[str, Any]) -> None:
                 del node[leaf]
 
 
-# 引擎自己归一化、外壳不代写的键。`model` 在 DEFAULT_CONFIG 里是个空串（旧结构），
-# 但引擎真正落盘的是 `{default, provider, base_url, api_mode}` 这样一段映射。照默认表
-# 写个空串进去，引擎启动就判定「还没连任何供应商」——每一次启动都报
-# `No provider is set up for the first chat`。值等于默认（空）时干脆不写，让引擎自己管。
 _DROP_WHEN_DEFAULT: tuple[tuple[str, ...], ...] = (("model",),)
 
 
@@ -194,7 +180,6 @@ def _render_section(
             out.append(f"{pad}{key}:")
             _render_section(value, comments, child, indent + 1, out)
         elif isinstance(value, dict):
-            # 空段写成 `{}`：只写 `key:` 会被引擎当成 null 并警告
             # （config.yaml has empty section(s) ... Remove the line(s) or set them to ``{}``）
             out.append(f"{pad}{key}: {{}}")
         else:
@@ -221,7 +206,7 @@ def sync_engine_config(
     overrides: dict[str, Any] | None = None,
 ) -> bool:
     """把 `<home>/config.yaml` 写成"全量默认 + 用户改动"；返回是否真的改动了文件。"""
-    from engine_config_view import comment_texts, engine_defaults  # 引擎的 sys.path 只在 src/ 那一层动
+    from engine_config_view import comment_texts, engine_defaults
 
     import yaml
 
@@ -235,8 +220,6 @@ def sync_engine_config(
         try:
             disk = yaml.safe_load(_read_text(config_path)) or {}
         except (OSError, yaml.YAMLError) as exc:
-            # 读不出来就**不写**：以前这里会当成「磁盘上没有这个键」，于是拿引擎默认值
-            # 把整个文件覆盖掉——用户改过的每一条设置连同注释一起没了。
             logger.error("[配置] %s 解析失败，这次不写盘：%s", config_path, exc)
             raise ValueError(f"{config_path} 读不出来，暂停写入以免覆盖你的配置") from exc
     snapshot: Any = None
@@ -256,7 +239,7 @@ def sync_engine_config(
 
     try:
         comments = comment_texts(core_path)
-    except Exception:  # noqa: BLE001 - 拿不到注释就退化成纯键值，不能因此写不出配置
+    except Exception:  # noqa: BLE001
         logger.exception("读取引擎配置注释失败，生成的文件将不含说明")
         comments = {}
 
@@ -268,9 +251,6 @@ def sync_engine_config(
         _atomic_write(config_path, body)
         logger.info("引擎配置已同步：%s（%d 个顶层段）", config_path, len(merged))
 
-    # 快照记「引擎当前的默认值」——下次启动时某键与快照相同 = 用户没动过，可以跟随新默认；
-    # 不同 = 用户改过，必须保留。这里绝不能记 merged：把用户的值记成基线，下一轮就会被当成
-    # 「没动过」而换成默认值（踩过：`model:` 的 {default, provider, base_url} 被换成空串）。
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(
         snapshot_path,
@@ -332,7 +312,7 @@ def memory_limits(core_path: Path, home: Path) -> tuple[int, int]:
     memory = disk.get("memory") if isinstance(disk.get("memory"), dict) else {}
     try:
         defaults = (engine_defaults(core_path) or {}).get("memory") or {}
-    except Exception:  # noqa: BLE001 - 引擎目录不在：这一页只读不写，别让整个设置窗打不开
+    except Exception:  # noqa: BLE001
         logger.exception("读不到引擎默认配置")
         defaults = {}
 
@@ -362,8 +342,6 @@ def set_engine_config(core_path: Path, home: Path, values: dict[str, Any]) -> bo
         try:
             disk = yaml.safe_load(_read_text(config_path)) or {}
         except (OSError, yaml.YAMLError) as exc:
-            # 跟 sync_engine_config 一个道理：读不出来就不能写，否则一个键的修改会把
-            # 整个文件换成只剩这一个键的新文件，其余全丢。
             logger.error("[配置] %s 解析失败，这次不写盘：%s", config_path, exc)
             raise ValueError(f"{config_path} 读不出来，暂停写入以免覆盖你的配置") from exc
     if not isinstance(disk, dict):

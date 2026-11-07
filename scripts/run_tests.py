@@ -30,9 +30,8 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TEST_TIMEOUT_S = 300  # 单个用例挂住就当场判失败：没有这条，Qt 卡死时 make test 永远不返回
+TEST_TIMEOUT_S = 300
 
-# 直接依赖私有符号的文件数上限。基线（只许减不许增）：
 #   test_keymap.py（_to_native/_from_native）、test_markdown_stream.py（_open_link/_photo_name）、
 #   test_memory_page.py（_memory_file）、test_ptt_window.py（_key_name/_PttKeyDialog）
 PRIVATE_MAX = 4
@@ -47,13 +46,11 @@ def _private_in_source(text: str) -> bool:
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return False  # 语法坏掉的用例自己会在跑的时候红，不归护栏管
+        return False
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             if any(alias.name.startswith("_") for alias in node.names):
                 return True
-    # 只认 import：白盒用例读 `panel._streaming` 这类属性是界面测试的正常手法（16 个文件都这样），
-    # 也算进来等于把上限改成没有意义的大数；护栏要守的是「新用例别去 import 私有函数」。
     return False
 
 
@@ -72,16 +69,12 @@ def main() -> int:
     if args.k:
         matched = [f for f in files if args.k in f.stem]
         if not matched:
-            # `-k` 打错一个字，过滤后为空：静默放行等于让守门人以为「跑过了全绿」，
-            # 实际一个用例都没跑。这里必须报错退出，并把他打的子串和现有用例都列出来。
             print(f"  -k {args.k!r} 没有匹配的用例。现有：")
             for f in files:
                 print(f"    {f.stem}")
             return 2
         files = matched
     if not files:
-        # 一个用例都没有不等于「全绿」：以前这里 return 0，别人的 clone（tests/ 不入库）
-        # 上 `make test` 也算过关，等于没有任何守护。宁可红。
         print(f"  {test_dir} 里没有 test_*.py：这不是通过，是一个用例都没跑")
         return 2
 

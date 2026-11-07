@@ -188,7 +188,6 @@ def _connector_rpc(rid, params, action):
     if error:
         return error
     if request.owner.type == "account":
-        # 连接器只按会话管理：本产品没有账号体系，也就没有「账号名下的连接器页」。
         return _connector_rpc_error(rid, 4031, ConnectorErrorReason.connectors_unavailable, "连接器只能按会话管理。")
 
     runtime_token = _current_runtime_session_record.set(session)

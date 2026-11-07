@@ -68,7 +68,6 @@ STATUS_DEAD = "dead"
 DEAD_MANUAL_PRUNE_TTL_SECONDS = 24 * 60 * 60
 
 AUTH_TYPE_API_KEY = "api_key"
-#: 插件 provider 的 OAuth 凭据标记：token 由插件的 auth_handler 取得，池只负责存取与轮换
 AUTH_TYPE_OAUTH = "oauth"
 
 SOURCE_MANUAL = "manual"

@@ -43,10 +43,7 @@ CODICON_PATHS: dict[str, str] = {
     ),
 }
 
-# ---- 后缀 → 语言 → 图标 ----
 #
-# 只有认得出来的后缀才换图标，其余一律 `code`：宁可是通用的尖括号，
-# 也不要让改一个 .log 和改一个 .json 长得一样。
 EXT_LANGUAGE: dict[str, str] = {
     "bash": "bash",
     "cfg": "ini",

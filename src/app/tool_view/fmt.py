@@ -44,8 +44,6 @@ def compact_preview(value: Any, max_chars: int = 72) -> str:
         parsed = parse_maybe_object(value)
         raw = parsed.get('context')
         if not isinstance(raw, str):
-            # 多数结果字典没有 `context`（`{"stdout": …}` / `{"message": …}`）：
-            # 以前这里落到空串，副标题等于没有，词条只剩工具名。
             for key in ('message', 'text', 'summary', 'stdout', 'stderr', 'output', 'error'):
                 candidate = parsed.get(key)
                 if isinstance(candidate, str) and candidate.strip():
@@ -57,7 +55,6 @@ def compact_preview(value: Any, max_chars: int = 72) -> str:
             raw = ''
         else:
             try:
-                # JSON.stringify 的紧凑形态：无空格分隔符、非 ASCII 原样输出
                 raw = json.dumps(raw, separators=(',', ':'), ensure_ascii=False)
             except (TypeError, ValueError):
                 raw = str(raw)
@@ -97,9 +94,6 @@ def parse_maybe_object(value: Any) -> dict:
     return parsed if is_record(parsed) else {}
 
 
-# 被拒的调用若是 agent 自己的重试循环（大小上限拒绝的技能写入、过期的 old_string），
-# 不算用户需要处理的失败——除了回滚也失败的批次，那会留下半成品改动。
-# 镜像 agent/display.py::is_neutral_failure。
 NEUTRAL_FAILURE_TOOLS = frozenset(['skill_manage'])
 
 
@@ -107,7 +101,6 @@ def is_neutral_failure(tool_name: str | None, result: Any) -> bool:
     if (tool_name or '') not in NEUTRAL_FAILURE_TOOLS:
         return False
 
-    # 只看错误文本：被拒的 patch 也会带回技能文件的 file_preview，其正文可能提到该标记
     error = parse_maybe_object(result).get('error')
     if error is None:
         error = result if isinstance(result, str) else ''
@@ -190,13 +183,11 @@ def format_duration_seconds(seconds: Any) -> str:
         return ''
 
     if seconds < 1:
-        # Math.round：.5 向上
         ms = max(1, math.floor(seconds * 1000 + 0.5))
 
         return f'{ms}ms'
 
     if seconds < 60:
-        # toFixed(0) 等价于 Math.round；toFixed(1) 保留一位小数
         if seconds >= 10:
             return f'{math.floor(seconds + 0.5)}s'
 

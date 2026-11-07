@@ -224,10 +224,6 @@ def detect_hardline_command(command: str) -> tuple:
     return (False, None)
 
 
-# ---- 我们的口径：任何删除都要先问 -----------------------------------------------------------
-# 只把「破坏性删除」当危险（rm -rf、/s /q、-Recurse -Force），裸 `rm x` / `rmdir x` /
-# `unlink x` 被判成轻量清理直接放过。这个产品里删除不可逆，一律停下来等用户点。
-# 两条理由字符串要和界面里的中文标签对应（见 approval_dialog.py 的 _FRIENDLY）。
 _DEL_CMDPOS = _CMDPOS
 _DEL_SCRIPT_CALL = (
     r'(?:shutil\s*\.\s*rmtree\s*\(|os\s*\.\s*(?:remove|unlink|rmdir|removedirs)\s*\(|'
@@ -237,11 +233,9 @@ _DEL_SCRIPT_CALL = (
 
 # ---- Dangerous command patterns -----------------------------------------------------------
 DANGEROUS_PATTERNS = [
-    # 删除：命令位置上的 rm / rmdir / rd / del / erase / unlink，不管有没有 -rf
     (_DEL_CMDPOS + r'(?:rm|rmdir|rd|del|erase|unlink)\b', "delete file or folder"),
     (_DEL_CMDPOS + r'git\s+(?:-\S+\s+)*rm\b', "delete file or folder"),
     (_DEL_CMDPOS + r'(?:remove-item|remove-itemproperty|clear-content)\b', "delete file or folder"),
-    # 删除：代码里直接删（脚本 / python -c），带括号才算调用，避免 grep 到词就拦
     (_DEL_SCRIPT_CALL, "delete via script"),
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
     (r'\brm\s+-[^\s]*r', "recursive delete"),

@@ -370,7 +370,6 @@ def check_codex_binary(
         proc = subprocess.run(
             [codex_bin, "--version"], capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=10, stdin=subprocess.DEVNULL,
-            # 桌面端引擎没有控制台：不隐藏就会给探测子进程新开一个黑窗口（闪一下）
             creationflags=_windows_hide_flags(),
             check=False,
         )

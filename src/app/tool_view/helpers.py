@@ -11,7 +11,6 @@ import re
 from typing import Any, Iterable, Sequence
 
 # --------------------------------------------------------------------------
-# JS 语义小垫片（只用于本文件内部，不导出）
 # --------------------------------------------------------------------------
 
 _CAMEL_BOUNDARY_RE = re.compile(r'(?<!^)(?=[A-Z])')
@@ -83,7 +82,6 @@ def _js_string(value: Any) -> str:
 
 
 # --------------------------------------------------------------------------
-# 文本
 # --------------------------------------------------------------------------
 
 
@@ -112,7 +110,6 @@ def first_string_field(record: dict, keys: Iterable[str]) -> str:
 
 
 # --------------------------------------------------------------------------
-# 路径比较
 # --------------------------------------------------------------------------
 
 _WINDOWS_ABSOLUTE_PATH_RE = re.compile(r'^(?:[A-Za-z]:[\\/]|\\\\)')
@@ -123,7 +120,6 @@ def is_windows_absolute_path(path: str) -> bool:
 
 
 # --------------------------------------------------------------------------
-# 媒体
 # --------------------------------------------------------------------------
 
 MEDIA_BY_EXT: dict[str, dict[str, str]] = {
@@ -166,7 +162,6 @@ def is_file_media_path(path: str) -> bool:
 
 
 # --------------------------------------------------------------------------
-# 命令摘要
 # --------------------------------------------------------------------------
 
 SILENT_HEADS = frozenset(
@@ -218,7 +213,6 @@ def _split_compound_command(value: str) -> list[str]:
         if op:
             segments.append(buf)
             buf = ''
-            # JS: i += op.length - 1，随后 for 的 i += 1
             i += len(op)
             continue
 
@@ -351,7 +345,6 @@ def summarize_shell_command(raw: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# 外链
 # --------------------------------------------------------------------------
 
 _DOMAIN_RE = re.compile(
@@ -369,7 +362,6 @@ def normalize_external_url(value: str) -> str:
 
 
 # --------------------------------------------------------------------------
-# 结果元数据
 # --------------------------------------------------------------------------
 
 
@@ -386,7 +378,6 @@ def tool_result_record(source: Any) -> dict:
 
     metadata = source_field(source, 'toolResultMetadata')
 
-    # 权威结果字段覆盖可失败的展示提示
     merged = dict(metadata) if isinstance(metadata, dict) else {}
     merged.update(record)
     return merged
@@ -403,7 +394,6 @@ def envelope_error_text(metadata: Any) -> str:
 
 
 # --------------------------------------------------------------------------
-# 结果摘要
 # --------------------------------------------------------------------------
 
 WRAPPER_KEYS = ('data', 'result', 'output', 'response', 'payload')
@@ -425,7 +415,6 @@ PRIORITY_KEYS = (
 )
 
 ERROR_KEYS = ('error', 'errors', 'failure', 'exception')
-# 刻意不含 'stderr'：很多 CLI 在 stderr 上打信息（npm 进度、git hint:），不是错误
 ERROR_MSG_KEYS = ('message', 'reason', 'detail')
 NON_ERROR_TEXT = frozenset(
     ['', '0', 'false', 'none', 'null', 'nil', 'ok', 'success', 'n/a', 'na']
@@ -803,7 +792,6 @@ def _find_nested_error(value: Any, depth: int, seen: set, failed: bool = False) 
         if direct:
             return _clip_block(direct, 700, 12)
 
-    # 返回的数据与 stdout 也可能描述失败，但只在信封已经声明失败时才展开
     failure_declared = failed or _has_error_signal(record)
     nested_keys = (
         [*ERROR_KEYS, *WRAPPER_KEYS, 'details'] if failure_declared else list(ERROR_KEYS)
@@ -827,7 +815,6 @@ def extract_tool_error_message(value: Any) -> str:
 
 
 # --------------------------------------------------------------------------
-# 渲染分类
 # --------------------------------------------------------------------------
 
 FILE_EDIT_TOOL_NAMES = frozenset(['edit_file', 'patch', 'write_file'])
@@ -842,7 +829,6 @@ CARD_TOOL_NAMES = (
     'setup_beat',
 )
 
-# 运行分片器给被判定为卡片的 manage_connections part 用的名字
 CONNECTION_CARD_KEY = 'manage_connections:card'
 
 SILENT_TOOL_NAMES = frozenset(['react_to_message', 'todo', 'todo_list'])
@@ -881,7 +867,6 @@ _CONTROL_RE = re.compile(r'[\x00-\x08\x0B\x0C\x0D\x0E-\x1A\x1C-\x1F\x7F]')
 
 
 def strip_ansi(value: str) -> str:
-    # 顺序：OSC → 字符串 → 残缺 CSI → CSI → 残缺 CSI → 非 CSI ESC → 游离 ESC → 控制字节
     value = _ANSI_OSC_RE.sub('', value)
     value = _ANSI_STRING_RE.sub('', value)
     value = _ANSI_INCOMPLETE_CSI_RE.sub('', value)

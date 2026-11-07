@@ -17,7 +17,6 @@ from pathlib import Path
 import numpy as np
 from PySide6 import QtCore, QtGui, QtMultimedia
 
-# greenness ≤ LOW 判为前景（不透明），≥ HIGH 判为绿幕（全透明），中间线性过渡去锯齿
 KEY_LOW = 10.0
 KEY_HIGH = 60.0
 
@@ -36,7 +35,6 @@ def key_bgra(buffer: np.ndarray, *, low: float = KEY_LOW, high: float = KEY_HIGH
     ramp = (greenness - low) * (255.0 / (high - low))
     buffer[..., 3] = (255.0 - np.clip(ramp, 0.0, 255.0)).astype(np.uint8)
 
-    # 去溢色：绿色通道不许明显超过 max(R, B)，否则半透明边缘会泛绿
     buffer[..., 1] = np.minimum(green, np.maximum(red, blue)).astype(np.uint8)
     return buffer
 
@@ -74,7 +72,7 @@ class IdleVideoPlayer(QtCore.QObject):
         self._high = high
         self._frames = 0
         self._key_ms: list[float] = []
-        self._target: QtCore.QSize | None = None  # 先缩到这个尺寸再抠像：像素量按窗口面积算，比整幅抠快一个数量级
+        self._target: QtCore.QSize | None = None
 
         self._sink = QtMultimedia.QVideoSink(self)
         self._sink.videoFrameChanged.connect(self._on_frame)
@@ -82,11 +80,10 @@ class IdleVideoPlayer(QtCore.QObject):
         self._player = QtMultimedia.QMediaPlayer(self)
         self._player.setVideoSink(self._sink)
         self._player.setLoops(QtMultimedia.QMediaPlayer.Loops.Infinite)
-        self._player.setAudioOutput(None)  # 待机视频没有音轨，别占音频设备
+        self._player.setAudioOutput(None)
         self._player.errorOccurred.connect(self._on_error)
         self._player.mediaStatusChanged.connect(self._on_status)
 
-    # ---- 控制 ----
 
     def set_target_size(self, size: QtCore.QSize) -> None:
         """显示尺寸：帧先缩到这里再抠像，抠像和绘制都按窗口大小算，快得多。"""
@@ -120,7 +117,6 @@ class IdleVideoPlayer(QtCore.QObject):
             "median_key_ms": round(statistics.median(recent), 2) if recent else 0.0,
         }
 
-    # ---- 内部 ----
 
     def _on_error(self, error, message: str) -> None:  # noqa: ANN001
         self.failed.emit(f"播放失败（{error}）：{message}")
@@ -141,7 +137,7 @@ class IdleVideoPlayer(QtCore.QObject):
         started = time.perf_counter()
         keyed = key_image(image, low=self._low, high=self._high)
         self._key_ms.append((time.perf_counter() - started) * 1000.0)
-        if len(self._key_ms) > 600:  # 只留最近 10 秒，别无限长
+        if len(self._key_ms) > 600:
             del self._key_ms[:-600]
         self._frames += 1
         self.frame_ready.emit(keyed)

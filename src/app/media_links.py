@@ -17,7 +17,6 @@ import os
 import re
 from pathlib import Path
 
-# 行首可选的项目符号 / 反引号 / 空格，然后是 MEDIA:，剩下整行都是路径（去掉包裹的引号、反引号）
 _MEDIA_LINE = re.compile(r"^\s*(?:[-*+]\s*)?`?(?:media:\s*)(?P<path>.+?)`?\s*$", re.IGNORECASE)
 _LEAD = re.compile(r"^\s*(?:[-*+]\s*)?`?(?P<rest>.*)$", re.IGNORECASE)
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tif", ".tiff"})
@@ -45,7 +44,7 @@ def might_be_media(fragment: str) -> bool:
     head = _LEAD.match(fragment or "").group("rest") if _LEAD.match(fragment or "") else fragment
     head = head.strip().strip("`\"'<").lower()
     if not head:
-        return True  # 纯空白：等下一块
+        return True
     keyword = "media:"
     return keyword.startswith(head) or head.startswith(keyword)
 
@@ -100,14 +99,10 @@ def media_link_html(raw: str, roots: tuple[Path, ...] | list[Path] = ()) -> str:
     path = resolve(raw, roots)
     name = path.name or str(path)
     if path.exists() and path.is_file():
-        # as_uri() 只认绝对路径：模型给相对路径、而当前目录下正好有同名文件时，不 resolve 会抛
-        # ValueError，把整段回复的插入打断在这一行。
         path = path.resolve()
         try:
             size = human_size(path.stat().st_size)
         except OSError:
-            # exists() 与 stat() 之间文件可能被删/改名（临时目录、下载目录里很常见）：
-            # 拿不到大小就当没找到，别让一个 OSError 把这条回复后面的正文全截掉。
             label = html.escape(f"📎 {name}（找不到文件）")
             return f'<span style="color:#ff9a9a;">{label}</span>'
         url = html.escape(path.as_uri(), quote=True)

@@ -22,23 +22,18 @@ from settings import ConfigError, RESOLVER
 
 PREFS_PATH = Path("data/settings/avatar.json")
 
-# 界面上的厂商列表：[(id, 名字, .env 变量名)]
 PROVIDERS = env_keys.providers("avatar")
 
-# 数字人模型：界面上给个下拉，值只有这两个（官方组件版 `model` 枚举就这么多）
 MODELS = (
     ("vidu-s2", "vidu-s2（清晰，888×1184）"),
     ("vidu-s1", "vidu-s1（稳定，624×832）"),
 )
 
 _TEMPLATE = {"provider": "vidu", "model": "vidu-s2", "image": ""}
-# 形象图不进必需键：老配置没有这一项照样能读，空串 = 用内置那张
 _REQUIRED = ("provider", "model")
 
-# 用户选的图复制到这里再引用：不指向原始位置，用户删掉原图也不会丢形象
 IMAGE_DIR = Path("data/assets")
 
-# 用户没选自己的图时用的那张（唯一来源，别在别处再写一遍路径）
 DEFAULT_IMAGE = RESOLVER.resolve(Path("assets/greenscreen/noesia_greenscreen.png"))
 
 
@@ -89,7 +84,6 @@ def save(provider: str | None = None, model: str | None = None) -> dict:
     return data
 
 
-# ---- 形象图：用户换的那张，以及它在云端的编号 ----
 
 
 def image_setting() -> str:

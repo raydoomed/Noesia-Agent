@@ -1635,9 +1635,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         reader = session._reader_thread
         if (session._pty is None and reader is not None and reader.is_alive()
                 and reader is not threading.current_thread()):
-            # 读线程还阻塞在 ``read()`` 上时，从别的线程 ``close()`` 同一个缓冲流会等它的内部锁：
-            # 后代替父进程握着 stdout 管道时（``bash -c 'sleep 300 & wait'``），这条 read 永远不返回，
-            # close() 就一起挂死——kill 一卡几分钟，界面上什么都看不到。流留给读线程自己收。
             return
         proc = session.process
         if proc is not None:

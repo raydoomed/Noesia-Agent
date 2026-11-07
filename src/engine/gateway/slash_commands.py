@@ -1331,7 +1331,7 @@ class GatewaySlashCommandsMixin(
         if is_managed():
             return f"✗ {format_managed_message(t('gateway.update.managed_action'))}"
 
-        from noesia_constants import repo_root  # 项目根：.git 与安装标识都在这一层，不在 src/engine
+        from noesia_constants import repo_root
 
         project_root = repo_root()
 

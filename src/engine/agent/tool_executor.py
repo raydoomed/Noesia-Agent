@@ -1123,8 +1123,6 @@ def _commit_tool_result(
     observe_tool_outcome(agent, function_name, is_error)
     if not (blocked or is_error):
         function_result = observe_onboarding_result(agent, function_name, function_args, function_result)
-    # 落库/上屏/打日志之前先脱敏：工具读到的明文凭证不能进上下文、存档和日志。
-    # 放在 guardrail 观察之后、所有下游消费者之前，是唯一覆盖全部路径的位置。
     function_result = _redact_tool_payload(function_result)
     if observed:
         if not blocked:

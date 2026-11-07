@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import re
 
-# CSI = ESC '[' 参数 终止字节；只有终止字节是 'm' 的才带颜色语义
 CSI_RE = re.compile(r"\x1b\[([\d;]*)([\x40-\x7e])")
-# OSC / SS3 等其它转义序列，整条丢掉
 OTHER_ESCAPE_RE = re.compile(r"\x1b[@-Z\\-_]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 FG_BY_CODE = {
@@ -83,16 +81,12 @@ def parse_ansi(text: str) -> list[tuple[str, bool, str | None]]:
                 elif code in FG_BY_CODE:
                     fg = FG_BY_CODE[code]
                 elif code in (38, 48, 58):
-                    # 前景/背景/下划线色：256 色或真彩色都带尾部参数，一律跳过、不做渲染。
-                    # 只跳 38 的话，`48;2;0;0;31` 里的 `31` 会被当成前景红，整段染错。
                     nxt = codes[index + 1] if index + 1 < len(codes) else None
                     if nxt == 5 and index + 2 < len(codes):
                         index += 2  # 38;5;n
                     elif nxt == 2 and index + 4 < len(codes):
                         index += 4  # 38;2;r;g;b
                     else:
-                        # 认不出来的扩展色：这一段剩下的一律不当颜色读（以前会一个个
-                        # 当成普通色码，`38;9;31` 这种就把后面的 31 当成了前景红）
                         index = len(codes) - 1
                 index += 1
 

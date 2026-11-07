@@ -304,7 +304,6 @@ def _discard_desktop_staging(staging_dir: Path) -> None:
 # Noesia.exe on the end user's machine and used to verify only that the file EXISTS before declaring
 # success. A corrupt cached Electron zip whose extraction produced a truncated electron.exe, an interrupted
 # rcedit resource rewrite, a disk-full pack, or a wrong-arch unpacked tree therefore shipped a broken binary
-# that Windows refuses to load ("This app can't run on your computer" / 此应用无法在你的电脑上运行). These helpers parse
 # the PE header — no signature infrastructure required — so a structurally broken or wrong-architecture
 # Noesia.exe is caught BEFORE the updater replaces the working app, and the previous build can be restored
 # from the .bak tree the packaging step preserves.

@@ -28,7 +28,6 @@ def looks_like_path(value: str) -> bool:
     )
 
 
-# 显式 http(s) 的 URL；遇到空白、引号、尖括号、右括号、右方括号即止
 URL_PATTERN = re.compile(r"""https?://[^\s'"<>)\]]+""", re.IGNORECASE)
 
 

@@ -56,7 +56,7 @@ class ConfigGetResult(Result):
     config: dict[str, JsonValue] | None = None
     prompt: str | None = None
     mtime: float | None = None
-    wire: str | None = None  # 这条路实际会发的思考档（菜单显示用，可能比用户选的低）
+    wire: str | None = None
     mcp_rev: str | None = None
 
 
@@ -97,8 +97,6 @@ class ConfigSetResult(Result):
     branch: str | None = None
     history_reset: bool | None = None
     info: SessionLiveInfo | None = None
-    # `reasoning` 的 setter 会把「这条路实际会发哪一档」一起回给界面（选了 high、路由只发
-    # medium 时要说明一句）。这里原来漏了这个字段，结果整条回包被判违约、界面当成设置失败。
     wire: str | None = None
 
 

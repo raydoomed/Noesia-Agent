@@ -74,12 +74,12 @@ def decide(attached, mine: int, klass: str, mode: str) -> str:
     if mode == "never":
         return "leave"
     if not attached:
-        return "leave"  # 没有控制台（从资源管理器/服务里起），没什么可关
+        return "leave"
     if attached == [mine]:
-        return "detach"  # 这个窗口是给自己开的
+        return "detach"
     if mode == "always" and klass == CONSOLE_WINDOW_CLASS:
-        return "close"  # 老式控制台：关窗口会把里面的 cmd 一起带走，用户要的就是这个
-    return "leave"  # 共用窗口（尤其是 Windows Terminal 的标签页）不能替别人关
+        return "close"
+    return "leave"
 
 
 def close_console_window(mode: str = "own", mine: int | None = None) -> str:
@@ -94,7 +94,7 @@ def close_console_window(mode: str = "own", mine: int | None = None) -> str:
     try:
         ctypes, user32, kernel32 = _load_user32()
         if action == "detach":
-            kernel32.FreeConsole()  # 最后一个使用者撒手，conhost 随之收掉窗口
+            kernel32.FreeConsole()
             return "detach"
         hwnd = user32.GetConsoleWindow()
         if not hwnd:

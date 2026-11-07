@@ -12,19 +12,15 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-RESIZE_MARGIN = 12  # 距边缘多少像素内按下算缩放（再小就不好点）
-# 最小宽 180（按 1.333 的比例约 240 高）：放在屏幕角落当「小图标」用的大小。
-# 想看清脸就拖大，下限只负责「别让窗口小到点不着」。
+RESIZE_MARGIN = 12
 MIN_WIDTH = 180
-# 默认宽 360（按 1.333 的比例是 480 高）：形象原图 1344×1792，缩到这个大小放在桌面上
-# 不挡东西，又不至于小到看不清。
 DEFAULT_WIDTH = 360
 MAX_WIDTH = 1600
 
 
 def edges_at(pos: QtCore.QPoint, size: QtCore.QSize, margin: int = RESIZE_MARGIN) -> QtCore.Qt.Edges:
     """按下位置命中的边/角；窗口正中返回空（表示应当拖动而不是缩放）。"""
-    edges = QtCore.Qt.Edge(0)  # 空标志位（Qt 6 的 PySide6 里 Edge(0) 比 Edges() 可移植）
+    edges = QtCore.Qt.Edge(0)
     if pos.x() <= margin:
         edges |= QtCore.Qt.Edge.LeftEdge
     elif pos.x() >= size.width() - margin:
@@ -101,7 +97,6 @@ def fit_width(
     height = clamped * aspect
     if max_height and height > max_height:
         height = float(max_height)
-        # 反推出的宽度不能又掉到最小值以下：窗口矮的时候会缩成一条比 MIN_WIDTH 还窄的图
         clamped = max(float(min_width), height / aspect)
     return QtCore.QSize(max(1, round(clamped)), max(1, round(height)))
 

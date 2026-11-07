@@ -22,11 +22,9 @@ HOST = "api.vidu.cn"
 HTTP = f"https://{HOST}"
 WS = f"wss://{HOST}"
 SAMPLE_RATE = 24000
-FRAME_SECONDS = 0.02          # 20ms 一帧 PCM
-# 数字人模型不在这里定：`data/settings/avatar.json` 的 model 才是唯一来源
-# （s2 输出 888×1184、嘴部和牙齿比 s1 的 624×832 清楚；s1 官方标"稳定性好"）
-CONN_ID = "noesia-avatar"     # Vidu 侧认这条连接的名字
-FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_SECONDS)  # 20ms = 960 字节
+FRAME_SECONDS = 0.02
+CONN_ID = "noesia-avatar"
+FRAME_BYTES = int(SAMPLE_RATE * 2 * FRAME_SECONDS)
 
 
 def read_token_or_empty() -> str:
@@ -114,7 +112,7 @@ def upload_avatar_asset(token: str, image_path: pathlib.Path) -> dict:
     for _ in range(2):
         if resp.status_code != 429:
             break
-        time.sleep(5.0)   # 撞限流说明刚传过，等平台把计数放下来再试
+        time.sleep(5.0)
         resp = _post()
     if resp.status_code in (401, 403):
         raise RuntimeError(
@@ -189,18 +187,16 @@ class ViduSession:
         self._ws = None
         self._secret = ""
         self._seq = 100
-        self._send_lock = threading.Lock()   # 定速推帧线程和主线程都会发信令，串着来
-        self._closed = ""            # 非空表示连接已经没了（服务端断开或本地关掉）
-        self.on_event = None         # 服务端消息/断线交给外面记日志，别静默
-        self.on_error = None         # type=103 错误回执：(source, code, 人话)，交给外面提示人
+        self._send_lock = threading.Lock()
+        self._closed = ""
+        self.on_event = None
+        self.on_error = None
 
     def create(self, avatar_id: str = "") -> dict:
         """建会话。`avatar_id` 非空就只传编号，否则现传整张图（两者二选一）。"""
         payload = {
             "model": self.model,
             "managed_rtc": {"enable_recording": False},
-            # 动作匹配：整块省略 = 关。不传这个的话 type=9 发上去没人用，
-            # 数字人只会跟着音频动嘴。library_id "0" = 平台默认库。
             "action": {"enabled": True, "library_id": "0"},
         }
         if avatar_id:
@@ -386,9 +382,6 @@ class ViduSession:
                         continue
                     kind = msg.get("type")
                     if kind == 103:
-                        # 建会话阶段被拒（资源没开通、并发超限、参数不对）：原因就在这一帧里。
-                        # 以前这一帧直接丢掉，用户等满 20 秒只拿到「conn_init 未就绪」，
-                        # 真正的原因码和翻好的人话永远到不了眼前。
                         error = (msg.get("payload") or {}).get("error") or {}
                         raise RuntimeError(
                             describe_error(
@@ -400,8 +393,6 @@ class ViduSession:
                     if kind == 6:
                         raise RuntimeError("服务端在建会话阶段强制挂断了")
                     if kind == 2:
-                        # 缺键就 `KeyError` 冒到界面上：payload 里没有 ack 说明协议不对，
-                        # 宁可报错也别假装收到了一个成功回执。
                         ack = (msg.get("payload") or {}).get("conn_init_ack") or {}
                         if ack.get("success"):
                             threading.Thread(target=self._recv_loop, daemon=True,

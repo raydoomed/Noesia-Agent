@@ -24,7 +24,6 @@ from app.tool_view.types import (
     ToolView,
 )
 
-# 同伴模块（fmt / targets / helpers）此处直接复用。
 from app.tool_view.fmt import (
     browser_exec_step_label,
     compact_preview,
@@ -175,12 +174,7 @@ def read_file_display_target(args: dict[str, Any], result: dict[str, Any]) -> st
     return " ".join(part for part in [file_edit_basename(path), line_label] if part)
 
 
-# 真实命令：优先真实参数，而不是后端给的展示 preview。
-# `context` 是 tool.start 阶段网关发来的**摘要**（"sleep 70 + 2 commands"），
-# 当临时占位可以，但 `$` 转录里必须显示真正执行的东西。
 def shell_command(args: dict[str, Any]) -> str:
-    # 命令原文的**唯一出口**：工具行、展开正文、`$` 转录都从这里取，所以在这一处打码，
-    # 三处一起生效。以前审批卡打了码、工具行里还是明文，同一条命令两个样子。
     return redact(
         first_string_field(args, ["command", "code"])
         or first_string_field(args, ["context", "preview"])
@@ -198,7 +192,6 @@ TOOL_META: dict[str, ToolMetaSpec] = {
     "browser_take_screenshot": ToolMetaSpec(icon="file-media", tone="browser"),
     "browser_type": ToolMetaSpec(icon="globe", tone="browser"),
     "clarify": ToolMetaSpec(icon="question", tone="agent"),
-    # 时钟是定时任务（cron）的标记。跑没跑看颜色和标题，别的工具别借这个钟
     "cronjob": ToolMetaSpec(icon="watch", tone="agent"),
     "cronjob_manage": ToolMetaSpec(icon="watch", tone="agent"),
     "edit_file": ToolMetaSpec(icon="edit", tone="file"),
@@ -210,7 +203,6 @@ TOOL_META: dict[str, ToolMetaSpec] = {
     "read_file": ToolMetaSpec(icon="file", tone="file"),
     "search_files": ToolMetaSpec(icon="search", tone="file"),
     "session_search_recall": ToolMetaSpec(icon="search", tone="agent"),
-    # 技能类：技能列表 / 读技能文件 / 改技能，各给自己的图标（以前没有，全落到扳手上）。
     "skill_manage": ToolMetaSpec(icon="edit", tone="file"),
     "skill_view": ToolMetaSpec(icon="file", tone="file"),
     "skills_list": ToolMetaSpec(icon="files", tone="file"),
@@ -221,8 +213,6 @@ TOOL_META: dict[str, ToolMetaSpec] = {
     "web_extract": ToolMetaSpec(icon="globe", tone="web"),
     "web_search": ToolMetaSpec(icon="search", tone="web"),
     "write_file": ToolMetaSpec(icon="edit", tone="file"),
-    # 引擎里注册、聊天里会露面的其余工具。每个都给它一个图标，别让它们落到扳手上——
-    # 扳手是「这个工具我认不得」的意思，不该用在天天见的工具上。
     "annotate_preview": ToolMetaSpec(icon="edit", tone="file"),
     "close_terminal": ToolMetaSpec(icon="terminal", tone="terminal"),
     "computer_use": ToolMetaSpec(icon="tools", tone="agent"),
@@ -264,7 +254,6 @@ def is_tool_title_key(name: str) -> bool:
 
 
 INLINE_CODE_SPLIT_RE = re.compile(r"(`[^`\n]+`)")
-# 正则要同时认 Unicode 字母与数字：Python 的 re 不支持 \p{L}/\p{N}，用 Unicode \w 近似。
 CITATION_MARKER_RE = re.compile(r"(?<=[\w)\]\.,!?:;\"'”’])\[[0-9]+(?:\s*,\s*[0-9]+)*\](?!\()")
 BACKTICK_NOISE_RE = re.compile(r"`{3,}")
 
@@ -478,7 +467,6 @@ def dynamic_count_noun_from_key(key: str, fallback_noun: str) -> str:
     stripped = re.sub(r"^num_", "", stripped)
     stripped = re.sub(r"^total_", "", stripped)
     if stripped in ("", "total", "num"):
-        # `total_count` 只剩 `total`：它不是名词，拼出来是「7 total(s)」，交回通用量词
         return fallback_noun
 
     return singularize_noun(stripped) or fallback_noun
@@ -554,8 +542,6 @@ def tool_result_count(
         if hits:
             return count_metric(len(hits), "result")
 
-    # memory 成功回包把实时总数放在 `entry_count` —— 名词保持 entry/entries，
-    # 不要走通用的 `*_count` 分支。
     if part.tool_name == "memory":
         entry_total = count_from_unknown(result_record.get("entry_count"))
 
@@ -684,7 +670,6 @@ def collect_result_items(value: Any) -> list[Any]:
 
     payload = unwrap_tool_payload(record)
 
-    # 除了判同一对象，还比值相等，防止实现返回副本时自递归。
     return [] if payload is record or payload == record else collect_result_items(payload)
 
 
@@ -735,11 +720,6 @@ def tool_error_text(part: ToolPart, result: dict[str, Any]) -> str:
     if isinstance(status, str) and re.fullmatch(r"(error|failed|failure|fatal|exception)", status.strip(), re.I | re.A):
         return first_string_field(result, ["message", "reason", "detail"]) or f'Tool returned status "{status}".'
 
-    # 光有非零退出码是弱失败信号：grep 无匹配返回 1、diff 有差异返回 1、
-    # 管道命令拿到的是最后一段的码 —— 这些通常都产出了有用输出，不算失败。
-    # 只有完全没有输出可展示时才算错误；否则照常渲染（不变红）。
-    # `output_preview` 算输出：后台进程轮询把文本放在这个字段里，
-    # 漏掉它会把健康的 `process` 行涂红。
     exit_code = number_value(result.get("exit_code"))
 
     if exit_code is not None and exit_code != 0:
@@ -757,12 +737,9 @@ def tool_status(part: ToolPart, result_record: dict[str, Any]) -> ToolStatus:
     if part.result is None and part.completed_at is None:
         return "running"
 
-    # 用户主动停掉的调用本来就没有结果，不要告警。
     if part.result is None and not part.is_error:
         return "notice" if part.interrupted else "warning"
 
-    # 明确的成功优先于 isError / 嵌套错误启发式。memory 写入落地时回
-    # `{ success: true }`，外层过期的 isError 信封不能让真实的保存变琥珀色。
     if result_record.get("success") is True or result_record.get("ok") is True:
         return "success"
 
@@ -771,8 +748,6 @@ def tool_status(part: ToolPart, result_record: dict[str, Any]) -> ToolStatus:
     if not error:
         return "success"
 
-    # 猜的读取路径不存在属于常规探索，不是工具坏了：解释保留，但不给破坏性告警。
-    # 写入和权限失败刻意不走这条路。
     if part.tool_name == "read_file" and re.match(r"File not found:", error, re.I):
         return "notice"
 
@@ -782,8 +757,6 @@ def tool_status(part: ToolPart, result_record: dict[str, Any]) -> ToolStatus:
     if is_neutral_failure(part.tool_name, part.result):
         return "notice"
 
-    # 被拒的 memory 写入是预算谈判而非失败：存储拒绝超限批次，agent 会拆小重试。
-    # 柔和警告 —— 绝不和日常记账并排的破坏性红色。
     return "warning" if part.tool_name == "memory" else "error"
 
 
@@ -791,8 +764,6 @@ def tool_status(part: ToolPart, result_record: dict[str, Any]) -> ToolStatus:
 
 
 def duration_label(result_record: dict[str, Any]) -> str | None:
-    # 事件字段叫 `duration_s`，引擎自己报的是 `duration_seconds`；两个都没有时不能落进
-    # `number_value`——它照 JS 的 `Number(null)` 把缺失值算成 0，于是每一行都印成 `1ms`。
     raw = result_record.get("duration_s")
     if raw is None:
         raw = result_record.get("duration_seconds")
@@ -826,7 +797,7 @@ def tool_preview_target(tool_name: str, args: dict[str, Any], result: dict[str, 
         if isinstance(raw_calls, list):
             calls = raw_calls
         elif isinstance(raw_calls, dict):
-            calls = [raw_calls]  # 引擎偶尔只给一条：它不是列表，但内容一样
+            calls = [raw_calls]
         else:
             calls = [args]
         call = parse_maybe_object(calls[0]) if calls else {}
@@ -834,7 +805,6 @@ def tool_preview_target(tool_name: str, args: dict[str, Any], result: dict[str, 
         if len(calls) == 1 and isinstance(call.get("name"), str):
             return tool_preview_target(call["name"], parse_maybe_object(call.get("arguments")), result)
 
-    # 读一个已存在的文件不算产出交付物。
     if tool_name in NON_DELIVERABLE_TOOLS or (tool_name == "desktop_preview" and args.get("action") != "open"):
         return ""
 
@@ -869,8 +839,6 @@ def tool_image_url(args: dict[str, Any], result: dict[str, Any]) -> str:
     if not candidate:
         return ""
 
-    # 文件系统图片由 activity 渲染层经鉴权媒体管线解析后才进 <img>。
-    # vision_analyze 尤其依赖这点 —— 它的输入常在本机或远端网关。
     is_data_image = candidate.lower().startswith("data:image/")
     is_remote_image = re.match(r"https?://", candidate, re.I) is not None and re.search(
         r"\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)", candidate, re.I
@@ -936,7 +904,6 @@ def inline_diff_from_result(result: Any) -> str:
     return ""
 
 
-# 只有存在具体内容时才回落成字符串 —— 不透明条目/字段的数量是噪音，不是信号。
 def minimal_value_summary(value: Any) -> str:
     if value is None:
         return ""
@@ -986,7 +953,6 @@ def cron_scalar(value: Any) -> str:
 
 
 # ---- formatCronTime ----
-# 用 ISO 解析 + en-US 输出（"Oct 25, 09:05 AM"）。
 
 
 def format_cron_time(iso: str) -> str:
@@ -1157,8 +1123,6 @@ def tool_subtitle(part: ToolPart, args_record: dict[str, Any], result_record: di
         return hostname_of(url) if url else "Fetched webpage"
 
     if tool_name == "memory":
-        # 原始回包只是记账，用户不需要：用量计数、提醒模型别重试的说明、
-        # 完整 operations 数组。只有那行人话值得显示。
         return first_string_field(result_record, ["message", "error"])
 
     if tool_name == "cronjob":
@@ -1209,7 +1173,6 @@ def file_search_detail(part: ToolPart, result_record: dict[str, Any], limit: int
             elif head or text:
                 lines.append((head or text).rstrip())
 
-    # 命中太多时引擎自己会改发一段按路径归好的文本（matches_text），原样用，别再拼。
     dense = first_string_field(result_record, ["matches_text"])
     if dense and not lines:
         lines.extend(line.rstrip() for line in dense.splitlines())
@@ -1229,8 +1192,6 @@ def file_search_detail(part: ToolPart, result_record: dict[str, Any], limit: int
     if not lines and part.result is not None and not any(
         first_string_field(result_record, [key]) for key in ("output", "stdout", "stderr", "content", "text", "message")
     ):
-        # 三件事同时成立才说这句：跑完了（`result` 只有 complete 那帧才有）、一条都拼不出来、
-        # 结果里也没有任何能显示的文字。少一条就会跟真实结果打架——开始那一帧的结果是空的。
         return "没有匹配文件"
 
     return "\n".join(lines[:limit])
@@ -1243,8 +1204,6 @@ def tool_detail_text(part: ToolPart, args_record: dict[str, Any], result_record:
         return summarize_browser_snapshot(snapshot) if snapshot else fallback_detail_text(args_record, result_record)
 
     if part.tool_name in ("terminal", "execute_code"):
-        # 两条流由 buildToolView 拆到 ToolView.stdout / ToolView.stderr，
-        # 渲染层分开贴标签。这里合并的回落只在后端没单独给出任何一条流时用。
         output = first_string_field(result_record, ["output", "stdout", "stderr"])
 
         lines = (
@@ -1256,8 +1215,6 @@ def tool_detail_text(part: ToolPart, args_record: dict[str, Any], result_record:
         if output or lines:
             return "\n".join(value for value in [output, lines] if value)
 
-        # 没有输出的 terminal 行上面 `$` 转录里已经有命令；通用回落会把同一串
-        # 再印一遍。`execute_code` 没有转录，所以保留回落。
         if part.tool_name == "terminal":
             return ""
 
@@ -1291,7 +1248,6 @@ def tool_detail_text(part: ToolPart, args_record: dict[str, Any], result_record:
             return content
 
     if part.tool_name == "memory":
-        # 同 toolSubtitle 的理由：不然通用回落会把 args + result 整包倒进展开行。
         return first_string_field(result_record, ["message", "error"])
 
     if is_file_edit_tool(part.tool_name):
@@ -1401,7 +1357,6 @@ def tool_copy_payload(part: ToolPart, view: ToolView) -> dict[str, str]:
 
     if is_file_edit_tool(part.tool_name):
         if view.inline_diff.strip():
-            # 复制的是这段改动，不是整个文件——写「复制文件」会让人以为拷走了整份
             return {"label": copy["code"], "text": view.inline_diff}
 
         path = file_edit_path(args, result)
@@ -1437,9 +1392,6 @@ def title_parts_from_action(title: str, action: str | None = None) -> ToolTitleP
     )
 
 
-# 模型写的 terminal `context`/`preview` 有时已经以标题模板要加的那个动词开头
-# （"Running grep …"），渲染成重复的 "Running Running grep …"。把开头与即将
-# 加上的 action 相同的那个词去掉，让动词只出现一次。
 def without_leading_action(value: str, action: str) -> str:
     verb = action.strip()
     text = value.lstrip()
@@ -1555,9 +1507,6 @@ def dynamic_title(
             )
 
     if part.tool_name == "browser_exec":
-        # browser_exec 的 schema 要求模型用一行 `# …` 注释开头描述这一步；
-        # CLI/TUI 已经这么展示了（agent/display.py）。这里照做，让桌面行读作
-        # "Searching Amazon for paper towels" 而不是笼统的 "Browser Exec"。
         label = browser_exec_step_label(first_string_field(args, ["code"]))
 
         if label:
@@ -1581,10 +1530,7 @@ def build_tool_view(part: ToolPart | Mapping[str, Any], inline_diff: str) -> Too
     result_record = tool_result_record(part)
     meta = tool_meta(part.tool_name)
     status = tool_status(part, result_record)
-    # 状态已是 success 时丢掉残留的错误启发式文本（memory 写入落地但外层
-    # isError 过期，否则会污染副标题）。
     error = "" if status == "success" else tool_error_text(part, result_record)
-    # 超预算的 memory 拒绝保持琥珀色 —— 不要说 "Saved"。
     memory_missed = part.tool_name == "memory" and part.result is not None and status != "success"
 
     if part.result is None:
@@ -1646,14 +1592,9 @@ def build_tool_view(part: ToolPart | Mapping[str, Any], inline_diff: str) -> Too
 
     result_count = None if status == "error" else tool_result_count(part, args_record, result_record)
 
-    # shell/code 工具在渲染层把 stdout、stderr 当两条带标签的流展示。很多 CLI
-    # 用 stderr 发信息性消息（npm 进度、git hints），所以即便打了标签也刻意
-    # 不把 stderr 涂成破坏性颜色。
     renders_ansi = part.tool_name in ("terminal", "execute_code")
     stdout = first_string_field(result_record, ["stdout"]) if renders_ansi else ""
     stderr_raw = first_string_field(result_record, ["stderr"]) if renders_ansi else ""
-    # 只有后端真把 stderr 单独作为字段返回时才挂上去 —— 否则合并的 `detail`
-    # 已经包含它，双份渲染会重复输出。
     has_split_streams = renders_ansi and (bool(stdout) or bool(stderr_raw))
     terminal_command = shell_command(args_record) if part.tool_name == "terminal" else None
     terminal_exit_code = numeric_field(result_record, "exit_code") if part.tool_name == "terminal" else None

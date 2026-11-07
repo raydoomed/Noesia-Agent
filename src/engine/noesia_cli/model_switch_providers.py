@@ -414,7 +414,6 @@ def _live_ids(slug: str, *, non_blocking: bool = False) -> list:
     from noesia_cli.chat_catalog import without_generation_models
 
     model_ids = cached_provider_model_ids(slug, non_blocking=non_blocking)
-    # 缓存里的实时清单同样会留着上游已经退役的 id，照样过滤。
     return without_generation_models(_drop_retired_models(slug, model_ids))
 
 
@@ -803,7 +802,6 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
             continue
         if not _overlay_has_creds(b, pid, noesia_slug, overlay):
             continue
-        # 实时问出来才知道有哪些：Pro 专属的 ACP 模型本来就不在任何静态表里，拿不到就空着。
         model_ids = _live_ids(noesia_slug, non_blocking=b.non_blocking_catalogs)
         # A providers.<overlay>.models block extends the row exactly as it does for built-in rows
         # (section 1); section 3 never emits it because this row owns the slug (#27989).
@@ -886,9 +884,6 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
     for grp in ep_groups.values():
         ep_name, display_name, api_url = grp["slug"], grp["name"], grp["api_url"]
         models_list = list(grp["models"])
-        # 官方 OpenAI 行常常只有 base_url、没有 models：以前这里拿 curated["openai"]（随包白名单）
-        # 顶上，发现失败时就会端出一批没校验的名字、计数还比成功时多。现在留给下面的 live 发现，
-        # 发现不到就空着（行还在，只是 0 个模型），不再拿硬编码冒充当前可用。
 
         ep_url_norm = _norm_url(api_url)
         ep_aliases = {str(alias).lower() for alias in grp["aliases"]}
@@ -1051,9 +1046,6 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
     Ollama Cloud, LM Studio live probe). ``non_blocking`` (GUI read path) takes cached Ollama Cloud
     ids and warms them in the background rather than waiting on an 8s probe (#114215)."""
     curated: dict[str, list[str]] = {}
-    # 这份字典现在只装「真的问出来的」动态清单：Ollama Cloud 和本机 LM Studio。
-    # 随包的 _PROVIDER_MODELS 和各 plugin 的 fallback_models 不再进来——那些名字没人校验在售，
-    # 漏进菜单就是一批过时模型。
     if "ollama-cloud" not in curated:
         from noesia_cli.models import fetch_ollama_cloud_models
         # Read path: cache only; the row's own SWR refresh (cached_provider_model_ids) warms it.
@@ -1118,9 +1110,8 @@ def list_authenticated_providers(
         except Exception:
             pass
         try:
-            # 上游目录也要重取：菜单里「新上来的那些模型」就是从这里补的，光清 provider 缓存不算刷新
             fetch_models_dev(force_refresh=True)
-        except Exception as exc:  # noqa: BLE001 - 目录取不到就用手上这份，不影响刷新本身
+        except Exception as exc:  # noqa: BLE001
             logger.debug("刷新 models.dev 目录失败：%s", exc)
 
     # YAML parses unquoted numeric names (`provider: 2070`) as int.
@@ -1186,9 +1177,6 @@ def _finalize_picker_rows(results: list, user_providers) -> list:
     except Exception:
         pass
 
-    # 当前模型不再往清单里塞：注入一个这家并不提供的模型，菜单里就会出现一个「点了也切不过去」
-    # 的假选项（引擎校验时会回「模型不在这一家的清单里」），胶囊也跟着显示一个毫不相干的模型名。
-    # 清单只放这家真实提供的，当前项对不上就让界面显示「未选择」。
 
     # Current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
@@ -1242,7 +1230,7 @@ def list_picker_providers(
                 live_ids = [mid for mid, _ in fetch_openrouter_models(cache_only=non_blocking_catalogs)]
             except Exception:
                 live_ids = list(p.get("models", []))
-            live_ids = _drop_retired_models("openrouter", live_ids)  # 上游退役的照样删
+            live_ids = _drop_retired_models("openrouter", live_ids)
             p = dict(p)
             p["models"] = _cap_models(live_ids, max_models, "openrouter")
             p["total_models"] = len(live_ids)

@@ -8,7 +8,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
-from noesia_constants import repo_root  # 项目根（pyproject.toml 那层）；引擎树根另算
+from noesia_constants import repo_root
 
 PROJECT_ROOT = repo_root()
 

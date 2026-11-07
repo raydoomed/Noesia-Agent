@@ -55,7 +55,6 @@ for _ in range(10):
 img = panel.grab().toImage()
 img.save(str(OUT / "chat_panel.png"))
 
-# 人物窗：没有 RTC DLL 时是待机底色 + 顶部菜单区
 from app.main import FloatingAvatar  # noqa: E402
 
 
