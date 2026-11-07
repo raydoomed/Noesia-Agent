@@ -2543,26 +2543,37 @@ class ChatPanel(QtWidgets.QWidget):
     def _photo_rect_at(self, pos: QtCore.QPoint, key: str) -> QtCore.QRect | None:
         """这张图在视口里占的那块地方；鼠标不在图上就返回 None。
 
-        别用 `cursorForPosition` 的横坐标来回推：图片只占一个字符位，紧挨着图片右边的空白
-        也可能被算成「图片那个字」，而且返回的位置比图片右边还靠右，退一个图宽也退不回来。
-        横坐标改用所在行块的左边界（图片在正文里独家占一行、左对齐），纵坐标和高度用光标
-        矩形——这两个是准的。
+        尺寸只认**文档里画出来的大小**（插入时 setWidth/setHeight 的那个），不能拿资源里
+        那张原图的像素宽：vision_analyze 那张截图原图 1736 宽、画出来 288 宽，用原图宽算，
+        这块矩形就横穿整行——下载按钮被挤到行尾，跟代码块的复制按钮叠在一起，谁都点不到。
+        横坐标仍用所在块的左边界（本应用里的图都是独占一行、左对齐），只把宽高换成画出来的尺寸。
         """
-        # 宽度以**文档里真正画着的那张图**为准，不是 `_photos` 缓存：缓存是 24 张的 FIFO，
-        # 长会话里老图被挤掉后，`_photos` 里查不到——以前就在这里返回 None，
-        # 于是那些看得见的图点不开、也没有悬停下载（图还在文档里，文档才是持有者）。
-        pixmap = self.view.document().resource(
-            QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(key)
-        )
-        if not isinstance(pixmap, QtGui.QPixmap) or pixmap.isNull():
-            pixmap = self._photos.get(self._photo_sources.get(key, ""))
-        if pixmap is None or pixmap.isNull():
-            return None
         cursor = self.view.cursorForPosition(pos)
+        fmt = cursor.charFormat()
+        if not self._is_photo_format(fmt) or fmt.toImageFormat().name() != key:
+            return None
+        image = fmt.toImageFormat()
+        width = int(image.width())
+        if width <= 0:
+            # 没显式给宽度：文档按原图尺寸画，这时原图宽才是画出来的宽
+            pixmap = self.view.document().resource(
+                QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(key)
+            )
+            if not isinstance(pixmap, QtGui.QPixmap) or pixmap.isNull():
+                # 文档里连资源都没了，退回图片缓存（长会话 FIFO 里可能还留着这张）
+                cached = self._photos.get(self._photo_sources.get(key, ""))
+                if isinstance(cached, QtGui.QPixmap) and not cached.isNull():
+                    pixmap = cached
+                else:
+                    return None
+            width = pixmap.width()
         line = self.view.cursorRect(cursor)
+        height = int(image.height()) or line.height()
+        if width <= 0 or height <= 0:
+            return None
         block = self.view.document().documentLayout().blockBoundingRect(cursor.block())
         left = int(block.left() - self.view.horizontalScrollBar().value())
-        rect = QtCore.QRect(left, line.top(), pixmap.width(), line.height())
+        rect = QtCore.QRect(left, line.top(), width, height)
         return rect if rect.contains(pos) else None
 
     def _photo_at(self, pos: QtCore.QPoint) -> tuple[str, QtCore.QRect] | None:
