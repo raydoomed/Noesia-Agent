@@ -126,7 +126,7 @@ class _PhotoMark(QtGui.QTextBlockUserData):
         self.owner = msg
 
 
-MSG_GAP = 16
+MSG_GAP = 12
 MSG_GAP_TIGHT = 4
 
 
@@ -330,6 +330,7 @@ def _open_link(text: str) -> bool:
 from app.user_state import window_settings
 from app.env_keys import env_file
 from app.tool_view.ansi import has_ansi_codes as ansi_codes, parse_ansi
+from app.tool_scroll import ToolScroll
 from app.tool_view.diffview import diff_rows, strip_diff_file_headers
 from app.tool_view.code import highlight_code as code_highlight
 from app.tool_view import delegate as delegate_view
@@ -1539,6 +1540,7 @@ class ChatPanel(QtWidgets.QWidget):
 
         self.view = ChatView(frame)
         self.view.setObjectName("view")
+        self.view.document().setDocumentMargin(ChatView.BUBBLE_PAD_Y)
         self.view.setReadOnly(True)
         self.view.setOpenLinks(False)
         self.view.setOpenExternalLinks(False)
@@ -1569,6 +1571,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._el_scan_pos = 0
         self._user_line_width = 0
         self._zone: tuple | None = None
+        self._hooked_scrolls: set[int] = set()
         self._msgs: list[dict] = []
         self._stream_msg: dict | None = None
         self._bar_buttons: list[HoverActionButton] = []
@@ -2066,7 +2069,7 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _user_name_font(self) -> QtGui.QFont:
         font = QtGui.QFont(self.view.font())
-        font.setPixelSize(11)
+        font.setPixelSize(13)
         font.setBold(True)
         return font
 
@@ -2080,11 +2083,12 @@ class ChatPanel(QtWidgets.QWidget):
         name = html.escape(_user_display_name())
         text = html.escape(shown)
         return (
-            f"<span style='color:#c9a6e0;font-size:11px;'><b>{name} </b></span>"
-            f"<span style='color:rgba(214,198,222,168);font-size:12.5px;'>{text}</span>"
+            f"<span style='color:#c9a6e0;font-size:13px;'><b>{name} </b></span>"
+            f"<span style='color:rgba(214,198,222,168);font-size:13px;'>{text}</span>"
         )
 
     USER_BAR_PX = 52
+    BODY_BUTTON_MARGIN = 16
 
     def _user_line_room(self, name_width: float) -> float:
         margins = ChatView.BUBBLE_PAD_X * 2 + self.USER_BAR_PX + MSG_GAP // 2
@@ -2104,6 +2108,15 @@ class ChatPanel(QtWidgets.QWidget):
         )
         msg["ellipsis"] = shown != text
         self._write_user_line(block, shown)
+        self._apply_head_gap(block)
+
+    def _apply_head_gap(self, block: QtGui.QTextBlock) -> None:
+        """重写那一行会把块格式一并换掉，段前距按排版重新算一遍。"""
+        fmt = block.blockFormat()
+        gap = self._msg_gap(block)
+        if int(fmt.topMargin()) != gap:
+            fmt.setTopMargin(gap)
+            QtGui.QTextCursor(block).setBlockFormat(fmt)
 
     def _write_user_line(self, block: QtGui.QTextBlock, shown: str) -> None:
         cursor = QtGui.QTextCursor(block)
@@ -3809,6 +3822,7 @@ class ChatPanel(QtWidgets.QWidget):
             return
         if self._reason_fold is None:
             self._reason_fold = self._folds.new("reasoning", _THINKING_LABEL, open_=True)
+            self._fit_fold_gap(self._reason_fold)
         self._folds.append(self._reason_fold, text.strip())
         self._settle_insert()
 
@@ -5485,10 +5499,9 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self._show_msg_bar(self._msg_at_pos(pos))
         zone, block = self._zone_at(pos)
-        if zone == self._zone:
-            return
-        self._hide_hover()
-        self._zone = zone
+        if zone != self._zone:
+            self._hide_hover()
+            self._zone = zone
         if zone is not None and block is not None:
             self._open_zone(zone, block)
 
@@ -5533,10 +5546,22 @@ class ChatPanel(QtWidgets.QWidget):
             payload = (tool_tr("assistant.tool.copyContent"), self._diff_texts[key][1])
         if payload and payload[1].strip():
             self._show_hover_copy(
-                payload[1], payload[0], first, last, key=("body", key)
+                payload[1], payload[0], first, last, key=("body", key),
+                margin=self.BODY_BUTTON_MARGIN,
             )
         if key in self._diff_texts:
-            self._show_hover_expand(key, first, last)
+            self._show_hover_expand(key, first, last, margin=self.BODY_BUTTON_MARGIN)
+
+    def _hook_tool_scrolls(self) -> None:
+        """工具正文那几块是独立控件，盖在正文上：鼠标事件得从它们那儿转进来，否则悬停不亮。"""
+        for fold in self._folds.all():
+            scroll = getattr(fold, "scroll", None)
+            if scroll is None or id(scroll) in self._hooked_scrolls:
+                continue
+            self._hooked_scrolls.add(id(scroll))
+            scroll.installEventFilter(self)
+            scroll.viewport().installEventFilter(self)
+            scroll.verticalScrollBar().installEventFilter(self)
 
     def _sync_elements(self) -> None:
         """文档里新出现的代码块、图片，各建一颗自己的按钮：创建跟着元素走，不跟着鼠标走。"""
@@ -5547,6 +5572,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._register_element(block)
             block = block.next()
         self._el_scan_pos = max(0, end)
+        self._hook_tool_scrolls()
         self._place_msg_bars()
 
     def _register_element(self, block: QtGui.QTextBlock) -> None:
@@ -5735,7 +5761,7 @@ class ChatPanel(QtWidgets.QWidget):
         return rect
 
     def _show_hover_copy(self, text: str, tooltip: str, first, last, edge: bool = False,
-                         key: tuple | None = None) -> None:
+                         key: tuple | None = None, margin: int = 4) -> None:
         """复制按钮：点完写剪贴板、换 ✓、1.5 秒还原。"""
         button = self._element_button(
             key or ("copy", first.position()),
@@ -5745,9 +5771,9 @@ class ChatPanel(QtWidgets.QWidget):
             done_tooltip=tool_tr("common.copied"),
         )
         self._show_element(button)
-        self._place_hover(button, first, last, edge=edge)
+        self._place_hover(button, first, last, edge=edge, margin=margin)
 
-    def _show_hover_expand(self, key: int, first, last) -> None:
+    def _show_hover_expand(self, key: int, first, last, margin: int = 4) -> None:
         """放大按钮：只开预览窗，不换 ✓（那不是一次复制）。放在复制按钮左边。"""
         button = self._element_button(
             ("expand", key),
@@ -5758,7 +5784,7 @@ class ChatPanel(QtWidgets.QWidget):
         )
         self._show_element(button)
         self._place_hover(button, first, last,
-                          offset_x=-(HoverActionButton.BUTTON_PX + 2))
+                          offset_x=-(HoverActionButton.BUTTON_PX + 2), margin=margin)
 
 
     def _begin_message(self, role: str, start: int, text: str, row_id) -> None:
@@ -5776,20 +5802,46 @@ class ChatPanel(QtWidgets.QWidget):
         msg["mark"] = _MsgMark(msg)
         msg["head_block"] = block
         block.setUserData(msg["mark"])
-        if self._msgs:
-            head_format = block.blockFormat()
-            head_format.setTopMargin(self._msg_gap(block))
-            QtGui.QTextCursor(block).setBlockFormat(head_format)
+        head_format = block.blockFormat()
+        head_format.setTopMargin(self._msg_gap(block))
+        QtGui.QTextCursor(block).setBlockFormat(head_format)
         if role == "user":
             user_format = block.blockFormat()
             user_format.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
             user_format.setLeftMargin(ChatView.BUBBLE_PAD_X)
             user_format.setRightMargin(ChatView.BUBBLE_PAD_X + self.USER_BAR_PX + MSG_GAP // 2)
             user_format.setBottomMargin(ChatView.BUBBLE_PAD_Y)
+            user_format.setLineHeight(
+                0, QtGui.QTextBlockFormat.LineHeightTypes.SingleHeight.value
+            )
             QtGui.QTextCursor(block).setBlockFormat(user_format)
         self._msgs.append(msg)
         if role == "assistant":
             self._stream_msg = msg
+
+    def _fit_fold_gap(self, fold) -> None:
+        """折叠行刚好是这一轮的第一块时，段前距按两条消息之间算。
+
+        折叠段新建时只拿到段内距（写在 `Folds` 里的那一档），可「思考」经常在助手消息
+        开始之前就先流出来，于是它成了贴在用户气泡下面的第一块，段内距就成了 4px。
+        """
+        block = fold.head_block
+        if block is None or not block.isValid():
+            return
+        probe = block.previous()
+        while probe.isValid() and not probe.isVisible():
+            probe = probe.previous()
+        mark = probe.userData() if probe.isValid() else None
+        boundary = isinstance(mark, (_BarMark, _PhotoMark)) or (
+            isinstance(mark, _MsgMark) and mark.msg.get("role") == "user"
+        )
+        if not boundary:
+            return
+        gap = self._msg_gap(block)
+        fmt = block.blockFormat()
+        if int(fmt.topMargin()) != gap:
+            fmt.setTopMargin(gap)
+            QtGui.QTextCursor(block).setBlockFormat(fmt)
 
     def _starts_after_fold(self, block) -> bool:
         """这一段是不是接在本轮自己的折叠行（思考 / 工具）下面。
@@ -5805,20 +5857,30 @@ class ChatPanel(QtWidgets.QWidget):
         return not isinstance(probe.userData(), (_MsgMark, _BarMark, _PhotoMark))
 
     def _msg_gap(self, block: QtGui.QTextBlock) -> int:
-        """两条消息之间留多少：一律按 MSG_GAP 算，上一段自带的尾距先扣掉。"""
+        """两条消息之间留多少：可见空隙一律 MSG_GAP，气泡内边距与动作条占的份先补回来。"""
         if self._starts_after_fold(block):
             return MSG_GAP_TIGHT
         probe = block.previous()
         while probe.isValid() and not probe.isVisible():
             probe = probe.previous()
+        if not probe.isValid():
+            own = block.userData()
+            if isinstance(own, _MsgMark) and own.msg.get("role") == "user":
+                return ChatView.BUBBLE_PAD_Y
+            return MSG_GAP_TIGHT
         mark = probe.userData()
         if isinstance(mark, _BarMark):
-            return MSG_GAP - self.BAR_GAP
-        if isinstance(mark, _PhotoMark):
+            gap = MSG_GAP - self.BAR_GAP
+        elif isinstance(mark, _PhotoMark):
             return MSG_GAP - ChatView.BUBBLE_PAD_Y
-        if isinstance(mark, _MsgMark) and mark.msg.get("role") == "user":
-            return MSG_GAP - ChatView.BUBBLE_PAD_Y
-        return MSG_GAP
+        elif isinstance(mark, _MsgMark) and mark.msg.get("role") == "user":
+            gap = MSG_GAP + ChatView.BUBBLE_PAD_Y
+        else:
+            gap = MSG_GAP
+        own = block.userData()
+        if isinstance(own, _MsgMark) and own.msg.get("role") == "user":
+            gap += ChatView.BUBBLE_PAD_Y
+        return gap
 
     def _rewind_later_users(self, msg: dict) -> int:
         """这条用户消息后面还有几条用户消息（= 重发时会被一起删掉的问答轮数）。"""
@@ -5953,7 +6015,8 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _place_hover(self, button: HoverActionButton, first, last, offset_x: int = 0,
                      below: bool = False, bottom_align: bool = False,
-                     anchor_right: bool = False, edge: bool = False) -> None:
+                     anchor_right: bool = False, edge: bool = False,
+                     margin: int = 4) -> None:
         rect = self._block_rect(first, last)
         if rect.height() <= 0:
             button.hide()
@@ -5968,7 +6031,7 @@ class ChatPanel(QtWidgets.QWidget):
         else:
             rect.setRight(min(rect.right(), usable))
         button.place_at(rect, offset_x=offset_x, below=below, bottom_align=bottom_align,
-                        anchor_right=anchor_right)
+                        anchor_right=anchor_right, margin=margin)
         button.show()
         button.raise_()
 
@@ -6194,6 +6257,7 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _hide_hover(self) -> None:
         self._hide_elements()
+        self._zone = None
 
     def _copy_to_clipboard(self, text: str) -> None:
         QtWidgets.QApplication.clipboard().setText(text)
@@ -6210,11 +6274,25 @@ class ChatPanel(QtWidgets.QWidget):
             self._diff_rows(diff, path=path, numbers=True),
             f"+{stats['added']} −{stats['removed']}",
         )
+        window.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, True)
         window.show()
         window.raise_()
+        window.activateWindow()
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         """frame 铺满整个窗口，边缘那圈空白上的鼠标事件在这儿接住。"""
+        scroll_owner = obj if isinstance(obj, ToolScroll) else None
+        if scroll_owner is None and isinstance(obj.parent(), ToolScroll):
+            scroll_owner = obj.parent()
+        if scroll_owner is not None:
+            kind = event.type()
+            if kind is QtCore.QEvent.Type.MouseMove:
+                self._hover_at(obj.mapTo(self.view.viewport(), event.position().toPoint()))
+            elif kind in (QtCore.QEvent.Type.Leave, QtCore.QEvent.Type.Wheel):
+                if kind is QtCore.QEvent.Type.Leave and self._over_hover_button():
+                    return super().eventFilter(obj, event)
+                self._hide_hover()
+            return super().eventFilter(obj, event)
         if obj is self.view.viewport():
             kind = event.type()
             if kind is QtCore.QEvent.Type.Resize:

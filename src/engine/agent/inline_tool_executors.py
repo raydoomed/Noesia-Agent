@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -261,12 +262,25 @@ def _remember_name(agent, result: Any) -> None:
     name = str((payload.get("answer") or {}).get("name") or "").strip()
     if not name:
         return
-    if any(name in entry for entry in (getattr(store, "user_entries", []) or [])):
-        return
+    entries = [str(entry) for entry in (getattr(store, "user_entries", []) or [])]
+    named = [entry for entry in entries if _name_entry(entry)]
     try:
-        store.add("user", f"Name: {name}")
+        if not named:
+            store.add("user", f"Name: {name}")
+            return
+        if _name_entry(named[0]) == name and len(named) == 1:
+            return
+        store.replace("user", named[0], f"Name: {name}")
+        for stale in named[1:]:
+            store.remove("user", stale)
     except Exception:  # noqa: BLE001
         logger.warning("写用户档案失败（名字 %s）", name, exc_info=True)
+
+
+def _name_entry(entry: str) -> str:
+    """这条档案里记的名字，不是名字条目就返回空串（认 `Name:` / `名字：`）。"""
+    found = re.match(r"^[ \t]*(?:name|名字)[ \t]*[:：][ \t]*(.+?)[ \t]*$", entry, re.IGNORECASE)
+    return " ".join(found.group(1).split()) if found else ""
 
 
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
