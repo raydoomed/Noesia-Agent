@@ -584,6 +584,31 @@ _REASONING_OFF = ("none", "关闭思考")
 
 _THOUGHT_DONE = "已思考"
 
+_BREATHE_STAGES = (
+    (),
+    ((1, 0),),
+    ((0, 1), (2, 0)),
+    ((0, 0), (1, 1), (3, 0)),
+    ((0, 0), (1, 1), (2, 0), (3, 1)),
+    ((0, 0), (0, 1), (1, 1), (2, 0), (3, 1)),
+    ((0, 0), (0, 1), (1, 0), (2, 1), (3, 0), (3, 1)),
+    ((0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (3, 0), (3, 1)),
+    ((0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1), (3, 0), (3, 1)),
+)
+
+
+def _breathe_frames() -> tuple[tuple[tuple[int, int], ...], ...]:
+    """运行中抬头那颗图标：照桌面端 `GlyphSpinner spinner="breathe"` 的 17 帧，每帧 100ms。
+
+    每一帧是点阵里亮着的 (行, 列)，4 行 2 列；正放再倒放，看起来就是一次呼吸。
+    """
+    stages = list(_BREATHE_STAGES)
+    return tuple(stages + stages[-2::-1])
+
+
+_BREATHE_FRAMES = _breathe_frames()
+_SPIN_INTERVAL_MS = 100
+
 
 def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
     """画 18px 网格里的线条图标（2x 采样，缩放后边缘不发虚）。
@@ -1465,6 +1490,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._press_pos: QtCore.QPoint | None = None
         self._net = QtNetwork.QNetworkAccessManager(self)
         self._reason_fold: disclosure.Fold | None = None
+        self._spin_frame = 0
+        self._spin_timer = QtCore.QTimer(self)
+        self._spin_timer.setInterval(_SPIN_INTERVAL_MS)
+        self._spin_timer.timeout.connect(self._tick_spin)
         
         self._tool_folds: dict[str, disclosure.Fold] = {}
         self._tool_images: dict[str, str] = {}
@@ -1473,7 +1502,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._delegate_cards: dict[str, dict] = {}
         self._delegate_latest: str = ""
         self._clarify: dict | None = None
-        self._tool_started: dict[str, tuple[object, str, float, str | None]] = {}
+        self._tool_started: dict[str, tuple[disclosure.Fold, str, float, str | None]] = {}
         self._tool_clock = QtCore.QTimer(self)
         self._tool_clock.setInterval(1000)
         self._tool_clock.timeout.connect(self._tick_running_tools)
@@ -1929,6 +1958,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_orb.set_state(STATE_IDLE)
         self._tool_started.clear()
         self._tool_clock.stop()
+        self._spin_timer.stop()
         self._provider_wait = ""
         self._folds.reset()
         self._diff_texts = {}
@@ -3277,6 +3307,70 @@ class ChatPanel(QtWidgets.QWidget):
         self._icon_cache[key] = pixmap
         return pixmap
 
+    SPIN_PX = 14
+    SPIN_COLOR = "#7c8798"
+
+    def _spin_pixmap(self, index: int) -> QtGui.QPixmap | None:
+        """把一帧呼吸点阵画成 14px 小图（与图标同尺寸，抬头行高不变）。"""
+        frame = index % len(_BREATHE_FRAMES)
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        key = ("spin", frame, dpr)
+        cached = self._icon_cache.get(key)
+        if cached is not None:
+            return cached
+        size = max(1, int(round(self.SPIN_PX * dpr)))
+        pixmap = QtGui.QPixmap(size, size)
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pixmap)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(QtGui.QColor(self.SPIN_COLOR))
+        radius = 1.2
+        gap = 1.2
+        step = radius * 2 + gap
+        width = step * 2 - gap
+        height = step * 4 - gap * 3
+        left = (self.SPIN_PX - width) / 2
+        top = (self.SPIN_PX - height) / 2
+        for row, col in _BREATHE_FRAMES[frame]:
+            painter.drawEllipse(
+                QtCore.QRectF(left + col * step, top + row * step, radius * 2, radius * 2)
+            )
+        painter.end()
+        self._icon_cache[key] = pixmap
+        return pixmap
+
+    def _spin_format(self, index: int):
+        fmt = QtGui.QTextImageFormat()
+        pixmap = self._spin_pixmap(index)
+        if pixmap is None:
+            return None
+        frame = index % len(_BREATHE_FRAMES)
+        url = QtCore.QUrl(f"noesia-icon://spin-{frame}")
+        if url.toString() not in self._icon_registered:
+            self.view.document().addResource(
+                QtGui.QTextDocument.ResourceType.ImageResource, url, pixmap
+            )
+            self._icon_registered.add(url.toString())
+        fmt.setName(url.toString())
+        fmt.setWidth(self.SPIN_PX)
+        fmt.setHeight(self.SPIN_PX)
+        fmt.setVerticalAlignment(QtGui.QTextCharFormat.VerticalAlignment.AlignMiddle)
+        return fmt
+
+    def _tick_spin(self) -> None:
+        """运行中的行：抬头那颗图标每 100ms 换一帧，跟桌面端的呼吸动画一致。"""
+        if not self._tool_started:
+            self._spin_timer.stop()
+            return
+        self._spin_frame += 1
+        glyph = self._spin_format(self._spin_frame)
+        if glyph is None:
+            return
+        for fold, _base, _started, _icon in list(self._tool_started.values()):
+            self._folds.set_glyph(fold, glyph)
+
     def _track_running_tool(self, tool_id: str, fold, label: str, icon: str | None = None) -> None:
         """记下这一行的起点；同一行后续再更新时保留原起点，免得每秒都从 0 重来。
 
@@ -3284,8 +3378,13 @@ class ChatPanel(QtWidgets.QWidget):
         """
         started = self._tool_started[tool_id][2] if tool_id in self._tool_started else time.monotonic()
         self._tool_started[tool_id] = (fold, label, started, icon)
+        spin = self._spin_format(self._spin_frame)
+        if spin is not None and fold is not None:
+            self._folds.set_glyph(fold, spin)
         if not self._tool_clock.isActive():
             self._tool_clock.start()
+        if not self._spin_timer.isActive():
+            self._spin_timer.start()
 
     def _tick_running_tools(self) -> None:
         """每秒重标还在跑的工具行，让「正在运行 …」后面的时长真的在走。"""
@@ -3306,6 +3405,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._folds.retitle(fold, f"{label} · {word}")
         self._tool_started.clear()
         self._tool_clock.stop()
+        self._spin_timer.stop()
 
     @staticmethod
     def _glyph_url(fmt) -> str:
@@ -3345,6 +3445,10 @@ class ChatPanel(QtWidgets.QWidget):
         改文件、打补丁、写文件这三种换成按文件后缀取的图标：改 .yaml 显示齿轮，
         改 .css 显示调色板，认不出的后缀给尖括号。读文件那条不换——它本来就是文件图标。
         """
+        if pending:
+            spin = self._spin_format(self._spin_frame)
+            if spin is not None:
+                return spin
         status = "running" if pending else (view.status or "success")
         color = self.GLYPH_COLORS.get(status, self.GLYPH_COLORS["success"])
         name = codicon_for_filename(view.subtitle) if file_edit else None

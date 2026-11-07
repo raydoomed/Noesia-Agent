@@ -132,6 +132,11 @@ class Folds:
         return out
 
 
+    def set_glyph(self, fold: Fold, glyph) -> None:
+        """换掉抬头前面那颗图标，抬头其余内容原样重贴。"""
+        fold.glyph = glyph
+        self.retitle(fold, fold.label)
+
     def new(self, kind: str, label: str, *, open_: bool = False, glyph=None) -> Fold:
         cursor = self._end_cursor()
         self._start_block(cursor, margin=self._gap)
