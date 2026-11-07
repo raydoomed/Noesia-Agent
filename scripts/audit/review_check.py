@@ -1,6 +1,6 @@
 """复核「外部人工复核 4 条」用的一次性检查，落成可复跑脚本（对应 AUDIT.md §9）。
 
-四段各自独立、只读：工具行底色 / 悬停按钮样式 / diff 抬头判定 / 气泡垫底色。
+三段各自独立、只读：工具行底色 / 悬停按钮样式 / diff 抬头判定。
 不写仓库里的 data/，渲染全在内存里，脏东西只落在系统临时目录。
 """
 
@@ -19,6 +19,7 @@ os.environ["NOESIA_HOME"] = str(Path(os.environ["TEMP"]) / "noesia-audit" / "rev
 from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+host = QtWidgets.QWidget()
 
 from app import chat_view, hover_actions, tool_scroll  # noqa: E402
 from app.tool_view import diffview  # noqa: E402
@@ -49,7 +50,7 @@ add.add_rows([("after", None, None)])
 print("   add_rows:", " / ".join(block_backgrounds(add)))
 
 print("== 2. 悬停按钮：基础样式在 set_backdrop 之后是否还在 ==")
-button = hover_actions.HoverActionButton(None, "copy", "复制", lambda: None)
+button = hover_actions.HoverActionButton(host, "copy", "复制", lambda: None)
 base = button.styleSheet()
 button.set_backdrop(True)
 on_qss = button.styleSheet()
@@ -59,7 +60,7 @@ print(f"   backdrop=False 恢复成基础样式: {button.styleSheet() == base}")
 
 
 def pixels(qss: str) -> tuple[int, tuple[int, int]]:
-    b = hover_actions.HoverActionButton(None, "copy", "复制", lambda: None)
+    b = hover_actions.HoverActionButton(host, "copy", "复制", lambda: None)
     if qss:
         b.setStyleSheet(qss)
     b.show()
@@ -86,15 +87,4 @@ for line in ("a/src/app/x.py → b/src/app/x.py",
              "x.py → y.py",
              "+src/a.py → src/b.py"):
     print(f"   {diffview._is_arrow_header_line(line)!s:5} {line}")
-
-print("== 4. 气泡垫底色：写死的值 vs 合成出来的值 ==")
-fill = chat_view.BUBBLE_FILL
-alpha = fill.alpha() / 255
-print("   BUBBLE_FILL:", fill.getRgb(), " BACKDROP_QSS: (62, 47, 62, 245)")
-for base_hex in ("#1b1724", "#241f2e", "#2a2434"):
-    under = QtGui.QColor(base_hex)
-    comp = tuple(round(getattr(fill, ch)() * alpha + getattr(under, ch)() * (1 - alpha))
-                 for ch in ("red", "green", "blue"))
-    print(f"   叠在 {base_hex}: {comp}  差={tuple(abs(c - d) for c, d in zip(comp, (62, 47, 62)))}")
-
 print("REVIEW_DONE")

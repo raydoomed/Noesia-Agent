@@ -17,7 +17,6 @@ import PySide6.QtWidgets as QtWidgets
 BUBBLE_RADIUS = 12
 BUBBLE_PAD_X = 12
 BUBBLE_PAD_Y = 8
-BUBBLE_FILL = QtGui.QColor(243, 172, 206, 44)
 BUBBLE_EDGE = QtGui.QColor(243, 172, 206, 72)
 
 SCAFFOLD_IDLE = QtGui.QColor(236, 230, 239, 110)
@@ -164,7 +163,7 @@ class ChatView(QtWidgets.QTextBrowser):
             if not box.intersects(QtCore.QRectF(event.rect())):
                 continue
             painter.setPen(QtGui.QPen(BUBBLE_EDGE, 1))
-            painter.setBrush(BUBBLE_FILL)
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             painter.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5),
                                     BUBBLE_RADIUS, BUBBLE_RADIUS)
         painter.end()

@@ -1361,6 +1361,10 @@ class _PttKeyDialog(QtWidgets.QDialog):
 
 
 
+BG_PORTRAIT_CROP = 0.66
+BG_PORTRAIT_SCALE = 0.30
+
+
 def _dimmed(pixmap: QtGui.QPixmap, factor: float) -> QtGui.QPixmap:
     """按比例压暗一张带透明的图：只动亮度，轮廓（alpha）原样保留。"""
     if pixmap.isNull() or factor >= 1.0:
@@ -1805,12 +1809,14 @@ class ChatPanel(QtWidgets.QWidget):
         """
         from paths import repo_root
 
-        self._bg_pixmap = _dimmed(
-            QtGui.QPixmap(
-                str(repo_root() / "assets" / "transparent" / "noesia_background.png")
-            ),
-            0.72,
+        source = QtGui.QPixmap(
+            str(repo_root() / "assets" / "transparent" / "noesia_background.png")
         )
+        if not source.isNull():
+            source = source.copy(
+                0, 0, source.width(), int(round(source.height() * BG_PORTRAIT_CROP))
+            )
+        self._bg_pixmap = _dimmed(source, 0.72)
         if self._bg_pixmap.isNull():
             logger.warning("背景图读不到：%s", repo_root() / "assets" / "transparent" / "noesia_background.png")
             return
@@ -1830,7 +1836,7 @@ class ChatPanel(QtWidgets.QWidget):
         frame = self._bg.parentWidget()
         if frame is None or frame.width() <= 0 or frame.height() <= 0:
             return
-        height = int(frame.height() * 0.42)
+        height = int(frame.height() * BG_PORTRAIT_SCALE)
         width = int(height * self._bg_pixmap.width() / self._bg_pixmap.height())
         limit = int(frame.width() * 0.72)
         if width > limit:
@@ -5389,6 +5395,8 @@ class ChatPanel(QtWidgets.QWidget):
         super().resizeEvent(event)
         if hasattr(self, "_model_menu"):
             self._sync_popup_width()
+        self._place_background()
+        self._place_jump()
         QtCore.QTimer.singleShot(0, self._refit_user_lines)
         QtCore.QTimer.singleShot(0, self._place_msg_bars)
 
@@ -5404,8 +5412,6 @@ class ChatPanel(QtWidgets.QWidget):
         title = getattr(self, "_title_label", None)
         if title is not None:
             title.setText(TITLE_FULL if self.width() >= TITLE_FULL_MIN_WIDTH else TITLE_SHORT)
-        self._place_background()
-        self._place_jump()
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
