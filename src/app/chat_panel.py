@@ -305,6 +305,10 @@ PANEL_WIDTH = 420  # 默认（第一次打开）大小；之后记在 QSettings 
 PANEL_HEIGHT = 460
 MIN_PANEL_WIDTH = 280
 MIN_PANEL_HEIGHT = 240
+# 顶栏左边写的名字：窗窄到放不下长的那条，就换成短的，别让字顶到右边的胶囊
+TITLE_FULL = "Noesia Agent"
+TITLE_SHORT = "Noesia"
+TITLE_FULL_MIN_WIDTH = 430
 
 # USER.md 里的名字：文件没动就不重读（每条用户消息都要用它）
 _USER_NAME_CACHE: dict[str, object] = {"stamp": None, "name": ""}
@@ -348,7 +352,7 @@ SNAP_DISTANCE = 24  # 拖到离她下缘这么近就自动吸过去
 
 STYLE = """
 #frame {
-    background-color: rgba(25, 21, 32, 242);
+    background-color: rgba(25, 21, 32, 210);
     border: 1px solid rgba(255, 255, 255, 22);
     border-radius: 16px;
 }
@@ -617,6 +621,21 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
     elif kind == "plus":
         painter.drawLine(QtCore.QPointF(9.0, 4.6), QtCore.QPointF(9.0, 13.4))
         painter.drawLine(QtCore.QPointF(4.6, 9.0), QtCore.QPointF(13.4, 9.0))
+    elif kind == "gear":
+        # 厚圈 + 八根短齿：13~16px 上都还看得出是齿轮，细齿会糊成一朵太阳
+        pen.setWidthF(2.0)
+        painter.setPen(pen)
+        painter.drawEllipse(QtCore.QPointF(9.0, 9.0), 4.2, 4.2)
+        pen.setWidthF(2.4)
+        painter.setPen(pen)
+        for dx, dy in (
+            (1.0, 0.0), (0.7071, 0.7071), (0.0, 1.0), (-0.7071, 0.7071),
+            (-1.0, 0.0), (-0.7071, -0.7071), (0.0, -1.0), (0.7071, -0.7071),
+        ):
+            painter.drawLine(
+                QtCore.QPointF(9.0 + dx * 5.0, 9.0 + dy * 5.0),
+                QtCore.QPointF(9.0 + dx * 6.4, 9.0 + dy * 6.4),
+            )
     elif kind == "file":
         page = QtGui.QPainterPath()
         page.moveTo(5.2, 2.6)
@@ -1344,6 +1363,26 @@ class _PttKeyDialog(QtWidgets.QDialog):
         return self._pending["global"]
 
 
+# ---- 面板的透明度 ----
+# 这里原本想挂系统磨玻璃（DWM acrylic / Mica），实测在无边框 + 逐像素透明的 Qt 窗上
+# 都不生效：系统只铺一层固定的灰（Mica=32、Acrylic=84），既不随窗口挪动，也不是背后
+# 的画面。要“看得出透明、跟着桌面走”，只能让面板自己真透明 —— 代价是没有模糊。
+
+
+def _dimmed(pixmap: QtGui.QPixmap, factor: float) -> QtGui.QPixmap:
+    """按比例压暗一张带透明的图：只动亮度，轮廓（alpha）原样保留。"""
+    if pixmap.isNull() or factor >= 1.0:
+        return pixmap
+    out = QtGui.QPixmap(pixmap.size())
+    out.fill(QtCore.Qt.GlobalColor.transparent)
+    painter = QtGui.QPainter(out)
+    painter.drawPixmap(0, 0, pixmap)
+    painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_SourceAtop)
+    painter.fillRect(out.rect(), QtGui.QColor(0, 0, 0, int(round(255 * (1.0 - factor)))))
+    painter.end()
+    return out
+
+
 class ChatPanel(QtWidgets.QWidget):
     """打字对话窗。"""
 
@@ -1410,7 +1449,7 @@ class ChatPanel(QtWidgets.QWidget):
         layout.setSpacing(8)
 
         header = QtWidgets.QHBoxLayout()
-        title = QtWidgets.QLabel("Noesia Agent", frame)
+        title = QtWidgets.QLabel(TITLE_FULL, frame)
         title.setObjectName("title")
         state = QtWidgets.QLabel("", frame)
         state.setObjectName("state")
@@ -1423,6 +1462,7 @@ class ChatPanel(QtWidgets.QWidget):
         header.addWidget(dot)
         header.addWidget(state)
         header.addStretch(1)
+        # 「新会话」放顶栏、不发在底部：底部最右是「发送」，两颗键上下正对，错一下就清了上下文
         new_session = QtWidgets.QPushButton("新会话", frame)
         new_session.setObjectName("mini")
         new_session.setToolTip("开一段新对话：换回历史里不带的干净上下文（改了人设、SOUL.md 之后用它生效）")
@@ -1430,6 +1470,7 @@ class ChatPanel(QtWidgets.QWidget):
         new_session.clicked.connect(self.new_session_requested.emit)
         layout.addLayout(header)
         self._state_label = state
+        self._title_label = title
 
         # 模型切换：并进顶栏一行（名字 · 在 ······ 模型胶囊 · 设置），不再单独占一行
         combo = QtWidgets.QToolButton(frame)
@@ -1446,9 +1487,13 @@ class ChatPanel(QtWidgets.QWidget):
         menu.setStyleSheet(STYLE)
         combo.setMenu(menu)
         header.addWidget(combo)
-        set_model = QtWidgets.QPushButton("设置", frame)
+        header.addWidget(new_session)
+        set_model = QtWidgets.QPushButton(frame)
         set_model.setObjectName("mini")
-        set_model.setToolTip("选模型；没有可用的就告诉你密钥该放在哪个文件")
+        set_model.setIcon(_glyph_icon("gear"))
+        set_model.setIconSize(QtCore.QSize(14, 14))
+        set_model.setFixedSize(26, 20)  # 只留图标，省下的宽度给「新会话」
+        set_model.setToolTip("设置：选模型；没有可用的就告诉你密钥该放在哪个文件")
         set_model.setCursor(QtCore.Qt.PointingHandCursor)
         set_model.clicked.connect(self.model_settings_requested.emit)
         header.addWidget(set_model)
@@ -1791,13 +1836,12 @@ class ChatPanel(QtWidgets.QWidget):
         row.addWidget(send)
         layout.addLayout(row)
 
-        # 最底一行：快捷键提示在左，新会话在右。原来这两样占着顶栏，把模型挤没地方放
+        # 最底一行只留快捷键提示：这一带正对着「发送」，不放任何可点的东西
         meta_row = QtWidgets.QHBoxLayout()
         meta_row.setContentsMargins(4, 5, 4, 0)
         meta_row.setSpacing(6)
         meta_row.addWidget(hint_label)
         meta_row.addStretch(1)
-        meta_row.addWidget(new_session)
         layout.addLayout(meta_row)
 
         send.clicked.connect(self._emit)
@@ -1818,8 +1862,11 @@ class ChatPanel(QtWidgets.QWidget):
         """
         from paths import repo_root
 
-        self._bg_pixmap = QtGui.QPixmap(
-            str(repo_root() / "assets" / "transparent" / "noesia_background.png")
+        self._bg_pixmap = _dimmed(
+            QtGui.QPixmap(
+                str(repo_root() / "assets" / "transparent" / "noesia_background.png")
+            ),
+            0.72,
         )
         if self._bg_pixmap.isNull():
             logger.warning("背景图读不到：%s", repo_root() / "assets" / "transparent" / "noesia_background.png")
@@ -5337,6 +5384,9 @@ class ChatPanel(QtWidgets.QWidget):
         super().resizeEvent(event)
         if hasattr(self, "_model_menu"):
             self._sync_popup_width()
+        title = getattr(self, "_title_label", None)
+        if title is not None:
+            title.setText(TITLE_FULL if self.width() >= TITLE_FULL_MIN_WIDTH else TITLE_SHORT)
         self._place_background()
         self._place_jump()  # 窗口一变，贴底的胶囊跟着重新贴底
         self._replace_msg_actions()  # 正文重排后，悬停条也得跟着落回它那一行
