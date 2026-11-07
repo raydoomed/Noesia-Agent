@@ -23,7 +23,8 @@ from collections import deque
 from datetime import datetime
 
 import numpy as np
-from PySide6 import QtCore, QtGui
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
 
 from app import avatar_prefs
 from app.idle_video import key_image
@@ -113,7 +114,7 @@ SHARPEN = 0.9
 
 def _rgb_array(image: QtGui.QImage) -> np.ndarray:
     """QImage（任意格式）→ (h, w, 3) 的 RGB numpy（拷出来，别指向 QImage 的缓冲）。"""
-    img = image.convertToFormat(QtGui.QImage.Format_RGB888)
+    img = image.convertToFormat(QtGui.QImage.Format.Format_RGB888)
     h, w, stride = img.height(), img.width(), img.bytesPerLine()
     rows = np.frombuffer(img.constBits(), np.uint8, stride * h).reshape(h, stride)
     return rows[:, : w * 3].reshape(h, w, 3).copy()
@@ -199,7 +200,7 @@ class AvatarRtc(QtCore.QObject):
             if not self._engine_created:
                 self._dll_dir = os.add_dll_directory(str(RTC_DIR))
 
-            from app import _alirtc
+            from app import _alirtc  # pyright: ignore[reportAttributeAccessIssue]
 
             if not self._engine_created:
                 if not _alirtc.create(""):
@@ -322,8 +323,8 @@ class AvatarRtc(QtCore.QObject):
                     raise RuntimeError(f"引擎没载起来：{why}")
             image = self.image_now()
             session = ViduSession(read_token(), image, self.model or self._configured_model())
-            session.on_event = lambda msg: logger.info("[数字人] %s", msg)
-            session.on_error = self._on_server_error
+            session.on_event = lambda msg: logger.info("[数字人] %s", msg)  # pyright: ignore[reportAttributeAccessIssue]
+            session.on_error = self._on_server_error  # pyright: ignore[reportAttributeAccessIssue]
             try:
                 avatar_id = self._ensure_avatar_asset(image)
             except Exception as exc:  # noqa: BLE001
@@ -650,16 +651,16 @@ class AvatarRtc(QtCore.QObject):
             rgb = _i420_to_rgb(y, u, v, width, height, stride_y, stride_u, stride_v, step)
             rgb_h, rgb_w = rgb.shape[:2]
             image = QtGui.QImage(
-                rgb.data, rgb_w, rgb_h, rgb_w * 3, QtGui.QImage.Format_RGB888
+                rgb.data, rgb_w, rgb_h, rgb_w * 3, QtGui.QImage.Format.Format_RGB888
             ).copy()
             if target is not None and image.size() != target:
                 image = image.scaled(
-                    target, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.FastTransformation
+                    target, QtCore.Qt.AspectRatioMode.IgnoreAspectRatio, QtCore.Qt.TransformationMode.FastTransformation
                 )
             pixels = _sharpen(_rgb_array(image))
             image = QtGui.QImage(
                 pixels.data, image.width(), image.height(), image.width() * 3,
-                QtGui.QImage.Format_RGB888,
+                QtGui.QImage.Format.Format_RGB888,
             ).copy()
             self._frames += 1
             self._frames_since_speak += 1

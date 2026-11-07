@@ -1227,7 +1227,8 @@ def tool_detail_text(part: ToolPart, args_record: dict[str, Any], result_record:
         if direct:
             return re.sub(r"\s*in\s+[0-9]+(?:\.[0-9]+)?s\s*$", "", direct, flags=re.I | re.A).strip()
 
-        results = result_record.get("results") if isinstance(result_record.get("results"), list) else []
+        raw_results = result_record.get("results")
+        results = raw_results if isinstance(raw_results, list) else []
 
         aggregated = "\n\n---\n\n".join(
             value

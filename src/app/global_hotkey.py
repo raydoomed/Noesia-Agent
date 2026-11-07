@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 
-from PySide6 import QtCore
+import PySide6.QtCore as QtCore
 
 logger = logging.getLogger(__name__)
 

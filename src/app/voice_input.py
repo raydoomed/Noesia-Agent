@@ -29,7 +29,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
-from PySide6 import QtCore
+import PySide6.QtCore as QtCore
 
 from app import audio_capture, audio_devices
 from app.audio_devices import Endpoint

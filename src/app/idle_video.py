@@ -15,7 +15,9 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PySide6 import QtCore, QtGui, QtMultimedia
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtMultimedia as QtMultimedia
 
 KEY_LOW = 10.0
 KEY_HIGH = 60.0
@@ -80,7 +82,7 @@ class IdleVideoPlayer(QtCore.QObject):
         self._player = QtMultimedia.QMediaPlayer(self)
         self._player.setVideoSink(self._sink)
         self._player.setLoops(QtMultimedia.QMediaPlayer.Loops.Infinite)
-        self._player.setAudioOutput(None)
+        self._player.setAudioOutput(None)  # pyright: ignore[reportArgumentType]
         self._player.errorOccurred.connect(self._on_error)
         self._player.mediaStatusChanged.connect(self._on_status)
 
@@ -133,7 +135,7 @@ class IdleVideoPlayer(QtCore.QObject):
         if image.isNull():
             return
         if self._target is not None and image.size() != self._target:
-            image = image.scaled(self._target, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.FastTransformation)
+            image = image.scaled(self._target, QtCore.Qt.AspectRatioMode.IgnoreAspectRatio, QtCore.Qt.TransformationMode.FastTransformation)
         started = time.perf_counter()
         keyed = key_image(image, low=self._low, high=self._high)
         self._key_ms.append((time.perf_counter() - started) * 1000.0)

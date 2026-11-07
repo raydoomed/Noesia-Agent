@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import math
 
-from PySide6 import QtCore, QtGui, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 
 _SIRI = (
     QtGui.QColor("#ff6b9d"),
@@ -57,8 +59,8 @@ class VoiceOrb(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(self.SIZE, self.ORB + self.LABEL_H + 6)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self.setToolTip("按住说话，松手结束")
 
         self._state = STATE_IDLE
@@ -98,7 +100,7 @@ class VoiceOrb(QtWidgets.QWidget):
 
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._holding = True
             self.pressed.emit()
             event.accept()
@@ -106,7 +108,7 @@ class VoiceOrb(QtWidgets.QWidget):
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
-        if event.button() == QtCore.Qt.LeftButton and self._holding:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton and self._holding:
             self._holding = False
             self.released.emit()
             event.accept()
@@ -130,8 +132,8 @@ class VoiceOrb(QtWidgets.QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
 
         center = QtCore.QPointF(self.SIZE / 2, self.ORB / 2)
         base = self.ORB * 0.38
@@ -168,7 +170,7 @@ class VoiceOrb(QtWidgets.QWidget):
             gradient.setColorAt(1.0, QtGui.QColor(color.red(), color.green(), color.blue(), 0))
             painter.setBrush(QtGui.QBrush(gradient))
             painter.drawEllipse(center, spread, spread)
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
 
     def _paint_arcs(self, painter, center, radius) -> None:
         """三段断续的细弧绕着球跑，各走各的速度。"""
@@ -181,17 +183,17 @@ class VoiceOrb(QtWidgets.QWidget):
         else:
             specs = ((1.06, 62, 0.30, 132), (1.14, 42, -0.20, 88), (1.21, 26, 0.12, 54))
 
-        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         for index, (scale, span, speed, alpha) in enumerate(specs):
             r = radius * scale
             rect = QtCore.QRectF(center.x() - r, center.y() - r, r * 2, r * 2)
             pen = QtGui.QPen(QtGui.QColor(255, 255, 255, alpha))
             pen.setWidthF(1.5)
-            pen.setCapStyle(QtCore.Qt.RoundCap)
+            pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             start = (math.degrees(self._phase) * speed + index * 120) % 360
             painter.drawArc(rect, int(start * 16), int(span * 16))
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
 
     def _paint_ball(self, painter, center, radius, colors, level) -> None:
         """球体：几团彩色光在圆里互相叠加，中心烧白。"""
@@ -200,7 +202,7 @@ class VoiceOrb(QtWidgets.QWidget):
         painter.save()
         painter.setClipPath(path)
         painter.fillPath(path, QtGui.QColor(26, 18, 48))
-        painter.setCompositionMode(QtGui.QPainter.CompositionMode_Screen)
+        painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Screen)
 
         spin = self._phase * (1.0 + 0.5 * level)
         reach = radius * (0.56 + 0.06 * level)
@@ -241,6 +243,6 @@ class VoiceOrb(QtWidgets.QWidget):
         rect = QtCore.QRectF(0, self.ORB + 6, self.SIZE, self.LABEL_H)
         painter.drawText(
             rect,
-            QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop,
+            QtCore.Qt.AlignmentFlag.AlignHCenter | QtCore.Qt.AlignmentFlag.AlignTop,
             text,
         )

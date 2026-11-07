@@ -187,8 +187,8 @@ def _stream_edge(text: str, chosen: dict) -> Iterator[bytes]:
         async def run() -> None:
             communicate = edge_tts.Communicate(text, chosen["voice_id"])
             async for piece in communicate.stream():
-                if piece["type"] == "audio" and decoder.stdin:
-                    decoder.stdin.write(piece["data"])
+                if piece.get("type") == "audio" and decoder.stdin:
+                    decoder.stdin.write(piece.get("data") or b"")
                     decoder.stdin.flush()
 
         try:
@@ -196,7 +196,8 @@ def _stream_edge(text: str, chosen: dict) -> Iterator[bytes]:
         finally:
             stop.set()
             try:
-                decoder.stdin.close()
+                if decoder.stdin is not None:
+                    decoder.stdin.close()
             except Exception:  # noqa: BLE001
                 pass
 

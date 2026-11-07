@@ -1,0 +1,13 @@
+{
+  "include": ["src"],
+  "ignore": ["src/engine"],
+  "exclude": ["**/__pycache__", "tests", "scripts", "dist", "build"],
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "basic",
+  "executionEnvironments": [
+    {
+      "root": "src",
+      "extraPaths": ["src", "src/engine"]
+    }
+  ]
+}

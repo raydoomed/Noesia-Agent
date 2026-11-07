@@ -17,7 +17,8 @@ from __future__ import annotations
 import re
 import threading
 
-from PySide6 import QtCore, QtMultimedia
+import PySide6.QtCore as QtCore
+import PySide6.QtMultimedia as QtMultimedia
 
 from app.speech_stream import TARGET_RATE, SpeechError, stream_pcm
 

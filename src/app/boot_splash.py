@@ -14,7 +14,9 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6 import QtCore, QtGui, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 
 TITLE = "Noesia"
 KICKER = "AI Companion"
@@ -68,11 +70,11 @@ class BootSplash(QtWidgets.QWidget):
     ) -> None:
         super().__init__(
             parent,
-            QtCore.Qt.FramelessWindowHint
-            | QtCore.Qt.Tool
-            | QtCore.Qt.WindowStaysOnTopHint,
+            QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint,
         )
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._step = "正在准备界面…"
         self._failed = False
         self._skipped = False
@@ -85,8 +87,8 @@ class BootSplash(QtWidgets.QWidget):
         self._portrait_size = (0, 0)
         self._grain = self._grain_tile()
 
-        self.setFocusPolicy(QtCore.Qt.StrongFocus)
-        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        self.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._place_window()
 
         self._timer = QtCore.QTimer(self)
@@ -133,7 +135,7 @@ class BootSplash(QtWidgets.QWidget):
         fade.setDuration(340)
         fade.setStartValue(1.0)
         fade.setEndValue(0.0)
-        fade.setEasingCurve(QtCore.QEasingCurve.InOutSine)
+        fade.setEasingCurve(QtCore.QEasingCurve.Type.InOutSine)
         fade.valueChanged.connect(self._on_fade)
         fade.finished.connect(then)
         self._fade = fade
@@ -153,10 +155,10 @@ class BootSplash(QtWidgets.QWidget):
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt
         if event.key() in (
-            QtCore.Qt.Key_Escape,
-            QtCore.Qt.Key_Space,
-            QtCore.Qt.Key_Return,
-            QtCore.Qt.Key_Enter,
+            QtCore.Qt.Key.Key_Escape,
+            QtCore.Qt.Key.Key_Space,
+            QtCore.Qt.Key.Key_Return,
+            QtCore.Qt.Key.Key_Enter,
         ):
             self.skip()
             event.accept()
@@ -196,7 +198,7 @@ class BootSplash(QtWidgets.QWidget):
         tile = QtGui.QPixmap(2, 2)
         tile.fill(QtGui.QColor(0, 0, 0, 0))
         painter = QtGui.QPainter(tile)
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(QtGui.QColor(255, 255, 255, 18))
         painter.drawRect(0, 0, 1, 1)
         painter.end()
@@ -219,13 +221,13 @@ class BootSplash(QtWidgets.QWidget):
             return None
 
         target_w = max(1, int(width * 0.52))
-        scaled = source.scaledToWidth(target_w, QtCore.Qt.SmoothTransformation)
+        scaled = source.scaledToWidth(target_w, QtCore.Qt.TransformationMode.SmoothTransformation)
         crop_h = min(scaled.height(), max(1, int(height * 1.06)))
         canvas = QtGui.QPixmap(target_w, crop_h)
         canvas.fill(QtGui.QColor(0, 0, 0, 0))
         painter = QtGui.QPainter(canvas)
         painter.drawPixmap(0, 0, scaled, 0, 0, target_w, crop_h)
-        painter.setCompositionMode(QtGui.QPainter.CompositionMode_DestinationIn)
+        painter.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_DestinationIn)
         right = QtGui.QLinearGradient(0, 0, canvas.width(), 0)
         right.setColorAt(0.00, QtGui.QColor(0, 0, 0, 255))
         right.setColorAt(0.38, QtGui.QColor(0, 0, 0, 255))
@@ -249,7 +251,7 @@ class BootSplash(QtWidgets.QWidget):
             painter.end()
             return
         shot = QtGui.QPixmap(self.size())
-        shot.fill(QtCore.Qt.transparent)
+        shot.fill(QtCore.Qt.GlobalColor.transparent)
         inner = QtGui.QPainter(shot)
         self._render(inner)
         inner.end()
@@ -260,8 +262,8 @@ class BootSplash(QtWidgets.QWidget):
 
     def _render(self, painter: QtGui.QPainter) -> None:
         now = self._now()
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
         width, height = self.width(), self.height()
         u = width / 960.0
         radius = 12 * u
@@ -277,7 +279,7 @@ class BootSplash(QtWidgets.QWidget):
         self._paint_status(painter, now, width, height)
 
         painter.setClipping(False)
-        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
         painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 26), max(1.0, u)))
         painter.drawRoundedRect(frame, radius, radius)
 
@@ -360,7 +362,7 @@ class BootSplash(QtWidgets.QWidget):
 
         kicker_font = QtGui.QFont("Microsoft YaHei UI")
         kicker_font.setPixelSize(int(kicker_px))
-        kicker_font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, kicker_px * 0.62)
+        kicker_font.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing, kicker_px * 0.62)
 
         title_font = QtGui.QFont("Georgia")
         title_font.setItalic(True)
@@ -369,7 +371,7 @@ class BootSplash(QtWidgets.QWidget):
         tag_font = QtGui.QFont("Microsoft YaHei UI")
         tag_font.setPixelSize(int(kicker_px * 1.05))
         tag_font.setBold(True)
-        tag_font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, kicker_px * 0.4)
+        tag_font.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing, kicker_px * 0.4)
 
         line_font = QtGui.QFont("Microsoft YaHei UI")
         line_font.setPixelSize(int(line_px))
@@ -392,7 +394,7 @@ class BootSplash(QtWidgets.QWidget):
             painter.setPen(ROSE)
             painter.drawText(
                 QtCore.QRectF(left, y + (1 - kicker) * 8 * u, box_w, kicker_h),
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
                 KICKER.upper(),
             )
             painter.restore()
@@ -406,7 +408,7 @@ class BootSplash(QtWidgets.QWidget):
             painter.setPen(CREAM)
             painter.drawText(
                 QtCore.QRectF(left, y + (1 - word) * 10 * u, box_w, title_h),
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
                 TITLE,
             )
             word_w = QtGui.QFontMetricsF(title_font).horizontalAdvance(TITLE)
@@ -441,7 +443,7 @@ class BootSplash(QtWidgets.QWidget):
             painter.setPen(QtGui.QColor(239, 225, 220))
             painter.drawText(
                 QtCore.QRectF(left, y + (1 - line) * 6 * u, box_w, line_h),
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
                 LINE,
             )
             painter.restore()
@@ -455,7 +457,7 @@ class BootSplash(QtWidgets.QWidget):
             painter.setPen(QtGui.QColor(178, 165, 168))
             painter.drawText(
                 QtCore.QRectF(left, y + (1 - sub) * 6 * u, box_w, sub_h),
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
                 SUB,
             )
             painter.restore()
@@ -467,7 +469,7 @@ class BootSplash(QtWidgets.QWidget):
         u = width / 960.0
         font = QtGui.QFont("Microsoft YaHei UI")
         font.setPixelSize(max(13, int(12.0 * u)))
-        font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, 1.6 * u)
+        font.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing, 1.6 * u)
         metrics = QtGui.QFontMetricsF(font)
         x = width * 0.032
         y = height - 18 * u - metrics.height()
@@ -480,7 +482,7 @@ class BootSplash(QtWidgets.QWidget):
         else:
             phase = (now % 1.6) / 1.6
             dot_alpha = int(90 + 130 * (1.0 - abs(phase * 2 - 1)))
-        painter.setPen(QtCore.Qt.NoPen)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(FAIL if self._failed else ROSE)
         painter.setOpacity(appear * dot_alpha / 255)
         painter.drawEllipse(QtCore.QPointF(x + dot_r, y + metrics.height() / 2), dot_r, dot_r)
@@ -511,7 +513,7 @@ class BootSplash(QtWidgets.QWidget):
         super().showEvent(event)
         self.raise_()
         self.activateWindow()
-        self.setFocus(QtCore.Qt.OtherFocusReason)
+        self.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._timer.stop()

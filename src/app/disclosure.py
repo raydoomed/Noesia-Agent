@@ -15,7 +15,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from PySide6 import QtCore, QtGui, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
+
+from app.tool_scroll import ToolScroll
 
 CARET_OPEN = "▾"
 CARET_CLOSED = "▸"
@@ -58,11 +62,11 @@ class Fold:
     kind: str
     label: str
     open: bool
-    head_block: QtGui.QTextBlock = field(default=None, repr=False)
+    head_block: QtGui.QTextBlock | None = field(default=None, repr=False)
     has_body: bool = False
     pinned: bool = False
-    glyph: object | None = field(default=None, repr=False)
-    scroll: QtWidgets.QTextBrowser | None = field(default=None, repr=False)
+    glyph: QtGui.QTextImageFormat | None = field(default=None, repr=False)
+    scroll: ToolScroll | None = field(default=None, repr=False)
     slot: QtGui.QTextBlock | None = field(default=None, repr=False)
     chunks: list[tuple[str, QtGui.QColor | None, QtGui.QColor | None]] = field(default_factory=list, repr=False)
     drawn: int = 0
@@ -113,7 +117,11 @@ class Folds:
         删掉的那些块会变成 `isValid() == False`；不丢的话 `all()` 还把它们算作「屏幕上有东西」，
         `has_transcript()` 就永远为真（换会话时判断要不要重铺历史全靠它）。
         """
-        for key in [key for key, fold in self._items.items() if not fold.head_block.isValid()]:
+        for key in [
+            key
+            for key, fold in self._items.items()
+            if fold.head_block is None or not fold.head_block.isValid()
+        ]:
             self._items.pop(key, None)
 
     def owns(self, pos: int) -> bool:
@@ -438,7 +446,7 @@ class Folds:
         pos = block.position()
         cursor = QtGui.QTextCursor(self._doc)
         cursor.setPosition(pos)
-        cursor.setPosition(pos + block.length() - 1, QtGui.QTextCursor.KeepAnchor)
+        cursor.setPosition(pos + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor)
         if fold.glyph is not None:
             cursor.insertImage(fold.glyph)
             cursor.insertText(" ")
@@ -469,7 +477,7 @@ class Folds:
 
     def _end_cursor(self) -> QtGui.QTextCursor:
         cursor = QtGui.QTextCursor(self._doc)
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         return cursor
 
     def _start_block(self, cursor: QtGui.QTextCursor, *, margin: int) -> None:

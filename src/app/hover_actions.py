@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6 import QtCore, QtGui, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 
 from app.tool_view.icons import ui_icon_svg
 
@@ -154,7 +156,7 @@ QToolButton {
             y = max(0, rect.top() + 2)
         self.move(x, y)
 
-    def enterEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+    def enterEvent(self, event: QtGui.QEnterEvent) -> None:  # noqa: N802
         self._set_icon(self.HOVER_COLOR)
         self._show_tip()
         super().enterEvent(event)

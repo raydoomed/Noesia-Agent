@@ -18,7 +18,10 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import unquote, urlparse
 
-from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtNetwork as QtNetwork
+import PySide6.QtWidgets as QtWidgets
 
 from app import (
     audio_devices,
@@ -47,12 +50,12 @@ _ERROR_NOISE = re.compile(r"[A-Za-z]:[\\/][^\s'\"]*|/(?:[\w.\-]+/)+[\w.\-]+|\b[0
 MAX_REVIEW_SUMMARIES = 100
 
 _SCROLL_KEYS = frozenset({
-    QtCore.Qt.Key_Up,
-    QtCore.Qt.Key_Down,
-    QtCore.Qt.Key_PageUp,
-    QtCore.Qt.Key_PageDown,
-    QtCore.Qt.Key_Home,
-    QtCore.Qt.Key_End,
+    QtCore.Qt.Key.Key_Up,
+    QtCore.Qt.Key.Key_Down,
+    QtCore.Qt.Key.Key_PageUp,
+    QtCore.Qt.Key.Key_PageDown,
+    QtCore.Qt.Key.Key_Home,
+    QtCore.Qt.Key.Key_End,
 })
 
 
@@ -89,7 +92,7 @@ class _Input(QtWidgets.QPlainTextEdit):
         painter.setFont(self.font())
         rect = self.cursorRect()
         rect.setWidth(max(0, self.viewport().width() - rect.x() - 2))
-        painter.drawText(rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self._ph_text)
+        painter.drawText(rect, QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter, self._ph_text)
         painter.end()
 
 
@@ -192,10 +195,10 @@ def _paint_range(cursor: QtGui.QTextCursor, start: int, end: int, char_format: Q
     if end <= start:
         return
     cursor.setPosition(start)
-    cursor.setPosition(end, QtGui.QTextCursor.KeepAnchor)
+    cursor.setPosition(end, QtGui.QTextCursor.MoveMode.KeepAnchor)
     cursor.mergeCharFormat(char_format)
     cursor.clearSelection()
-    cursor.movePosition(QtGui.QTextCursor.End)
+    cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
 
 
 def _plain_block_format() -> QtGui.QTextBlockFormat:
@@ -244,7 +247,7 @@ def _image_extension(data: bytes) -> str:
     buffer = QtCore.QBuffer()
     buffer.setData(QtCore.QByteArray(data))
     buffer.open(QtCore.QIODevice.OpenModeFlag.ReadOnly)
-    fmt = bytes(QtGui.QImageReader(buffer).format()).decode("ascii", "ignore").lower()
+    fmt = bytes(QtGui.QImageReader(buffer).format().data()).decode("ascii", "ignore").lower()
     return _IMAGE_SUFFIX.get(fmt, ".png")
 
 
@@ -618,16 +621,16 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
     """
     scale = 2
     pix = QtGui.QPixmap(size * scale, size * scale)
-    pix.fill(QtCore.Qt.transparent)
+    pix.fill(QtCore.Qt.GlobalColor.transparent)
     painter = QtGui.QPainter(pix)
-    painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
     painter.scale(scale * size / 18.0, scale * size / 18.0)
     pen = QtGui.QPen(QtGui.QColor(color))
     pen.setWidthF(1.6)
-    pen.setCapStyle(QtCore.Qt.RoundCap)
-    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(QtCore.Qt.PenJoinStyle.RoundJoin)
     painter.setPen(pen)
-    painter.setBrush(QtCore.Qt.NoBrush)
+    painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
     if kind == "shield":
         path = QtGui.QPainterPath()
         path.moveTo(9.0, 2.4)
@@ -946,7 +949,7 @@ def _key_name(sequence: QtGui.QKeySequence | None) -> str:
     """键名给人看：空格 / F2 / Ctrl+空格 / Win+空格。"""
     if sequence is None or sequence.count() != 1:
         return "空格"
-    text = sequence.toString(QtGui.QKeySequence.NativeText)
+    text = sequence.toString(QtGui.QKeySequence.SequenceFormat.NativeText)
     if text in ("Space", ""):
         return "空格"
     return text.replace("Meta", "Win").replace("Space", "空格")
@@ -956,7 +959,7 @@ def _to_native(sequence: QtGui.QKeySequence) -> tuple[int, int] | None:
     """Qt 的键序列 → (修饰位, 虚拟键码)。钩子只认这两个。"""
     if sequence.count() != 1:
         return None
-    combo = sequence[0]
+    combo = sequence[0]  # pyright: ignore[reportIndexIssue]
     mods = 0
     flags = combo.keyboardModifiers()
     if flags & QtCore.Qt.KeyboardModifier.ShiftModifier:
@@ -1099,11 +1102,11 @@ class _PttKeyDialog(QtWidgets.QDialog):
         self._capture.captured.connect(self._on_captured)
 
         self.setWindowFlags(
-            QtCore.Qt.Tool
-            | QtCore.Qt.FramelessWindowHint
-            | QtCore.Qt.WindowStaysOnTopHint
+            QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
         self.setStyleSheet(_PTT_DIALOG_QSS)
 
@@ -1122,7 +1125,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
         close = QtWidgets.QToolButton(card)
         close.setObjectName("pttclose")
         close.setText("×")
-        close.setCursor(QtCore.Qt.PointingHandCursor)
+        close.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         close.setFixedSize(20, 20)
         close.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         close.clicked.connect(self.reject)
@@ -1150,12 +1153,12 @@ class _PttKeyDialog(QtWidgets.QDialog):
         row.setSpacing(8)
         row.addStretch(1)
         cancel = QtWidgets.QPushButton("取消", card)
-        cancel.setCursor(QtCore.Qt.PointingHandCursor)
+        cancel.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
         self._ok = QtWidgets.QPushButton("确定", card)
         self._ok.setObjectName("primary")
-        self._ok.setCursor(QtCore.Qt.PointingHandCursor)
+        self._ok.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._ok.clicked.connect(self.accept)
         row.addWidget(self._ok)
         lay.addLayout(row)
@@ -1177,7 +1180,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
         """一条键槽：左边是哪里的键，右边是键名。整条可点。"""
         frame = QtWidgets.QFrame(card)
         frame.setObjectName("pttrow")
-        frame.setCursor(QtCore.Qt.PointingHandCursor)
+        frame.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         line = QtWidgets.QHBoxLayout(frame)
         line.setContentsMargins(10, 4, 10, 4)
         line.setSpacing(12)
@@ -1189,7 +1192,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
 
         cap = QtWidgets.QLabel(card)
         cap.setObjectName("pttcap")
-        cap.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        cap.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
         cap.setFixedHeight(26)
         line.addWidget(cap, 1)
 
@@ -1287,14 +1290,14 @@ class _PttKeyDialog(QtWidgets.QDialog):
         self._refresh()
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._drag_offset = (
                 event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             )
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
+        if self._drag_offset is not None and event.buttons() & QtCore.Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
 
@@ -1304,24 +1307,24 @@ class _PttKeyDialog(QtWidgets.QDialog):
 
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:  # noqa: N802
         key = event.key()
-        if key == QtCore.Qt.Key_Escape:
+        if key == QtCore.Qt.Key.Key_Escape:
             self.reject()
             return
-        if key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+        if key in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter):
             if self._pending != self._before and self._conflict()[0] != "block":
                 self.accept()
             return
         if key in (
-            QtCore.Qt.Key_Shift,
-            QtCore.Qt.Key_Control,
-            QtCore.Qt.Key_Alt,
-            QtCore.Qt.Key_Meta,
+            QtCore.Qt.Key.Key_Shift,
+            QtCore.Qt.Key.Key_Control,
+            QtCore.Qt.Key.Key_Alt,
+            QtCore.Qt.Key.Key_Meta,
         ):
             return
         if event.isAutoRepeat():
             return
         sequence = QtGui.QKeySequence(event.keyCombination())
-        if not sequence.toString(QtGui.QKeySequence.PortableText):
+        if not sequence.toString(QtGui.QKeySequence.SequenceFormat.PortableText):
             return
         self._pending[self._target] = sequence
         self._paint_cap(self._target)
@@ -1382,11 +1385,11 @@ class ChatPanel(QtWidgets.QWidget):
     ) -> None:
         super().__init__(parent)
         self.setWindowFlags(
-            QtCore.Qt.Tool
-            | QtCore.Qt.FramelessWindowHint
-            | QtCore.Qt.WindowStaysOnTopHint
+            QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setStyleSheet(STYLE)
         self.setMinimumSize(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT)
         self.setMouseTracking(True)
@@ -1427,7 +1430,7 @@ class ChatPanel(QtWidgets.QWidget):
         new_session = QtWidgets.QPushButton("新会话", frame)
         new_session.setObjectName("mini")
         new_session.setToolTip("开一段新对话：换回历史里不带的干净上下文（改了人设、SOUL.md 之后用它生效）")
-        new_session.setCursor(QtCore.Qt.PointingHandCursor)
+        new_session.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         new_session.clicked.connect(self.new_session_requested.emit)
         layout.addLayout(header)
         self._state_label = state
@@ -1437,7 +1440,7 @@ class ChatPanel(QtWidgets.QWidget):
         combo.setObjectName("model")
         combo.setToolTip("点开按供应商分组选模型（右键头像 → 模型 也能选）；「设置」里填密钥")
         combo.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        combo.setCursor(QtCore.Qt.PointingHandCursor)
+        combo.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         combo.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
         combo.setText("模型")
         combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Maximum, QtWidgets.QSizePolicy.Policy.Fixed)
@@ -1454,7 +1457,7 @@ class ChatPanel(QtWidgets.QWidget):
         set_model.setIconSize(QtCore.QSize(14, 14))
         set_model.setFixedSize(26, 20)
         set_model.setToolTip("设置：选模型；没有可用的就告诉你密钥该放在哪个文件")
-        set_model.setCursor(QtCore.Qt.PointingHandCursor)
+        set_model.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         set_model.clicked.connect(self.model_settings_requested.emit)
         header.addWidget(set_model)
         self._model_button = combo
@@ -1496,8 +1499,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._spin_timer.timeout.connect(self._tick_spin)
         
         self._tool_folds: dict[str, disclosure.Fold] = {}
-        self._tool_images: dict[str, str] = {}
-        self._tool_term_drawn: dict[str, bool] = {}
+        self._tool_images: dict[int, str] = {}
+        self._tool_term_drawn: dict[int, bool] = {}
         self._tool_detail_seen: dict[str, tuple] = {}
         self._delegate_cards: dict[str, dict] = {}
         self._delegate_latest: str = ""
@@ -1522,8 +1525,8 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.setOpenExternalLinks(False)
         self.view.anchorClicked.connect(self._on_anchor)
         self.view.scrolled.connect(self._hide_hover)
-        self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self.view, 1)
 
         head_format = QtGui.QTextCharFormat()
@@ -1596,7 +1599,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attach_button.setIconSize(QtCore.QSize(14, 14))
         self._attach_button.setFixedSize(22, 22)
         self._attach_button.setToolTip("加附件（图片、文档；也可以直接粘贴或拖进来）")
-        self._attach_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._attach_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._attach_menu = QtWidgets.QMenu(self._attach_button)
         self._attach_menu.setObjectName("modelmenu")
         self._attach_menu.addSection("附加")
@@ -1621,11 +1624,11 @@ class ChatPanel(QtWidgets.QWidget):
         self.input = _Input(box)
         self.input.setObjectName("input")
         self.input.set_placeholder("和 Noesia 说点什么…")
-        self.input.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.input.setLineWrapMode(QtWidgets.QPlainTextEdit.WidgetWidth)
+        self.input.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self.input.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
         self.input.setTabChangesFocus(True)
-        self.input.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.input.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.input.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.input.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.input.document().setDocumentMargin(0)
         self.input.installEventFilter(self)
         self.input.viewport().installEventFilter(self)
@@ -1643,14 +1646,14 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_orb.hide()
         self._voice_orb.pressed.connect(self._voice_hold_start)
         self._voice_orb.released.connect(self._voice_hold_end)
-        box_row.addWidget(self._voice_orb, 1, QtCore.Qt.AlignCenter)
+        box_row.addWidget(self._voice_orb, 1, QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self._approval_button = QtWidgets.QToolButton(box)
         self._approval_button.setObjectName("icon")
         self._approval_button.setIcon(_glyph_icon("shield"))
         self._approval_button.setIconSize(QtCore.QSize(14, 14))
         self._approval_button.setFixedSize(22, 22)
-        self._approval_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._approval_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._approval_button.setToolTip("审批档位：还没问到引擎")
         self._approval_menu = QtWidgets.QMenu(self._approval_button)
         self._approval_menu.setObjectName("modelmenu")
@@ -1666,7 +1669,7 @@ class ChatPanel(QtWidgets.QWidget):
                 lambda _checked=False, chosen=value: self.approval_requested.emit(chosen)
             )
         self._approval_button.setMenu(self._approval_menu)
-        self._approval_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self._approval_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         box_row.addWidget(self._approval_button)
 
         self._reasoning_button = QtWidgets.QToolButton(box)
@@ -1674,7 +1677,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._reasoning_button.setIcon(_glyph_icon("spark"))
         self._reasoning_button.setIconSize(QtCore.QSize(14, 14))
         self._reasoning_button.setFixedSize(22, 22)
-        self._reasoning_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._reasoning_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._reasoning_button.setEnabled(False)
         self._reasoning_button.setToolTip("推理强度：等引擎回读当前档位")
         self._reasoning_menu = QtWidgets.QMenu(self._reasoning_button)
@@ -1683,14 +1686,14 @@ class ChatPanel(QtWidgets.QWidget):
         self._reasoning_menu.setObjectName("modelmenu")
         self._reasoning_menu.setStyleSheet(STYLE)
         self._reasoning_button.setMenu(self._reasoning_menu)
-        self._reasoning_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self._reasoning_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         box_row.addWidget(self._reasoning_button)
 
         self._voice_button = QtWidgets.QToolButton(box)
         self._voice_button.setObjectName("icon")
         self._voice_button.setIconSize(QtCore.QSize(14, 14))
         self._voice_button.setFixedSize(22, 22)
-        self._voice_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._voice_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._voice_menu = QtWidgets.QMenu(self._voice_button)
         self._voice_group = QtGui.QActionGroup(self._voice_menu)
         self._voice_group.setExclusive(True)
@@ -1701,7 +1704,7 @@ class ChatPanel(QtWidgets.QWidget):
             action.setData(value)
             action.triggered.connect(lambda _checked=False, mode=value: self.set_voice_mode(mode))
         self._voice_button.setMenu(self._voice_menu)
-        self._voice_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self._voice_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         box_row.addWidget(self._voice_button)
         self.set_voice_mode(_voice_mode())
 
@@ -1710,10 +1713,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._mic_button.setIcon(_glyph_icon("mic"))
         self._mic_button.setIconSize(QtCore.QSize(14, 14))
         self._mic_button.setFixedSize(22, 22)
-        self._mic_button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._mic_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._mic_button.setToolTip("语音输入（右键选麦克风）")
         self._mic_button.clicked.connect(self._toggle_voice_input)
-        self._mic_button.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self._mic_button.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self._mic_button.customContextMenuRequested.connect(self._show_mic_menu)
         box_row.addWidget(self._mic_button)
         self._init_voice_input()
@@ -1729,7 +1732,7 @@ class ChatPanel(QtWidgets.QWidget):
         glow.setOffset(0, 3)
         send.setGraphicsEffect(glow)
         send.setObjectName("send")
-        send.setCursor(QtCore.Qt.PointingHandCursor)
+        send.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._attachments: list[dict] = []
         self._clipboard_seq = 0
         self._attach_chips: list[QtWidgets.QFrame] = []
@@ -1879,7 +1882,7 @@ class ChatPanel(QtWidgets.QWidget):
                 keep = self._menu_row_key(active)
             for action in menu.actions():
                 sub = action.menu()
-                if sub is not None and sub.isVisible():
+                if isinstance(sub, QtWidgets.QMenu) and sub.isVisible():
                     keep_open_sub = self._menu_row_key(action)
                     inner = sub.activeAction()
                     if inner is not None and not inner.isSeparator():
@@ -1915,7 +1918,7 @@ class ChatPanel(QtWidgets.QWidget):
                 continue
             menu.setActiveAction(action)
             sub = action.menu()
-            if sub is not None:
+            if isinstance(sub, QtWidgets.QMenu):
                 sub.popup(menu.mapToGlobal(menu.actionGeometry(action).topRight()))
                 if wanted_item:
                     for row in sub.actions():
@@ -2618,7 +2621,7 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self._bubble_has_text = True
         cursor = QtGui.QTextCursor(self.view.document())
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         if self._para_break or self._folds.owns(cursor.position()) or self._is_code_block(cursor.block()):
             cursor.insertBlock()
             cursor.setCharFormat(QtGui.QTextCharFormat())
@@ -2638,7 +2641,7 @@ class ChatPanel(QtWidgets.QWidget):
         if not block.text().endswith("\u2028"):
             return
         cursor = QtGui.QTextCursor(block)
-        cursor.movePosition(QtGui.QTextCursor.EndOfBlock)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock)
         cursor.deletePreviousChar()
 
     def _insert_media(self, raw_path: str) -> None:
@@ -3874,7 +3877,7 @@ class ChatPanel(QtWidgets.QWidget):
 
         self._drop_trailing_blank_line()
         cursor = QtGui.QTextCursor(self.view.document())
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         if not self.view.document().isEmpty():
             cursor.insertBlock()
         cursor.setCharFormat(base)
@@ -3920,7 +3923,7 @@ class ChatPanel(QtWidgets.QWidget):
             return
         document = self.view.document()
         cursor = QtGui.QTextCursor(document)
-        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
         heading = _HEADING_RE.match(markup)
         if heading:
             self._insert_heading(cursor, int(heading.group(1)), heading.group(2))
@@ -4366,7 +4369,7 @@ class ChatPanel(QtWidgets.QWidget):
         close.setObjectName("icon")
         close.setText("×")
         close.setFixedSize(16, 16)
-        close.setCursor(QtCore.Qt.PointingHandCursor)
+        close.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         close.setToolTip("不发了")
         close.clicked.connect(lambda _checked=False, target=entry: self._drop_queued(target))
         line.addWidget(close)
@@ -4482,7 +4485,7 @@ class ChatPanel(QtWidgets.QWidget):
         for label, description, body in PROMPT_SNIPPETS:
             button = QtWidgets.QPushButton(f"{label}\n{description}", dialog)
             button.setObjectName("snippet")
-            button.setCursor(QtCore.Qt.PointingHandCursor)
+            button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
             button.setMinimumHeight(46)
             button.clicked.connect(
                 lambda _checked=False, text=body, window=dialog: (self.insert_text(text), window.accept())
@@ -4496,7 +4499,7 @@ class ChatPanel(QtWidgets.QWidget):
         插入前看住两端：草稿末尾正贴着字的话先补一个换行，`@folder:` 粘在上一句尾巴上
         就成了「帮我看看@folder:…」，引擎按整串找引用找不到，用户看着还以为是引擎不认。
         """
-        self.input.moveCursor(QtGui.QTextCursor.End)
+        self.input.moveCursor(QtGui.QTextCursor.MoveOperation.End)
         body = self.input.toPlainText()
         if body and not body[-1].isspace():
             text = "\n" + text
@@ -4529,7 +4532,7 @@ class ChatPanel(QtWidgets.QWidget):
         thumb = QtWidgets.QLabel(chip)
         pixmap = self._attachment_pixmap(item)
         if pixmap is not None:
-            thumb.setPixmap(pixmap.scaled(26, 26, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+            thumb.setPixmap(pixmap.scaled(26, 26, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation))
         else:
             thumb.setText("📄")
         line.addWidget(thumb)
@@ -4540,7 +4543,7 @@ class ChatPanel(QtWidgets.QWidget):
         close.setObjectName("icon")
         close.setText("×")
         close.setFixedSize(16, 16)
-        close.setCursor(QtCore.Qt.PointingHandCursor)
+        close.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         close.setToolTip("不发了")
         close.clicked.connect(lambda _checked=False, target=item: self._drop_attachment(target))
         line.addWidget(close)
@@ -4614,8 +4617,8 @@ class ChatPanel(QtWidgets.QWidget):
             return False
         buffer = QtCore.QBuffer()
         buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
-        image.save(buffer, "PNG")
-        data = bytes(buffer.data())
+        image.save(buffer, b"PNG")
+        data = bytes(buffer.data().data())
         buffer.close()
         if not data:
             return False
@@ -4669,9 +4672,9 @@ class ChatPanel(QtWidgets.QWidget):
         if self.input.height() != height:
             self.input.setFixedHeight(height)
         self.input.setVerticalScrollBarPolicy(
-            QtCore.Qt.ScrollBarAsNeeded
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
             if shown >= INPUT_MAX_LINES
-            else QtCore.Qt.ScrollBarAlwaysOff
+            else QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
 
     def _emit(self) -> None:
@@ -4722,8 +4725,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._ptt_button.setIcon(_glyph_icon("keycap"))
         self._ptt_button.setIconSize(QtCore.QSize(14, 14))
         self._ptt_button.setFixedSize(22, 22)
-        self._ptt_button.setCursor(QtCore.Qt.PointingHandCursor)
-        self._ptt_button.setFocusPolicy(QtCore.Qt.NoFocus)
+        self._ptt_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._ptt_button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self._ptt_button.clicked.connect(self._ask_ptt_key)
         self._ptt_button.hide()
         self._refresh_ptt_button()
@@ -4766,9 +4769,9 @@ class ChatPanel(QtWidgets.QWidget):
             self._voice_focus_backup = {}
             for child in self.findChildren(QtWidgets.QWidget):
                 policy = child.focusPolicy()
-                if policy != QtCore.Qt.NoFocus:
+                if policy != QtCore.Qt.FocusPolicy.NoFocus:
                     self._voice_focus_backup[child] = policy
-                    child.setFocusPolicy(QtCore.Qt.NoFocus)
+                    child.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
             self.setFocus()
             self._mic_button.setIcon(_glyph_icon("keyboard", "#ffffff"))
             self._mic_button.setToolTip(
@@ -4805,8 +4808,8 @@ class ChatPanel(QtWidgets.QWidget):
                 except RuntimeError:
                     pass
             self._voice_focus_backup = {}
-            self._mic_button.setFocusPolicy(QtCore.Qt.StrongFocus)
-            self.view.setFocusPolicy(QtCore.Qt.StrongFocus)
+            self._mic_button.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+            self.view.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
             self.input.show()
             QtCore.QTimer.singleShot(0, self._fit_input_height)
             self._mic_button.setIcon(_glyph_icon("mic"))
@@ -4992,9 +4995,9 @@ class ChatPanel(QtWidgets.QWidget):
                 stored = ""
         if stored:
             sequence = QtGui.QKeySequence(stored)
-            if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.PortableText):
+            if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.SequenceFormat.PortableText):
                 return sequence
-        return QtGui.QKeySequence(QtCore.Qt.Key_Space)
+        return QtGui.QKeySequence(QtCore.Qt.Key.Key_Space)
 
     def _ptt_label(self) -> str:
         """给人看的键名：空格 / F2 / Ctrl+空格。"""
@@ -5011,9 +5014,9 @@ class ChatPanel(QtWidgets.QWidget):
                 stored = ""
         if stored:
             sequence = QtGui.QKeySequence(stored)
-            if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.PortableText):
+            if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.SequenceFormat.PortableText):
                 return sequence
-        return QtGui.QKeySequence(QtCore.Qt.SHIFT | QtCore.Qt.Key_Space)
+        return QtGui.QKeySequence(QtCore.Qt.KeyboardModifier.ShiftModifier | QtCore.Qt.Key.Key_Space)
 
     def _global_ptt_label(self) -> str:
         return _key_name(self._global_ptt_sequence())
@@ -5058,7 +5061,7 @@ class ChatPanel(QtWidgets.QWidget):
         sequence = self._ptt_sequence()
         if sequence.count() != 1:
             return False
-        expected = sequence[0]
+        expected = sequence[0]  # pyright: ignore[reportIndexIssue]
         actual = event.keyCombination()
         return (
             expected.key() == actual.key()
@@ -5069,7 +5072,7 @@ class ChatPanel(QtWidgets.QWidget):
         """这个松开是不是按住说话那个主键。松手只认主键——那时候修饰键可能已经先松了。"""
         key = event.keyCombination().key()
         return any(
-            seq.count() == 1 and seq[0].key() == key
+            seq.count() == 1 and seq[0].key() == key  # pyright: ignore[reportIndexIssue]
             for seq in (self._ptt_sequence(), self._global_ptt_sequence())
         )
 
@@ -5141,11 +5144,11 @@ class ChatPanel(QtWidgets.QWidget):
         if self._voice_prefs is not None:
             try:
                 if window_sequence is not None:
-                    portable = window_sequence.toString(QtGui.QKeySequence.PortableText)
+                    portable = window_sequence.toString(QtGui.QKeySequence.SequenceFormat.PortableText)
                     if portable:
                         self._voice_prefs.remember_hotkey("" if portable == "Space" else portable)
                 if global_sequence is not None:
-                    portable = global_sequence.toString(QtGui.QKeySequence.PortableText)
+                    portable = global_sequence.toString(QtGui.QKeySequence.SequenceFormat.PortableText)
                     if portable:
                         self._voice_prefs.remember_global_hotkey(
                             "" if portable == "Shift+Space" else portable
@@ -6077,7 +6080,7 @@ class ChatPanel(QtWidgets.QWidget):
             elif kind is QtCore.QEvent.Type.MouseButtonPress:
                 self._press_pos = event.position().toPoint()
             elif kind is QtCore.QEvent.Type.MouseButtonRelease and (
-                event.button() is QtCore.Qt.LeftButton
+                event.button() is QtCore.Qt.MouseButton.LeftButton
             ):
                 start = self._press_pos
                 point = event.position().toPoint()
@@ -6115,10 +6118,10 @@ class ChatPanel(QtWidgets.QWidget):
                 self._ime_composing = bool(event.preeditString())
                 self._sync_input_ph()
             elif kind is QtCore.QEvent.Type.KeyPress:
-                if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter) and not getattr(
+                if event.key() in (QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter) and not getattr(
                     self, "_ime_composing", False
                 ):
-                    if event.modifiers() & QtCore.Qt.ShiftModifier:
+                    if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
                         return super().eventFilter(obj, event)
                     self._emit()
                     return True
@@ -6154,18 +6157,18 @@ class ChatPanel(QtWidgets.QWidget):
         if obj is getattr(self, "_frame", None):
             kind = event.type()
             if kind is QtCore.QEvent.Type.MouseButtonPress:
-                if event.button() is QtCore.Qt.LeftButton and self._begin_resize(
+                if event.button() is QtCore.Qt.MouseButton.LeftButton and self._begin_resize(
                     event.position().toPoint(), event.globalPosition().toPoint()
                 ):
                     return True
             elif kind is QtCore.QEvent.Type.MouseMove and not (
-                event.buttons() & QtCore.Qt.LeftButton
+                event.buttons() & QtCore.Qt.MouseButton.LeftButton
             ):
                 self._sync_edge_cursor(event.position().toPoint())
         return super().eventFilter(obj, event)
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
-        if event.button() is QtCore.Qt.LeftButton:
+        if event.button() is QtCore.Qt.MouseButton.LeftButton:
             if self._begin_resize(event.position().toPoint(), event.globalPosition().toPoint()):
                 return
             if event.position().y() < 48:
@@ -6191,7 +6194,7 @@ class ChatPanel(QtWidgets.QWidget):
             )
             self.setGeometry(rect_after_resize(self.geometry(), self._resize_edge, size))
             return
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
+        if self._drag_offset is not None and event.buttons() & QtCore.Qt.MouseButton.LeftButton:
             self._snapped = False
             self.move(pos - self._drag_offset)
             return
@@ -6229,7 +6232,7 @@ class ChatPanel(QtWidgets.QWidget):
             if not event.isAutoRepeat():
                 self._hold_begin()
             return
-        if event.key() == QtCore.Qt.Key_Escape:
+        if event.key() == QtCore.Qt.Key.Key_Escape:
             self.hide()
             return
         super().keyPressEvent(event)

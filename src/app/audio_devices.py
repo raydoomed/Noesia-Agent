@@ -297,8 +297,8 @@ class EndpointWatcher:
         self._lock = threading.Lock()
         self._refs = 0
         self._thunks = [
-            field_type(getattr(self, name))
-            for name, (_field, field_type) in zip(_CALLBACK_NAMES, _NotificationVtbl._fields_)
+            field[1](getattr(self, name))
+            for name, field in zip(_CALLBACK_NAMES, _NotificationVtbl._fields_)
         ]
         self._vtable = _NotificationVtbl(*self._thunks)
         self._object = _Notification(POINTER(_NotificationVtbl)(self._vtable))

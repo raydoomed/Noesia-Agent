@@ -15,7 +15,9 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
-from PySide6 import QtCore, QtGui, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 
 from app.engine_config import workspace_from_config
 from app.env_keys import env_file
@@ -380,9 +382,9 @@ def _page_scroller(parent: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
     area = QtWidgets.QScrollArea(parent)
     area.setObjectName("dialog-scroll")
     area.setWidgetResizable(True)
-    area.setFrameShape(QtWidgets.QFrame.NoFrame)
-    area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-    area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+    area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
     body = QtWidgets.QWidget(area)
     body.setObjectName("dialog-scroll-body")
     area.setWidget(body)
@@ -394,7 +396,7 @@ def _add_short(combo: QtWidgets.QComboBox, text: str, data: str, limit: int = 0)
     收起状态下控件窄，Qt 会自己打省略号，不会把窗口顶宽。"""
     clean = " ".join(str(text).split())
     combo.addItem(clean if not limit else (clean if len(clean) <= limit else clean[: limit - 1] + "…"), data)
-    combo.setItemData(combo.count() - 1, text, QtCore.Qt.ToolTipRole)
+    combo.setItemData(combo.count() - 1, text, QtCore.Qt.ItemDataRole.ToolTipRole)
 
 
 def _model_label(provider: str, item: str) -> str:
@@ -411,9 +413,9 @@ def _fit_popup(combo: QtWidgets.QComboBox, max_width: int = 520) -> None:
 
 def _slim(combo: QtWidgets.QComboBox, length: int = 12) -> QtWidgets.QComboBox:
     """下拉不按最长那条撑宽度：音色名动辄「名字 · 中文 · 女 · accent」，一撑窗口就横着溢出。"""
-    combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    combo.setSizeAdjustPolicy(QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
     combo.setMinimumContentsLength(length)
-    combo.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+    combo.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Fixed)
     combo.setFixedHeight(28)
     return combo
 
@@ -436,7 +438,7 @@ class _SelectDot(QtWidgets.QRadioButton):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt
         super().paintEvent(event)
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         center = QtCore.QPointF(self.LEFT, self.rect().center().y() + 0.5)
         if self.isChecked():
             green = QtGui.QColor(self.GREEN)
@@ -444,18 +446,18 @@ class _SelectDot(QtWidgets.QRadioButton):
             glow.setColorAt(0.0, QtGui.QColor(green.red(), green.green(), green.blue(), 130))
             glow.setColorAt(0.55, QtGui.QColor(green.red(), green.green(), green.blue(), 48))
             glow.setColorAt(1.0, QtGui.QColor(green.red(), green.green(), green.blue(), 0))
-            painter.setPen(QtCore.Qt.NoPen)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
             painter.setBrush(glow)
             painter.drawEllipse(center, 9.5, 9.5)
             painter.setPen(QtGui.QPen(QtGui.QColor(green.red(), green.green(), green.blue(), 150), 1.0))
-            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             painter.drawEllipse(center, self.RADIUS + 1.6, self.RADIUS + 1.6)
-            painter.setPen(QtCore.Qt.NoPen)
+            painter.setPen(QtCore.Qt.PenStyle.NoPen)
             painter.setBrush(green)
             painter.drawEllipse(center, self.RADIUS, self.RADIUS)
         else:
             painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 78), 1.2))
-            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
             painter.drawEllipse(center, self.RADIUS, self.RADIUS)
 
 
@@ -475,7 +477,7 @@ class _AvatarStatus(QtWidgets.QWidget):
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
         self.setMinimumHeight(30)
-        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Minimum)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Minimum)
         self.hide()
 
     @property
@@ -502,7 +504,7 @@ class _AvatarStatus(QtWidgets.QWidget):
     def _fit(self) -> None:
         width = max(self.width(), 220) - 32
         box = self.fontMetrics().boundingRect(
-            QtCore.QRect(0, 0, width, 400), QtCore.Qt.TextWordWrap, self._text
+            QtCore.QRect(0, 0, width, 400), QtCore.Qt.TextFlag.TextWordWrap, self._text
         )
         self.setFixedHeight(max(30, box.height() + 12))
 
@@ -516,7 +518,7 @@ class _AvatarStatus(QtWidgets.QWidget):
 
     def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         height = self.height()
         cx, cy = 9.0, height / 2.0
         ring = QtCore.QRectF(cx - 6.0, cy - 9.0 + 3.0, 12.0, 12.0)
@@ -529,13 +531,13 @@ class _AvatarStatus(QtWidgets.QWidget):
             trace.setColorAt(0.7, QtGui.QColor(150, 200, 255, 0))
             trace.setColorAt(1.0, QtGui.QColor(150, 200, 255, 0))
             pen = QtGui.QPen(QtGui.QBrush(trace), 2)
-            pen.setCapStyle(QtCore.Qt.RoundCap)
+            pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             painter.drawEllipse(ring)
         elif self._ok:
             pen = QtGui.QPen(QtGui.QColor(122, 224, 168), 2)
-            pen.setCapStyle(QtCore.Qt.RoundCap)
-            pen.setJoinStyle(QtCore.Qt.RoundJoin)
+            pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(QtCore.Qt.PenJoinStyle.RoundJoin)
             painter.setPen(pen)
             tick = QtGui.QPainterPath()
             tick.moveTo(cx - 4.0, cy)
@@ -544,7 +546,7 @@ class _AvatarStatus(QtWidgets.QWidget):
             painter.drawPath(tick)
         else:
             pen = QtGui.QPen(QtGui.QColor(238, 128, 128), 2)
-            pen.setCapStyle(QtCore.Qt.RoundCap)
+            pen.setCapStyle(QtCore.Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             painter.drawLine(QtCore.QPointF(cx - 3.5, cy - 3.5), QtCore.QPointF(cx + 3.5, cy + 3.5))
             painter.drawLine(QtCore.QPointF(cx + 3.5, cy - 3.5), QtCore.QPointF(cx - 3.5, cy + 3.5))
@@ -562,7 +564,7 @@ class _AvatarStatus(QtWidgets.QWidget):
         painter.setPen(colour)
         painter.drawText(
             QtCore.QRectF(24.0, 2.0, self.width() - 28.0, height - 4.0),
-            QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft | QtCore.Qt.TextWordWrap,
+            QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.TextFlag.TextWordWrap,
             self._text,
         )
         painter.end()
@@ -633,12 +635,12 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     ) -> None:
         super().__init__(
             parent,
-            QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint,
+            QtCore.Qt.WindowType.Window | QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.WindowStaysOnTopHint,
         )
         self.setWindowTitle("设置模型")
         self.setModal(True)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.setAttribute(QtCore.Qt.WA_QuitOnClose, False)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_QuitOnClose, False)
         self.setStyleSheet(STYLE)
         _apply_dark_palette(self)
         self.setMinimumWidth(400)
@@ -679,7 +681,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         close.setObjectName("closebtn")
         close.setText("✕")
         close.setToolTip("关掉（Esc 也行）")
-        close.setCursor(QtCore.Qt.PointingHandCursor)
+        close.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         close.clicked.connect(self.reject)
         bar.addWidget(title)
         bar.addStretch(1)
@@ -823,6 +825,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         scroller = _page_scroller(page)
         self._keys_scroller = scroller
         inner = scroller.widget()
+        assert inner is not None
         rows = QtWidgets.QVBoxLayout(inner)
         rows.setContentsMargins(0, 2, 4, 2)
         rows.setSpacing(8)
@@ -878,7 +881,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         key_row = QtWidgets.QHBoxLayout()
         key_row.setSpacing(6)
         key = QtWidgets.QLineEdit(block)
-        key.setEchoMode(QtWidgets.QLineEdit.Password)
+        key.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         key.setPlaceholderText(
             f"粘贴 {names[0]} 的值" if names else "粘贴新的 Key（会覆盖已存的那把）"
         )
@@ -930,6 +933,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         scroller = _page_scroller(page)
         self._text_scroller = scroller
         inner = scroller.widget()
+        assert inner is not None
         rows = QtWidgets.QVBoxLayout(inner)
         rows.setContentsMargins(0, 2, 4, 2)
         rows.setSpacing(8)
@@ -964,7 +968,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             slug: str(block["model"].currentData() or "")
             for slug, block in self._text_blocks.items()
         }
-        layout = self._text_scroller.widget().layout()
+        host = self._text_scroller.widget()
+        layout = host.layout() if host is not None else None
+        if not isinstance(layout, QtWidgets.QVBoxLayout):
+            return
         for slug in list(self._text_blocks):
             block = self._text_blocks.pop(slug)
             block["block"].setParent(None)
@@ -1111,7 +1118,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                     block["row"].get("label") or ""
                 ).lower()
             block["block"].setVisible(hit)
-        layout = self._keys_scroller.widget().layout()
+        host = self._keys_scroller.widget()
+        layout = host.layout() if host is not None else None
+        if not isinstance(layout, QtWidgets.QVBoxLayout):
+            return
         for _slug, block in ordered:
             layout.removeWidget(block["block"])
         for position, (_slug, block) in enumerate(ordered):
@@ -1228,7 +1238,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._choices = incoming
 
         if hasattr(self, "_keys_scroller"):
-            layout = self._keys_scroller.widget().layout()
+            host = self._keys_scroller.widget()
+            layout = host.layout() if host is not None else None
+            if not isinstance(layout, QtWidgets.QVBoxLayout):
+                return
             for slug in list(self._key_blocks):
                 block = self._key_blocks.pop(slug)
                 block["block"].setParent(None)
@@ -1392,6 +1405,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         scroller = _page_scroller(page)
         layout.addWidget(scroller, 1)
         inner = scroller.widget()
+        assert inner is not None
         rows = QtWidgets.QVBoxLayout(inner)
         rows.setContentsMargins(0, 2, 8, 2)
         rows.setSpacing(8)
@@ -1421,7 +1435,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             key = None
             if keyed:
                 key = QtWidgets.QLineEdit(block)
-                key.setEchoMode(QtWidgets.QLineEdit.Password)
+                key.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
                 key.setFixedHeight(28)
                 key.setPlaceholderText(
                     "留空就是不改" if has_key else f"粘贴 {speech_prefs.env_key_name(provider)} 的值"
@@ -1869,7 +1883,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         layout.addWidget(self._avatar_key_label)
         self._avatar_key_edit = QtWidgets.QLineEdit(page)
         self._avatar_key_edit.textChanged.connect(lambda _text: self._on_avatar_key_typed())
-        self._avatar_key_edit.setEchoMode(QtWidgets.QLineEdit.Password)
+        self._avatar_key_edit.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
         layout.addWidget(self._avatar_key_edit)
 
         self._avatar_hint = QtWidgets.QLabel("", page)
@@ -1936,7 +1950,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._avatar_thumb.clear()
         else:
             self._avatar_thumb.setPixmap(
-                pixmap.scaled(48, 64, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+                pixmap.scaled(48, 64, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
             )
         self._avatar_image_label.setText(
             f"{target.name}（你自己选的）" if chosen else f"{target.name}（内置）"
@@ -2418,19 +2432,19 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         """按住标题栏拖窗口：无边框了，系统那套拖动就没了，得自己接一下。"""
         if watched is self._titlebar:
             kind = event.type()
-            if kind == QtCore.QEvent.MouseButtonPress and event.button() == QtCore.Qt.LeftButton:
+            if kind == QtCore.QEvent.Type.MouseButtonPress and event.button() == QtCore.Qt.MouseButton.LeftButton:
                 self._drag_from = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
                 return True
-            if kind == QtCore.QEvent.MouseMove and self._drag_from is not None:
+            if kind == QtCore.QEvent.Type.MouseMove and self._drag_from is not None:
                 self.move(event.globalPosition().toPoint() - self._drag_from)
                 return True
-            if kind == QtCore.QEvent.MouseButtonRelease:
+            if kind == QtCore.QEvent.Type.MouseButtonRelease:
                 self._drag_from = None
                 return True
         return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt
-        if event.key() == QtCore.Qt.Key_Escape:
+        if event.key() == QtCore.Qt.Key.Key_Escape:
             self.reject()
             return
         super().keyPressEvent(event)
@@ -2578,7 +2592,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._save_timer.timeout.connect(self._engine_save_timed_out)
         self._save_timer.start(8000)
         try:
-            self._engine_save(self.selection(), self.engine_save_done)
+            if self._engine_save is not None:
+                self._engine_save(self.selection(), self.engine_save_done)
         except Exception as exc:  # noqa: BLE001
             self.engine_save_done(False, [f"没能把这次保存交给引擎：{type(exc).__name__}: {exc}"])
 

@@ -32,7 +32,7 @@ from app.status_stack import CONFIRM_TTL_MS
 CREATE_NO_WINDOW = 0x08000000
 START_TIME_DRIFT = 200
 
-from PySide6 import QtCore
+import PySide6.QtCore as QtCore
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +137,7 @@ def prepend_bundled_paths(root: "Path | str") -> list[Path]:
 
 def project_processes(  # noqa: D401
     project_root: "Path | str",
-    exclude: "set[int] | list[int]" = (),
+    exclude: "set[int] | list[int] | tuple[int, ...]" = (),
 ) -> list[int]:
     """跑在本项目目录里的进程（按可执行文件路径判定），排除 `exclude` 里的 pid。
 
@@ -211,7 +211,7 @@ def is_console_client(command: str, image: str) -> bool:
 
 def console_clients(
     project_root: "Path | str",
-    exclude: "set[int] | list[int]" = (),
+    exclude: "set[int] | list[int] | tuple[int, ...]" = (),
 ) -> list[int]:
     """命令行里还开着的 noesia 会话（= 要请它按 Ctrl+C 退出、然后才轮到启动的那台）。
 

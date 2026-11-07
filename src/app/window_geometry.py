@@ -10,7 +10,9 @@
 
 from __future__ import annotations
 
-from PySide6 import QtCore, QtGui, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 
 RESIZE_MARGIN = 12
 MIN_WIDTH = 180
@@ -18,7 +20,7 @@ DEFAULT_WIDTH = 360
 MAX_WIDTH = 1600
 
 
-def edges_at(pos: QtCore.QPoint, size: QtCore.QSize, margin: int = RESIZE_MARGIN) -> QtCore.Qt.Edges:
+def edges_at(pos: QtCore.QPoint, size: QtCore.QSize, margin: int = RESIZE_MARGIN) -> QtCore.Qt.Edge:
     """按下位置命中的边/角；窗口正中返回空（表示应当拖动而不是缩放）。"""
     edges = QtCore.Qt.Edge(0)
     if pos.x() <= margin:
@@ -32,7 +34,7 @@ def edges_at(pos: QtCore.QPoint, size: QtCore.QSize, margin: int = RESIZE_MARGIN
     return edges
 
 
-def cursor_for(edges: QtCore.Qt.Edges) -> QtCore.Qt.CursorShape:
+def cursor_for(edges: QtCore.Qt.Edge) -> QtCore.Qt.CursorShape:
     """不同边给不同鼠标指针，用户才知道这里能拉。"""
     left = bool(edges & QtCore.Qt.Edge.LeftEdge)
     right = bool(edges & QtCore.Qt.Edge.RightEdge)
@@ -119,7 +121,7 @@ def fit_free_size(
 
 
 def size_from_drag_free(
-    edge: QtCore.Qt.Edges,
+    edge: QtCore.Qt.Edge,
     start: QtCore.QSize,
     delta: QtCore.QPoint,
     *,
@@ -150,7 +152,7 @@ def size_from_drag_free(
 
 
 def rect_after_resize(
-    rect: QtCore.QRect, edges: QtCore.Qt.Edges, size: QtCore.QSize
+    rect: QtCore.QRect, edges: QtCore.Qt.Edge, size: QtCore.QSize
 ) -> QtCore.QRect:
     """按新尺寸算窗口矩形；拖左边/上边时把右下角钉住，否则整窗会跑偏。"""
     geo = QtCore.QRect(rect.topLeft(), size)
@@ -162,7 +164,7 @@ def rect_after_resize(
 
 
 def size_from_drag(
-    edge: QtCore.Qt.Edges,
+    edge: QtCore.Qt.Edge,
     start: QtCore.QSize,
     delta: QtCore.QPoint,
     aspect: float,
@@ -198,9 +200,9 @@ def hit_region(image: QtGui.QImage, size: QtCore.QSize, step: int = 6,
     """
     if image is None or image.isNull() or size.width() <= 0 or size.height() <= 0:
         return QtGui.QRegion()
-    scaled = image.scaled(size, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.FastTransformation)
-    if scaled.format() != QtGui.QImage.Format_Alpha8:
-        scaled = scaled.convertToFormat(QtGui.QImage.Format_Alpha8)
+    scaled = image.scaled(size, QtCore.Qt.AspectRatioMode.IgnoreAspectRatio, QtCore.Qt.TransformationMode.FastTransformation)
+    if scaled.format() != QtGui.QImage.Format.Format_Alpha8:
+        scaled = scaled.convertToFormat(QtGui.QImage.Format.Format_Alpha8)
     region = QtGui.QRegion()
     for y in range(0, scaled.height(), step):
         for x in range(0, scaled.width(), step):

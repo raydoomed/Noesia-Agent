@@ -315,9 +315,13 @@ def memory_limits(core_path: Path, home: Path) -> tuple[int, int]:
     except Exception:  # noqa: BLE001
         logger.exception("读不到引擎默认配置")
         defaults = {}
+    if not isinstance(defaults, dict):
+        defaults = {}
 
     def pick(key: str) -> int:
         for source in (memory, defaults):
+            if not isinstance(source, dict):
+                continue
             value = source.get(key)
             if isinstance(value, int) and not isinstance(value, bool) and value > 0:
                 return value

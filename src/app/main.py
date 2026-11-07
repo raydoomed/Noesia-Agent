@@ -83,18 +83,12 @@ from .tool_view.i18n import set_runtime_i18n_locale  # noqa: E402
 
 set_runtime_i18n_locale("zh")
 
-QT_BINDING = ""
-try:
-    from PySide6 import QtCore, QtGui, QtNetwork, QtWidgets  # type: ignore
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtNetwork as QtNetwork
+import PySide6.QtWidgets as QtWidgets
 
-    QT_BINDING = "PySide6"
-except ImportError:
-    try:
-        from PySide2 import QtCore, QtGui, QtNetwork, QtWidgets  # type: ignore
-
-        QT_BINDING = "PySide2"
-    except ImportError:
-        QtCore = QtGui = QtNetwork = QtWidgets = None  # type: ignore
+QT_BINDING = "PySide6"
 
 INSTANCE_NAME = "NoesiaAvatar"
 
@@ -224,18 +218,22 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     """无边框、置顶、透明背景、可拖拽的形象窗口。"""
 
     def __init__(self, image_path: Path, floating_cfg, idle_video: Path | None = None) -> None:
-        flags = QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint
+        flags = QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint
         if floating_cfg.always_on_top:
-            flags |= QtCore.Qt.WindowStaysOnTopHint
+            flags |= QtCore.Qt.WindowType.WindowStaysOnTopHint
         super().__init__(None, flags)
         if floating_cfg.transparent:
-            self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setWindowTitle("Noesia Agent")
+        self.boot_splash: object | None = None
+        self.instance_server: QtNetwork.QLocalServer | None = None
+        self._engine_ready = False
+        self._takeover_offered = False
 
         self._pixmap = QtGui.QPixmap(str(image_path)) if image_path.is_file() else QtGui.QPixmap()
         if self._pixmap.isNull():
             self._pixmap = QtGui.QPixmap(320, 480)
-            self._pixmap.fill(QtCore.Qt.transparent)
+            self._pixmap.fill(QtCore.Qt.GlobalColor.transparent)
         self._scale = 0.5
         self._aspect = (self._pixmap.height() / self._pixmap.width()) if self._pixmap.width() else 1.333
         self._default_size = fit_width(DEFAULT_WIDTH, self._aspect)
@@ -244,7 +242,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self.setMaximumSize(self._max_size)
         self.resize(self._default_size)
         self._settings = window_settings()
-        self._resize_edge: QtCore.Qt.Edges | None = None
+        self._resize_edge: QtCore.Qt.Edge | None = None
         self._resize_start_size: QtCore.QSize | None = None
         self._resize_start_global: QtCore.QPoint | None = None
         self._drag_offset: QtCore.QPoint | None = None
@@ -257,16 +255,16 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._toggle_action: QtGui.QAction | None = None
         self.setToolTip("拖动移动 · 拖边缘缩放 · 双击聊天 · Esc 隐藏 · 右键菜单")
         self.setMouseTracking(True)
-        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_menu)
         self.chat_panel: ChatPanel | None = None
         self._pending_reviews: list[str] = []
-        self._pending_notices: list[tuple[str, str]] = []
+        self._pending_notices: list[tuple[str, str, str]] = []
         self._greeted = False
         self._approval_dialog = None
         self._approval_dialogs: list = []
         self._name_dialog = None
-        self.client = None
+        self.client: EngineWire | None = None
         self._new_session_pending = False
         self._new_session_sent = False
         self._new_session_queued = 0
@@ -405,7 +403,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
             return False
         icon = QtGui.QIcon(
-            self._pixmap.scaled(64, 64, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+            self._pixmap.scaled(64, 64, QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation)
         )
         tray = QtWidgets.QSystemTrayIcon(icon, self)
         tray.setToolTip("Noesia Agent：左键显示/隐藏，右键菜单退出")
@@ -709,16 +707,16 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             app.aboutToQuit.connect(avatar.shutdown)
         return avatar
 
-    def show_notice_later(self, key: str, text: str) -> None:
+    def show_notice_later(self, key: str, text: str, *, level: str = "note") -> None:
         """现在就要说的提示，但聊天窗可能还没开：那就攒着，开窗时补发。
 
         `preload_avatar` 在 `open_chat` 之前跑，直接用 `chat_panel.show_notice` 会静默丢掉，
         用户要等到第一次说话没声才发现互动档根本没载起来。
         """
         if self.chat_panel is not None:
-            self.chat_panel.show_notice(key, text, level="note")
+            self.chat_panel.show_notice(key, text, level=level)
         else:
-            self._pending_notices.append((key, text))
+            self._pending_notices.append((key, text, level))
 
     def preload_avatar(self) -> None:
         """语音互动档的预加载：载 dll + 建引擎，约 105ms、0 积分，不建会话。"""
@@ -944,7 +942,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 return
             except Exception as exc:  # noqa: BLE001
                 logger.exception("[模型] 设置页错误提示失败：%s", exc)
-        self.show_notice("model-options", f"拿不到供应商清单：{message}", level="warn")
+        self.show_notice_later("model-options", f"拿不到供应商清单：{message}", level="warn")
 
     def save_provider_key(self, slug: str, api_key: str, done=None) -> None:
         """密钥设置里这一家按了「确定」：只写这一家的 Key，引擎落盘后自己把清单重取一遍送回来。
@@ -1068,6 +1066,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """这一轮保存结束：把逐家结果交给设置窗口，让它决定关窗还是把原因贴在脸上。"""
         ctx = self._save_ctx
         self._save_ctx = None
+        if ctx is None:
+            return
         lines = list(ctx.get("lines") or []) + list(extra or [])
         for line in lines:
             say(f"[模型] {line}")
@@ -1135,11 +1135,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self.chat_panel is None or not self._pending_notices:
             return
         pending, self._pending_notices = self._pending_notices, []
-        for key, text in pending:
+        for key, text, level in pending:
             if key == "boot":
                 self.chat_panel.show_error(text)
                 continue
-            self.chat_panel.show_notice(key, text, level="note")
+            self.chat_panel.show_notice(key, text, level=level)
 
     def open_chat(self) -> None:
         """打开（或聚焦）聊天窗；第一次调用才建界面。"""
@@ -1162,11 +1162,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.speech_stop_requested.connect(self._stop_voice)
             self.chat_panel.voice_mode_changed.connect(lambda _mode: self._voice_ok())
             self.speaker.preparing.connect(self.chat_panel.speech_preparing)
-            self.speaker.started.connect(lambda _text: self.chat_panel.speech_playing())
+            panel = self.chat_panel
+            self.speaker.started.connect(lambda _text: panel.speech_playing())
             self.speaker.progress.connect(self.chat_panel.speech_progress)
-            self.speaker.finished.connect(self.chat_panel.speech_done)
-            self.speaker.stopped.connect(self.chat_panel.speech_done)
-            self.speaker.failed.connect(lambda _msg: self.chat_panel.speech_done())
+            self.speaker.finished.connect(panel.speech_done)
+            self.speaker.stopped.connect(panel.speech_done)
+            self.speaker.failed.connect(lambda _msg: panel.speech_done())
             self.chat_panel.reasoning_requested.connect(self.request_reasoning)
             self.chat_panel.voice_transcribe_requested.connect(self._transcribe_voice)
             self.chat_panel.voice_record_started.connect(self._stop_voice)
@@ -1337,7 +1338,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if panel is not None:
             panel.show_error(text)
         else:
-            self._pending_notices.append(("boot", text))
+            self._pending_notices.append(("boot", text, "note"))
         self.finish_boot()
 
     def finish_boot(self) -> None:
@@ -1654,7 +1655,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         view, part = view_for(event)
         panel.show_tool_view(
             view,
-            tool_id=part.tool_call_id,
+            tool_id=str(part.tool_call_id or ""),
             tool_name=part.tool_name,
             pending=str(event.get("kind")) == "tool.start",
             copy_payload=tool_copy_payload(part, view),
@@ -1762,7 +1763,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self,
             title,
             prompt + "\n（取消 = 跳过，她就不会拿到这个值）",
-            QtWidgets.QLineEdit.Password,
+            QtWidgets.QLineEdit.EchoMode.Password,
         )
         self.client.answer_secret(reply_id, str(value) if ok else "")
 
@@ -2040,7 +2041,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._name_dialog.show_near(self.geometry())
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt
-        if event.key() == QtCore.Qt.Key_Escape:
+        if event.key() == QtCore.Qt.Key.Key_Escape:
             if self._tray is not None:
                 self.hide()
                 self._sync_toggle_text()
@@ -2068,7 +2069,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt
         painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
         target = self.rect()
         source = self._frame
         if source is not None and not source.isNull():
@@ -2076,7 +2077,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._draw_hearts(painter)
             return
         painter.drawPixmap(target, self._pixmap.scaled(
-            target.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+            target.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio, QtCore.Qt.TransformationMode.SmoothTransformation
         ))
         self._draw_hearts(painter)
 
@@ -2092,8 +2093,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._request_paint()
 
     def _tick_hearts(self) -> None:
+        timer = self._hearts_timer
         if time.monotonic() - self._hearts_at > 2.2:
-            self._hearts_timer.stop()
+            if timer is not None:
+                timer.stop()
             self._request_paint()
             return
         self._request_paint()
@@ -2102,7 +2105,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         elapsed = time.monotonic() - self._hearts_at
         if elapsed > 2.2:
             return
-        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
         for index, (x_ratio, size, delay) in enumerate(HEARTS):
             progress = (elapsed - delay) / 1.5
             if progress <= 0 or progress >= 1:
@@ -2266,7 +2269,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 panel.show_error(note)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        if event.button() != QtCore.Qt.LeftButton:
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
             return
         edge = edges_at(event.position().toPoint(), self.size())
         if edge:
@@ -2297,7 +2300,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 new_geo.moveBottom(old.bottom())
             self.setGeometry(new_geo)
             return
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
+        if self._drag_offset is not None and event.buttons() & QtCore.Qt.MouseButton.LeftButton:
             self.move(pos - self._drag_offset)
             return
         self.setCursor(cursor_for(edges_at(event.position().toPoint(), self.size())))
@@ -2365,7 +2368,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         super().showEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self.open_chat()
             return
         super().mouseDoubleClickEvent(event)
@@ -2454,7 +2457,7 @@ def notify_existing_instance(command: str = "show") -> bool:
     acked = False
     while time.monotonic() < deadline:
         if sock.bytesAvailable():
-            if bytes(sock.readAll()).strip() == b"ok":
+            if bytes(sock.readAll().data()).strip() == b"ok":
                 acked = True
                 break
         if sock.state() != QtNetwork.QLocalSocket.LocalSocketState.ConnectedState:
@@ -2482,7 +2485,7 @@ def start_instance_server(window) -> QtNetwork.QLocalServer | None:  # noqa: ANN
             return
 
         def read_command() -> None:
-            raw = bytes(conn.readAll()).decode("utf-8", "ignore").strip()
+            raw = bytes(conn.readAll().data()).decode("utf-8", "ignore").strip()
             if not raw:
                 return
             if raw == "show":
@@ -2828,8 +2831,9 @@ def main() -> int:
     app.aboutToQuit.connect(_shutdown_engine)
     app.aboutToQuit.connect(window.release_audio)
     app.aboutToQuit.connect(window._save_geometry)
-    if getattr(window, "_avatar", None) is not None:
-        app.aboutToQuit.connect(window._avatar.shutdown)
+    avatar = getattr(window, "_avatar", None)
+    if avatar is not None:
+        app.aboutToQuit.connect(avatar.shutdown)
     if window.idle_player is not None:
         app.aboutToQuit.connect(window.idle_player.stop)
     say(f"[引擎] 通道：stdio JSON-RPC（根目录 {resolver.root}）")

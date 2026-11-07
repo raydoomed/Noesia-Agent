@@ -9,13 +9,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pygments.lexer import Lexer
 
 PYGMENTS_STYLE = "one-dark"
 
-_TOKEN_CACHE: dict[str, object] = {}
+_LEXER_CACHE: dict[str, "Lexer | None"] = {}
+_COLOR_CACHE: dict | None = None
 
 
-def _lexer_for(path: str | None):
+def _lexer_for(path: str | None) -> "Lexer | None":
     """按文件名挑词法分析器，挑不到再按语言名挑；都挑不到返回 None（调用方回落成纯文本）。
 
     聊天里的围栏写的是**语言名**（```python），不是文件名——只按文件名找会一律 ClassNotFound，
@@ -24,8 +29,8 @@ def _lexer_for(path: str | None):
     if not path:
         return None
     name = Path(path).name
-    if name in _TOKEN_CACHE:
-        return _TOKEN_CACHE[name]
+    if name in _LEXER_CACHE:
+        return _LEXER_CACHE[name]
 
     lexer = None
     try:
@@ -42,13 +47,14 @@ def _lexer_for(path: str | None):
     except Exception:
         lexer = None
 
-    _TOKEN_CACHE[name] = lexer
+    _LEXER_CACHE[name] = lexer
     return lexer
 
 
 def _style_color_map() -> dict:
-    if "map" in _TOKEN_CACHE:
-        return _TOKEN_CACHE["map"]  # type: ignore[return-value]
+    global _COLOR_CACHE
+    if _COLOR_CACHE is not None:
+        return _COLOR_CACHE
 
     colors: dict = {}
     try:
@@ -62,7 +68,7 @@ def _style_color_map() -> dict:
     except Exception:
         colors = {}
 
-    _TOKEN_CACHE["map"] = colors
+    _COLOR_CACHE = colors
     return colors
 
 
@@ -72,7 +78,7 @@ def highlight_code(text: str, path: str | None) -> list[list[tuple[str, str | No
     行数与 `text.splitlines()` 严格对齐——diff 要按行叠底色，少一行就串位。
     """
     lines = text.splitlines() or [""]
-    plain = [[(line, None, False)] for line in lines]
+    plain: list[list[tuple[str, str | None, bool]]] = [[(line, None, False)] for line in lines]
     lexer = _lexer_for(path)
     if lexer is None or not text.strip():
         return plain

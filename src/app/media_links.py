@@ -41,7 +41,8 @@ def might_be_media(fragment: str) -> bool:
 
     流式输出里 `MEDIA:` 常被切成两三块，这种半行要压着不显示；普通文字立刻显示，不拖节奏。
     """
-    head = _LEAD.match(fragment or "").group("rest") if _LEAD.match(fragment or "") else fragment
+    lead = _LEAD.match(fragment or "")
+    head = lead.group("rest") if lead is not None else fragment
     head = head.strip().strip("`\"'<").lower()
     if not head:
         return True
@@ -114,7 +115,8 @@ def media_link_html(raw: str, roots: tuple[Path, ...] | list[Path] = ()) -> str:
 
 def open_local(path: Path) -> bool:
     """用系统默认程序打开这个文件。返回是否真的发起（文件不存在就不发）。"""
-    from PySide6 import QtCore, QtGui
+    import PySide6.QtCore as QtCore
+    import PySide6.QtGui as QtGui
 
     if not path.exists():
         return False

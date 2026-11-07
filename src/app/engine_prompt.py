@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6 import QtCore, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtWidgets as QtWidgets
 
 from app.window_geometry import card_position, screen_area
 
@@ -57,13 +58,13 @@ class EngineProblemDialog(QtWidgets.QDialog):
         self._drag_offset: QtCore.QPoint | None = None
 
         self.setWindowFlags(
-            QtCore.Qt.Tool
-            | QtCore.Qt.FramelessWindowHint
-            | QtCore.Qt.WindowStaysOnTopHint
-            | QtCore.Qt.WindowDoesNotAcceptFocus
+            QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
         )
-        self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setModal(False)
         self.setStyleSheet(_STYLE)
 
@@ -91,12 +92,12 @@ class EngineProblemDialog(QtWidgets.QDialog):
         row.setSpacing(8)
         row.addStretch(1)
         later = QtWidgets.QPushButton("稍后再说", card)
-        later.setCursor(QtCore.Qt.PointingHandCursor)
+        later.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         later.clicked.connect(lambda: self._answer(False))
         row.addWidget(later)
         yes = QtWidgets.QPushButton(action, card)
         yes.setObjectName("primary")
-        yes.setCursor(QtCore.Qt.PointingHandCursor)
+        yes.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         yes.clicked.connect(lambda: self._answer(True))
         row.addWidget(yes)
         lay.addLayout(row)
@@ -118,12 +119,12 @@ class EngineProblemDialog(QtWidgets.QDialog):
             self.close()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
+        if self._drag_offset is not None and event.buttons() & QtCore.Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
 
@@ -138,7 +139,7 @@ class EngineProblemDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() == QtCore.Qt.Key_Escape:
+        if event.key() == QtCore.Qt.Key.Key_Escape:
             self._answer(False)
             return
         super().keyPressEvent(event)

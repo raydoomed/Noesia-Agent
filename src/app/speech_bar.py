@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from PySide6 import QtCore, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtWidgets as QtWidgets
 
 
 def _clock(ms: int) -> str:
@@ -46,7 +47,7 @@ class SpeechBar(QtWidgets.QFrame):
         self._stop = QtWidgets.QToolButton(self)
         self._stop.setObjectName("icon")
         self._stop.setText("停止")
-        self._stop.setCursor(QtCore.Qt.PointingHandCursor)
+        self._stop.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._stop.setToolTip("只停这句朗读，不动这一轮对话")
         self._stop.clicked.connect(self.stop_requested.emit)
         row.addWidget(self._stop)

@@ -14,7 +14,8 @@ import logging
 import time
 from collections import deque
 
-from PySide6 import QtCore, QtMultimedia
+import PySide6.QtCore as QtCore
+import PySide6.QtMultimedia as QtMultimedia
 
 from app.speech_prefs import SpeechError
 from app.speech_stream import TARGET_RATE, stream_pcm
@@ -232,7 +233,8 @@ class StreamSpeaker(QtCore.QObject):
         """本地能播到哪：云端回传的进度减去 60ms 缓冲（防它一阵一阵地来）。"""
         if self._limit_off:
             return None
-        got = int(self._limit_fn() or 0)
+        limit_fn = self._limit_fn
+        got = int((limit_fn() if limit_fn is not None else 0) or 0)
         if got <= 0:
             if time.monotonic() < self._limit_deadline:
                 return 0

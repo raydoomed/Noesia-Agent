@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
-from PySide6 import QtCore, QtGui, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 
 
 def _as_dict(item) -> dict:
@@ -21,7 +23,8 @@ def _as_dict(item) -> dict:
         return item
     dump = getattr(item, "model_dump", None)
     if callable(dump):
-        return dump()
+        out = dump()
+        return out if isinstance(out, dict) else {}
     return {
         "id": getattr(item, "id", ""),
         "label": getattr(item, "label", ""),
@@ -153,7 +156,7 @@ def _add_refresh_action(
     button = QtWidgets.QPushButton("刷新中…" if refreshing else "刷新模型", menu)
     button.setStyleSheet(_REFRESH_QSS)
     button.setFlat(True)
-    button.setCursor(QtCore.Qt.PointingHandCursor)
+    button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
     button.setProperty("busy", bool(refreshing))
     button.setToolTip("重新向引擎要一次模型清单：上游新上的会加进来，下架的会去掉")
     holder = QtWidgets.QWidgetAction(menu)

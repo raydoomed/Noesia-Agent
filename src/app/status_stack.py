@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from PySide6 import QtCore, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtWidgets as QtWidgets
 
 _LEVELS = {
     "success": "statusdone",
@@ -95,6 +96,8 @@ class StatusStack(QtWidgets.QFrame):
             self._rows[key] = row
             self._box.addWidget(row)
         label = row.findChild(QtWidgets.QLabel)
+        if label is None:
+            return
         label.setObjectName(_LEVELS.get((level or "").strip().lower(), "statusnote"))
         label.setText(text)
         label.style().unpolish(label)
@@ -134,18 +137,23 @@ class StatusStack(QtWidgets.QFrame):
                 self._activity = None
             self._sync()
             return
-        if self._activity is None:
-            self._activity = QtWidgets.QWidget(self)
-            line = QtWidgets.QHBoxLayout(self._activity)
+        activity = self._activity
+        if activity is None:
+            activity = QtWidgets.QWidget(self)
+            line = QtWidgets.QHBoxLayout(activity)
             line.setContentsMargins(0, 0, 0, 0)
             line.setSpacing(0)
-            label = QtWidgets.QLabel(self._activity)
+            label = QtWidgets.QLabel(activity)
             label.setObjectName("statusbusy")
             label.setWordWrap(True)
             line.addWidget(label, 1)
-            self._box.addWidget(self._activity)
-        self._activity.findChild(QtWidgets.QLabel).setText(text)
-        self._activity.show()
+            self._box.addWidget(activity)
+            self._activity = activity
+        caption = activity.findChild(QtWidgets.QLabel)
+        if caption is None:
+            return
+        caption.setText(text)
+        activity.show()
         self._sync()
 
 
@@ -160,8 +168,12 @@ class StatusStack(QtWidgets.QFrame):
             return
         if self._bg is None:
             self._build_bg()
+        if self._bg_box is None or self._bg_head is None or self._bg is None:
+            return
         while self._bg_box.count():
             item = self._bg_box.takeAt(0)
+            if item is None:
+                break
             widget = item.widget()
             if widget is not None:
                 widget.hide()
@@ -265,6 +277,8 @@ class StatusStack(QtWidgets.QFrame):
 
     def _remove_bg_row(self, session_id: str) -> None:
         row = self._bg_rows.pop(session_id, None)
+        if self._bg_box is None or self._bg_head is None:
+            return
         if row is not None:
             self._bg_box.removeWidget(row)
             row.hide()
@@ -292,6 +306,8 @@ class StatusStack(QtWidgets.QFrame):
         self._bg_box = None
 
     def _toggle_bg(self, opened: bool) -> None:
+        if self._bg_head is None:
+            return
         if self._bg_body is not None:
             self._bg_body.setVisible(opened)
         text = self._bg_head.text()

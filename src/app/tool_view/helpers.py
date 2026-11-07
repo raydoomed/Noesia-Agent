@@ -723,7 +723,8 @@ def _has_meaningful_error_value(value: Any) -> bool:
 
 
 def _has_error_signal(record: dict) -> bool:
-    status = record.get('status') if isinstance(record.get('status'), str) else ''
+    raw_status = record.get('status')
+    status = raw_status if isinstance(raw_status, str) else ''
 
     return (
         record.get('success') is False

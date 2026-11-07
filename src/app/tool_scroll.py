@@ -7,7 +7,9 @@
 外形：5px 圆角 + 1px 描边，等宽 11.2px、行高 18、内边距 6/8，最高 224px。
 """
 
-from PySide6 import QtCore, QtGui, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 
 SHELL_RADIUS = 5
 PAD_V = 6

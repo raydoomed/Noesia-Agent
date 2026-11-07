@@ -17,7 +17,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from PySide6 import QtCore
+import PySide6.QtCore as QtCore
 
 from settings import ROOT, window_state_path
 
@@ -50,4 +50,4 @@ def window_settings() -> QtCore.QSettings:
     except OSError:
         logger.warning("窗口存档目录建不出来（%s），改落临时目录", target.parent, exc_info=True)
         target = Path(tempfile.gettempdir()) / "noesia-window.ini"
-    return QtCore.QSettings(str(target), QtCore.QSettings.IniFormat)
+    return QtCore.QSettings(str(target), QtCore.QSettings.Format.IniFormat)

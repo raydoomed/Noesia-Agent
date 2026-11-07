@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6 import QtCore, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtWidgets as QtWidgets
 
 from app.redact import redact
 from app.window_geometry import card_position, screen_area
@@ -58,6 +59,8 @@ QPushButton#deny:hover { background: rgba(255,107,107,34); }
 class ApprovalDialog(QtWidgets.QDialog):
     """一张卡片，四个选择。选择结果通过 on_choice(choice) 交回去（once/session/always/deny）。"""
 
+    request_id = ""
+
     def __init__(
         self,
         payload,
@@ -70,11 +73,11 @@ class ApprovalDialog(QtWidgets.QDialog):
         self._drag_offset: QtCore.QPoint | None = None
 
         self.setWindowFlags(
-            QtCore.Qt.Tool
-            | QtCore.Qt.FramelessWindowHint
-            | QtCore.Qt.WindowStaysOnTopHint
+            QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setAttribute(QtCore.Qt.WA_ShowWithoutActivating)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.setModal(False)
         self.setStyleSheet(_CARD_STYLE)
@@ -157,7 +160,7 @@ class ApprovalDialog(QtWidgets.QDialog):
         btn = QtWidgets.QPushButton(text, parent)
         if kind:
             btn.setObjectName(kind)
-        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(lambda: self._answer(choice))
         row.addWidget(btn)
 
@@ -186,12 +189,12 @@ class ApprovalDialog(QtWidgets.QDialog):
         super().keyPressEvent(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
+        if self._drag_offset is not None and event.buttons() & QtCore.Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
 
@@ -237,7 +240,7 @@ class ConfirmDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self._accepted = False
         self.setWindowFlags(
-            QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint
+            QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
         self.setModal(True)
         self.setStyleSheet(_CARD_STYLE)
@@ -263,12 +266,12 @@ class ConfirmDialog(QtWidgets.QDialog):
         row.setSpacing(8)
         row.addStretch(1)
         cancel = QtWidgets.QPushButton("取消", card)
-        cancel.setCursor(QtCore.Qt.PointingHandCursor)
+        cancel.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
         confirm = QtWidgets.QPushButton(confirm_label, card)
         confirm.setObjectName("deny")
-        confirm.setCursor(QtCore.Qt.PointingHandCursor)
+        confirm.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         confirm.clicked.connect(self._accept)
         row.addWidget(confirm)
         lay.addLayout(row)

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6 import QtCore, QtWidgets
+import PySide6.QtCore as QtCore
+import PySide6.QtWidgets as QtWidgets
 
 from app.window_geometry import card_position, screen_area
 
@@ -47,7 +48,7 @@ class NameDialog(QtWidgets.QDialog):
         self._drag_offset: QtCore.QPoint | None = None
 
         self.setWindowFlags(
-            QtCore.Qt.Tool | QtCore.Qt.FramelessWindowHint | QtCore.Qt.WindowStaysOnTopHint
+            QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
         self.setModal(False)
         self.setStyleSheet(_STYLE)
@@ -112,12 +113,12 @@ class NameDialog(QtWidgets.QDialog):
             self.close()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt
-        if event.button() == QtCore.Qt.LeftButton:
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
             self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
+        if self._drag_offset is not None and event.buttons() & QtCore.Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_offset)
         super().mouseMoveEvent(event)
 
@@ -132,7 +133,7 @@ class NameDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt
-        if event.key() == QtCore.Qt.Key_Escape:
+        if event.key() == QtCore.Qt.Key.Key_Escape:
             self._answer("")
             return
         super().keyPressEvent(event)

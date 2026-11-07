@@ -102,12 +102,22 @@ def _classify_corner(image: Image.Image) -> tuple[str, tuple[int, int, int] | No
     ]
     colors: list[tuple[int, int, int]] = []
     for box in boxes:
-        colors.extend(color for _count, color in rgb.crop(box).getcolors(maxcolors=4096) or [])
+        for item in rgb.crop(box).getcolors(maxcolors=4096) or []:
+            if not isinstance(item, tuple) or len(item) != 2:
+                continue
+            _count, color = item
+            if not isinstance(color, tuple) or len(color) != 3:
+                continue
+            colors.append((int(color[0]), int(color[1]), int(color[2])))
 
     if not colors:
         return "mixed", None
 
-    mean = tuple(sum(c[i] for c in colors) // len(colors) for i in range(3))
+    mean = (
+        sum(c[0] for c in colors) // len(colors),
+        sum(c[1] for c in colors) // len(colors),
+        sum(c[2] for c in colors) // len(colors),
+    )
     r, g, b = mean
     if g > 150 and g - r > 60 and g - b > 60:
         return "green", mean

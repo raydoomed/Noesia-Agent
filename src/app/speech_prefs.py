@@ -205,6 +205,7 @@ def current() -> dict:
         voice["id"] for voice in list(EDGE_VOICES) + list(DOUBAO_VOICES)
     }:
         data = dict(data, voice_id="")
+    history = data.get("voice_history")
     return {
         "enabled": bool(data["enabled"]),
         "mode": "interactive" if data.get("mode") == "interactive" else "plain",
@@ -219,7 +220,7 @@ def current() -> dict:
         "output_format": data["output_format"],
         "sample_rate": int(data["sample_rate"]),
         "voices": list(data["voices"]),
-        "history": dict(data.get("voice_history") or {}),
+        "history": dict(history) if isinstance(history, dict) else {},
     }
 
 

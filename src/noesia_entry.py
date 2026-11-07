@@ -48,6 +48,8 @@ def _engine_process_module():
     """按路径加载 `src/cli.py`（引擎进程 + 两个自检），避免和引擎的 `cli` 撞名。"""
     path = ROOT / "src" / "cli.py"
     spec = importlib.util.spec_from_file_location("noesia_engine_process", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"加载不了 {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
