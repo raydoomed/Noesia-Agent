@@ -234,32 +234,65 @@ def _keep_edge_spaces(markup: str) -> str:
 _PHOTO_CACHE = 24  # 最多记着多少张取回来的图：只挡重复下载，不是显示上限
 _ORIGINAL_CACHE = 6  # 另外记着几张原图（字节），点开就能看清、能存；再多就别占内存了
 _THUMB_WIDTH = 200  # 正文里的图按缩略图显示：看得清大概，又不把气泡撑满
+_HINT_TEXT = "Enter 发送 · Esc 收起"
+
+# 图片后缀按字节真实格式定（和 desktop 按 Content-Type 定是一回事，我们手上有字节就自己看）
+_IMAGE_SUFFIX = {
+    "png": ".png",
+    "jpeg": ".jpg",
+    "jpg": ".jpg",
+    "gif": ".gif",
+    "webp": ".webp",
+    "bmp": ".bmp",
+    "svg": ".svg",
+}
 
 
-def _photo_name(url: str) -> str:
-    """从网址里挑个像文件名的做保存时的默认名。"""
-    tail = unquote(urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]) or "图片"
-    if "." not in tail:
-        tail += ".jpg"
-    return tail
+def _image_extension(data: bytes) -> str:
+    """看字节本身认格式。认不出来按 .png 兜底（跟 desktop 一样）。"""
+    buffer = QtCore.QBuffer()
+    buffer.setData(QtCore.QByteArray(data))
+    buffer.open(QtCore.QIODevice.OpenModeFlag.ReadOnly)
+    fmt = bytes(QtGui.QImageReader(buffer).format()).decode("ascii", "ignore").lower()
+    return _IMAGE_SUFFIX.get(fmt, ".png")
 
 
-def save_photo_bytes(parent: QtWidgets.QWidget, data: bytes, name: str) -> bool:
-    """问存哪儿、把原图字节写下去。存成了返回真，取消或者写失败返回假。"""
+def _photo_name(url: str, data: bytes | None = None) -> str:
+    """保存时的默认文件名：取网址最后一段，没后缀就按图片真实格式补一个。
+
+    图片地址经常没有后缀（`.../pexels-photo-33999682.jpeg?auto=compress` 这类还行，
+    生成图的地址干脆就是一串 hash），硬补 `.jpg` 会把 webp/gif 存成双击打不开的 .jpg。
+    """
+    parsed = urlparse(url)
+    base = unquote(parsed.path.rstrip("/").rsplit("/", 1)[-1]) or "图片"
+    if Path(base).suffix:
+        return base
+    return base + (_image_extension(data) if data else ".png")
+
+
+def save_photo_bytes(parent: QtWidgets.QWidget, data: bytes, name: str) -> str | None:
+    """问存哪儿、把原图字节写下去。存成了返回落地的路径，取消或者写失败返回空。
+
+    保存框默认落在系统「下载」夹（没有就退回保存框上次的位置），跟 desktop 一致。
+    """
+    folder = QtCore.QStandardPaths.writableLocation(
+        QtCore.QStandardPaths.StandardLocation.DownloadLocation
+    )
+    default = str(Path(folder) / name) if folder else name
     path, _ = QtWidgets.QFileDialog.getSaveFileName(
         parent,
         "保存图片",
-        name,
-        "图片 (*.png *.jpg *.jpeg *.webp *.gif *.bmp);;所有文件 (*)",
+        default,
+        "图片 (*.png *.jpg *.jpeg *.gif *.webp *.bmp *.svg);;所有文件 (*)",
     )
     if not path:
-        return False
+        return None
     try:
         Path(path).write_bytes(data)
     except OSError as err:
         QtWidgets.QMessageBox.warning(parent, "存不下来", str(err))
-        return False
-    return True
+        return None
+    return path
 
 
 def _open_link(text: str) -> bool:
@@ -1456,8 +1489,9 @@ class ChatPanel(QtWidgets.QWidget):
         dot = QtWidgets.QLabel("●", frame)
         dot.setObjectName("dot")
         dot.setToolTip("在线")
-        hint_label = QtWidgets.QLabel("Enter 发送 · Esc 收起", frame)
+        hint_label = QtWidgets.QLabel(_HINT_TEXT, frame)
         hint_label.setObjectName("hint")
+        self._hint_label = hint_label
         header.addWidget(title)
         header.addWidget(dot)
         header.addWidget(state)
@@ -1523,6 +1557,12 @@ class ChatPanel(QtWidgets.QWidget):
         self._photo_keys: dict[str, str] = {}  # 网址 → 文档里的资源名
         self._photo_sources: dict[str, str] = {}  # 资源名 → 网址：点图时要知道点的是哪张
         self._originals: dict[str, bytes] = {}  # 网址 → 原图字节：留着才能看原图、存原图
+        self._downloading: set[str] = set()  # 正在取原图的网址：连点不再发第二趟
+        self._local_photos: dict[str, tuple[str, "Path | bytes"]] = {}  # 本地图（附件、工具贴图）→ (名字, 文件或字节)
+        self._hint_label: QtWidgets.QLabel | None  # 底部那句提示，建顶栏时填上；存图时临时改口
+        self._hint_timer = QtCore.QTimer(self)
+        self._hint_timer.setSingleShot(True)
+        self._hint_timer.timeout.connect(self._restore_hint)
         self._photo_pending: set[str] = set()  # 正在取的，别重复发
         self._press_pos: QtCore.QPoint | None = None  # 正文里按下的位置：松手时判断是点击还是拖选
         self._net = QtNetwork.QNetworkAccessManager(self)
@@ -2064,6 +2104,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._photo_keys.clear()
         self._photo_sources.clear()
         self._originals.clear()
+        self._local_photos.clear()
         self._photo_pending.clear()
         self._fence_cache.clear()
         self._review_count = 0      # 一场对话里的回顾条数跟着新会话重来
@@ -2174,6 +2215,11 @@ class ChatPanel(QtWidgets.QWidget):
         key = f"noesia-image://user-{self._image_seq}"
         self.view.document().addResource(
             QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(key), pixmap
+        )
+        # 本地图没有网址：记下原文件（或粘进来的字节），点下载时照它存
+        self._local_photos[key] = (
+            item.get("name") or Path(item.get("path") or "").name or "图片",
+            Path(item["path"]) if item.get("path") else item.get("data") or b"",
         )
         width = min(200, pixmap.width() or 200)
         self._insert_html(f"<br><img src='{key}' width='{width}'>")
@@ -2538,9 +2584,9 @@ class ChatPanel(QtWidgets.QWidget):
             self._hover_download = HoverActionButton(
                 self.view.viewport(),
                 "download",
-                "下载原图",
+                "下载",
                 lambda: None,
-                flash=False,  # 存完不换成 ✓：存到哪个目录已经由对话框说过了
+                flash=False,  # 存完不换 ✓：由底部提示行报一句「已保存 xxx.png」，跟 desktop 的 toast 一个意思
             )
             # 图片深浅不定，垫一层半透明底，压在浅色照片上也看得清
             self._hover_download.setStyleSheet(
@@ -2549,7 +2595,7 @@ class ChatPanel(QtWidgets.QWidget):
                 "QToolButton:hover { background: rgba(16, 18, 24, 225); }"
             )
         self._hover_download.retarget(
-            "download", "下载原图", lambda k=key: self._download_photo(k)
+            "download", "下载", lambda k=key: self._download_photo(k)
         )
         self._hover_download.place_at(rect)
         self._hover_download.show()
@@ -2559,15 +2605,57 @@ class ChatPanel(QtWidgets.QWidget):
             self._hover_download.hide()
 
     def _download_photo(self, key: str) -> None:
-        """存这张图的原图。手上还有原图字节就直接问存哪儿，没有就先取回来。"""
+        """存这张图的原图。手上有原图字节就直接问存哪儿，没有就先取回来。"""
         url = self._photo_sources.get(key)
         if not url:
+            # 本地图（你发的附件、工具贴出来的图）没有网址：直接读原文件
+            local = self._local_photo(key)
+            if local is None:
+                self._flash_hint("这张图的原文件找不到了")
+                return
+            self._save_bytes(*local)
             return
+        if url in self._downloading:
+            return  # 取原图那一趟还没回来：连点不再发第二趟、不弹第二个保存框
         data = self._originals.get(url)
         if data:
-            save_photo_bytes(self.window(), data, _photo_name(url))
+            self._save_bytes(_photo_name(url, data), data)
             return
+        self._downloading.add(url)
         self._fetch_then_save(url)
+
+    def _local_photo(self, key: str) -> tuple[str, bytes] | None:
+        """本地图的名字和字节：文件现读，粘进来的字节直接用。读不到返回空。"""
+        held = self._local_photos.get(key)
+        if held is None:
+            return None
+        name, source = held
+        try:
+            data = source if isinstance(source, bytes) else Path(source).read_bytes()
+        except OSError:
+            return None
+        if not data:
+            return None
+        if not Path(name).suffix:
+            name += _image_extension(data)
+        return name, data
+
+    def _save_bytes(self, name: str, data: bytes) -> None:
+        """问存哪儿、写盘，成了就在底部报一句文件名。取消就什么也不说。"""
+        path = save_photo_bytes(self.window(), data, name)
+        if path:
+            self._flash_hint(f"已保存 {Path(path).name}")
+
+    def _flash_hint(self, text: str) -> None:
+        """底部提示行临时改口说一句，两秒半后回到原话。"""
+        if self._hint_label is None:
+            return
+        self._hint_label.setText(text)
+        self._hint_timer.start(2500)
+
+    def _restore_hint(self) -> None:
+        if self._hint_label is not None:
+            self._hint_label.setText(_HINT_TEXT)
 
     def _fetch_then_save(self, url: str) -> None:
         """原图字节早被松手了：取回来再问存哪儿。"""
@@ -2580,7 +2668,9 @@ class ChatPanel(QtWidgets.QWidget):
             reply = self._net.get(request)
             reply.finished.connect(lambda: self._save_after_fetch(reply, url))
         except Exception:
+            self._downloading.discard(url)
             logger.warning("取原图失败：%s", url, exc_info=True)
+            self._flash_hint("原图没取回来")
 
     def _save_after_fetch(self, reply, url: str) -> None:
         try:
@@ -2588,11 +2678,15 @@ class ChatPanel(QtWidgets.QWidget):
             data = bytes(reply.readAll().data())
             reply.deleteLater()
             if not ok or not data:
+                self._flash_hint("原图没取回来")
                 return
             self._remember_original(url, data)
-            save_photo_bytes(self.window(), data, _photo_name(url))
+            self._save_bytes(_photo_name(url, data), data)
         except Exception:
             logger.warning("存原图出错：%s", url, exc_info=True)
+            self._flash_hint("原图没取回来")
+        finally:
+            self._downloading.discard(url)
 
     def _open_photo(self, key: str) -> None:
         """点图：开窗看原图。原图字节还在就直接给，松过手的先拿缩略图顶着、同时去取。"""
@@ -3521,6 +3615,7 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.document().addResource(
             QtGui.QTextDocument.ResourceType.ImageResource, resource, pixmap
         )
+        self._local_photos[resource.toString()] = (path.name, path)
         fmt = QtGui.QTextImageFormat()
         fmt.setName(resource.toString())
         fmt.setWidth(width)
