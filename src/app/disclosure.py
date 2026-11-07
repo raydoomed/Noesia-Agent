@@ -52,6 +52,8 @@ def _inherit_clean(fmt: QtGui.QTextBlockFormat) -> QtGui.QTextBlockFormat:
     fmt.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
     fmt.setLeftMargin(0)
     fmt.setRightMargin(0)
+    fmt.setTopMargin(0)
+    fmt.setBottomMargin(0)
     fmt.setLineHeight(100, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
     return fmt
 
@@ -179,6 +181,7 @@ class Folds:
         cursor.insertBlock()
         block_format = _inherit_clean(cursor.blockFormat())
         block_format.setTopMargin(0)
+        block_format.setBottomMargin(6)
         cursor.setBlockFormat(block_format)
         return cursor
 

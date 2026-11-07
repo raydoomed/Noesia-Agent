@@ -5593,7 +5593,9 @@ class ChatPanel(QtWidgets.QWidget):
         block.setUserData(msg["mark"])
         if self._msgs:
             head_format = block.blockFormat()
-            head_format.setTopMargin(HoverActionButton.BUTTON_PX + 10)
+            head_format.setTopMargin(
+                8 if self._starts_after_fold(block) else HoverActionButton.BUTTON_PX + 10
+            )
             QtGui.QTextCursor(block).setBlockFormat(head_format)
         if role == "user":
             user_format = block.blockFormat()
@@ -5605,6 +5607,19 @@ class ChatPanel(QtWidgets.QWidget):
         self._msgs.append(msg)
         if role == "assistant":
             self._stream_msg = msg
+
+    def _starts_after_fold(self, block) -> bool:
+        """这一段是不是接在本轮自己的折叠行（思考 / 工具）下面。
+
+        每一轮都以你那条消息开头，所以「前一个可见块不是消息块」就说明它属于这一轮：
+        答案文字接着自己那行「已思考」往下写，间距按段内算，不按两条消息之间算。
+        """
+        probe = block.previous()
+        while probe.isValid() and not probe.isVisible():
+            probe = probe.previous()
+        if not probe.isValid():
+            return False
+        return not isinstance(probe.userData(), _MsgMark)
 
     def _message_at(self, block) -> dict | None:
         """从光标所在块往上找：这条消息是从哪一段开始的。
