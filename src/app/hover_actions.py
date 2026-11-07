@@ -52,7 +52,7 @@ class HoverActionButton(QtWidgets.QToolButton):
     """一个悬停才显形的图标按钮，位置由调用方给。"""
 
     BUTTON_PX = 20
-    ICON_PX = 12
+    ICON_PX = 14  # 桌面端动作栏 button svg 是 0.875rem = 14px
     # 平时几乎退进背景（40% 灰），鼠标停上去才提亮——设计上不要底色、不要边框，
     # 一排图标藏在正文最后一行下面，不跟内容抢注意力
     IDLE_COLOR = "#8b8492"

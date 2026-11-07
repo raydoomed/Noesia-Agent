@@ -1641,7 +1641,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._msg_shown: dict | None = None  # 悬停条现在属于哪条消息（窗口一缩放就得重新摆）
         self._edge_cursor_shape = None  # 现在贴在面板上的边缘光标对应哪条边（None = 没设过）
         self._rewind_waiting = False  # 截断重发已经交给引擎，等它真接下来（这期间不许再发）
-        self._rewind_after_stop: tuple[dict, str] | None = None  # 流式中点了重新发送：先叫停，停稳了再重来
+        self._rewind_after_stop: tuple[dict, str, bool] | None = None  # 流式中点了重来：先叫停，停稳了再按这条重跑
         self._row_stamp_pending: int | None = None  # 截断重发：行号比正文先回，先存着等新消息贴上去
         self._jump: _JumpPill | None = None  # 没看完时底下那颗「滚动到底部」
         # 跟不跟随新内容：状态位，不是「此刻位置」（流式一快，位置永远追不上最大值，
@@ -2191,6 +2191,10 @@ class ChatPanel(QtWidgets.QWidget):
             f"<br><span style='color:rgba(214,198,222,168);font-size:12.5px;'>{html.escape(message)}</span>"
         )
         self._begin_message("user", start, message, row_id)
+        if attachments:
+            # 附件要跟着这条消息记着：刷新/重发会把它重新贴一遍，不带附件的话气泡当场变小，
+            # 下面的消息整体往上跳——看着就是「刷新之后位置乱了」。
+            self._msgs[-1]["attachments"] = list(attachments)
         if row_id is None and self._row_stamp_pending is not None:
             # 这一条是截断重发刚贴回来的：行号早就回了，补上（不然它再也删不掉/刷不了）
             self._msgs[-1]["row_id"] = self._row_stamp_pending
@@ -2514,8 +2518,8 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _image_at(self, pos: QtCore.QPoint) -> str:
         """这一点落在哪张图上？返回资源名，不是图就返回空。"""
-        fmt = self.view.cursorForPosition(pos).charFormat()
-        return fmt.toImageFormat().name() if self._is_photo_format(fmt) else ""
+        hit = self._photo_at(pos)
+        return hit[0] if hit is not None else ""
 
     @staticmethod
     def _is_photo_format(fmt: QtGui.QTextCharFormat) -> bool:
@@ -2540,54 +2544,60 @@ class ChatPanel(QtWidgets.QWidget):
         else:
             self.view.viewport().unsetCursor()
 
-    def _photo_rect_at(self, pos: QtCore.QPoint, key: str) -> QtCore.QRect | None:
-        """这张图在视口里占的那块地方；鼠标不在图上就返回 None。
+    def _photo_rect_for(self, position: int, image: QtGui.QTextImageFormat) -> QtCore.QRect | None:
+        """这张图画在视口里的哪一块：位置取图片字符自己的光标矩形，宽高取画出来的尺寸。
 
         尺寸只认**文档里画出来的大小**（插入时 setWidth/setHeight 的那个），不能拿资源里
         那张原图的像素宽：vision_analyze 那张截图原图 1736 宽、画出来 288 宽，用原图宽算，
         这块矩形就横穿整行——下载按钮被挤到行尾，跟代码块的复制按钮叠在一起，谁都点不到。
-        横坐标仍用所在块的左边界（本应用里的图都是独占一行、左对齐），只把宽高换成画出来的尺寸。
         """
-        cursor = self.view.cursorForPosition(pos)
-        fmt = cursor.charFormat()
-        if not self._is_photo_format(fmt) or fmt.toImageFormat().name() != key:
-            return None
-        image = fmt.toImageFormat()
+        key = image.name()
+        cursor = QtGui.QTextCursor(self.view.document())
+        cursor.setPosition(position)
+        line = self.view.cursorRect(cursor)
         width = int(image.width())
         if width <= 0:
-            # 没显式给宽度：文档按原图尺寸画，这时原图宽才是画出来的宽
             pixmap = self.view.document().resource(
                 QtGui.QTextDocument.ResourceType.ImageResource, QtCore.QUrl(key)
             )
-            if not isinstance(pixmap, QtGui.QPixmap) or pixmap.isNull():
-                # 文档里连资源都没了，退回图片缓存（长会话 FIFO 里可能还留着这张）
+            if isinstance(pixmap, QtGui.QPixmap) and not pixmap.isNull():
+                width = pixmap.width()
+            else:
                 cached = self._photos.get(self._photo_sources.get(key, ""))
-                if isinstance(cached, QtGui.QPixmap) and not cached.isNull():
-                    pixmap = cached
-                else:
+                if not isinstance(cached, QtGui.QPixmap) or cached.isNull():
                     return None
-            width = pixmap.width()
-        line = self.view.cursorRect(cursor)
+                width = cached.width()
         height = int(image.height()) or line.height()
         if width <= 0 or height <= 0:
             return None
-        block = self.view.document().documentLayout().blockBoundingRect(cursor.block())
-        left = int(block.left() - self.view.horizontalScrollBar().value())
-        rect = QtCore.QRect(left, line.top(), width, height)
-        return rect if rect.contains(pos) else None
+        return QtCore.QRect(line.left(), line.top(), width, height)
+
+    def _photo_rect_at(self, pos: QtCore.QPoint, key: str) -> QtCore.QRect | None:
+        """这张图在视口里占的那块地方；鼠标不在图上就返回 None。"""
+        hit = self._photo_at(pos)
+        return hit[1] if hit is not None and hit[0] == key else None
 
     def _photo_at(self, pos: QtCore.QPoint) -> tuple[str, QtCore.QRect] | None:
-        """鼠标是不是真落在某张图上。
+        """鼠标是不是真落在某张图上：认出块里的图片字符，逐张拿它自己的矩形验一遍。
 
-        不能只看 `_image_at`：图片在文档里只占一个字符位，那个字符格式会往图片左右延伸，
-        紧挨着图片的空白也算「在图片上」。于是鼠标一出图，按钮就被重新摆到图外面去。
-        这里拿矩形再验一次，图画到哪儿就只认到哪儿。
+        别用 `cursorForPosition(pos).charFormat()` 认图：光标会吸到最近的字符边界上，附件行里
+        图片前面还多一个换行符，图靠左那一片点下去取回来的是换行符的格式，既不认图也不亮下载
+        按钮——图看着 200 宽，只有右半边能点。矩形还顺带挡住「图片右边那片空白」：图片在文档里
+        只占一个字符位，字符格式会往左右延伸，不验矩形的话鼠标一出图按钮就被重新摆到图外面去。
         """
-        key = self._image_at(pos)
-        if not key:
+        block = self._block_at(pos)
+        if block is None or not block.isValid() or not self._block_has_image(block):
             return None
-        rect = self._photo_rect_at(pos, key)
-        return (key, rect) if rect is not None else None
+        fragment = block.begin()
+        while not fragment.atEnd():
+            piece = fragment.fragment()
+            if piece.isValid() and self._is_photo_format(piece.charFormat()):
+                image = piece.charFormat().toImageFormat()
+                rect = self._photo_rect_for(piece.position(), image)
+                if rect is not None and rect.contains(pos):
+                    return image.name(), rect
+            fragment += 1
+        return None
 
     def _show_hover_download(self, key: str, rect: QtCore.QRect) -> None:
         """图上悬停时右上角的下载按钮：点一下直接存原图，不用先打开看原图。"""
@@ -4485,7 +4495,7 @@ class ChatPanel(QtWidgets.QWidget):
         pending, self._rewind_after_stop = self._rewind_after_stop, None
         if pending is not None:
             # 刚叫停的那一轮是为了「从这条重来」：别再把它排队的那句接上
-            self._emit_rewind(pending[0], pending[1], False)
+            self._emit_rewind(pending[0], pending[1], pending[2])
             return
         self._drain_queue()
 
@@ -5620,6 +5630,10 @@ class ChatPanel(QtWidgets.QWidget):
         if zone == self._zone:
             return  # 没换区域：按钮就在原地，鼠标动一下不必重做
         self._hide_hover()  # 换区：上一个区域的按钮一次收干净
+        if zone is None or zone[0] != "msg":
+            # 离开消息区（走到空白、代码块、图片上）就把整条动作栏收掉：
+            # 不收的话它会留在上一条消息下面，看着就是「按钮跑到别处/乱七八糟」
+            self._hide_msg_actions()
         self._zone = zone
         if zone is not None and block is not None:
             self._open_zone(zone, block)
@@ -5640,6 +5654,10 @@ class ChatPanel(QtWidgets.QWidget):
             return ("body", mark.key), block
         msg = self._message_at(block)
         if msg is not None:
+            if not str(msg.get("text") or "").strip():
+                # 这条还没吐出字（刚刷新、刚开始一轮）：空段落不算任何区域，
+                # 否则鼠标停在它上面会认领到上一条消息，把别人的按钮亮出来
+                return None, block
             # 一条消息占好几段，用消息本身认，别用块号——那样在一条里上下挪会一直换区、按钮直闪
             return ("msg", id(msg)), block
         return None, block
@@ -5908,7 +5926,14 @@ class ChatPanel(QtWidgets.QWidget):
             previous = tail.previous()
             if not previous.isValid():
                 break
-            tail = self._skip_blank_back(previous)
+            candidate = self._skip_blank_back(previous)
+            owner = self._message_at(candidate)
+            if owner is not None and owner is not msg:
+                # 退到上一条消息身上了（这条回答的尾巴那几段还空着，比如刚刷新完、字还没回来）：
+                # 就停在自己这一条里，宁可贴在末尾空段上，也不把按钮挂到别人的气泡底下——
+                # 桌面端每条消息自带一条动作栏，压根没有「跨到别条」这种可能。
+                break
+            tail = candidate
         return tail
 
     @staticmethod
@@ -5945,9 +5970,10 @@ class ChatPanel(QtWidgets.QWidget):
     ) -> list[tuple[str, str, Callable[[dict], None], bool]]:
         """这条消息该露哪几个动作，顺序照桌面端从左往右；第四个值是可不可点。
 
-        回答那条：复制 + 刷新。桌面端那条「刷新」在**每一条回答**上都摆着，只有末尾那条能点，
-        其余灰着（`ActionBarPrimitive.Reload` 自己按 isLast 禁用）；还有朗读和表情回应，
-        那两个能力我们还没有，不摆空壳。
+        回答那条：复制 + 刷新。桌面端那条「刷新」在**每一条回答**上都摆着、都能点：
+        末条点了直接重跑，前面那些点了先弹「恢复到此检查点」的卡（桌面端 Reload 每次都会
+        从那条回答的父提示截断重跑，不限于末尾）。还有朗读和表情回应，那两个能力我们还没有，
+        不摆空壳。
         用户那条：一颗，最新那条在跑时是停止，其余时候是重新发送。
         """
         if not str(msg.get("text") or "").strip():
@@ -5975,7 +6001,13 @@ class ChatPanel(QtWidgets.QWidget):
         self._msg_shown = msg
         # 条子挂在消息**最后一行**上：用户那条并排在这行右端（右边空着），回答另起一行挂在下面，
         # 都不压字。末尾那一行必须整行在屏幕里，否则不挂——不然按钮会漂在窗口中间。
-        head = self._msg_head_block(msg, block) or block
+        head = self._msg_head_block(msg, block)
+        if head is None:
+            # 这条消息在文档里已经找不到自己那一段（刷新时整条重来过）：一条都不摆。
+            # 以前这里退回「鼠标所在的块」，条子就挂到上面那条消息的气泡底下——刷新几次之后
+            # 「按钮位置不对」正是这么来的。
+            self._hide_msg_actions()
+            return
         tail = self._msg_tail_block(msg) or head
         # 尾巴要落在「真正的正文」上：工具行、代码块属于它们自己，别把整条消息的按钮挂到那儿
         while (
@@ -5988,6 +6020,9 @@ class ChatPanel(QtWidgets.QWidget):
             if not previous.isValid():
                 break
             tail = previous
+        if self._message_at(tail) not in (None, msg) and tail is not head:
+            # 算出来的尾巴其实属于别的消息：退回自己抬头那一行，绝不跨条挂
+            tail = head
         tail_rect = self._block_rect(tail, tail)
         view_height = self.view.viewport().height()
         tail_visible = (
@@ -6004,9 +6039,13 @@ class ChatPanel(QtWidgets.QWidget):
         buttons = self._msg_buttons[: len(specs)]
         if len(buttons) < len(specs):  # _ensure_msg_buttons() 刚建过，这里只是让类型检查看得见
             return
+        for spare in self._msg_buttons[len(specs):]:
+            # 上一条消息要两颗、这一条只要一颗：多出来的必须收掉，不然它就留在上一条的
+            # 老位置上，看着像这条消息的按钮飞到了别处
+            spare.hide()
         # 按钮簇：你说的那条摆进气泡右下角（垫一层气泡色把字尾盖住）；
         # 她的回答另起一行贴右侧。都右对齐、从右往左排。
-        step = HoverActionButton.BUTTON_PX + 12
+        step = HoverActionButton.BUTTON_PX + 6  # 桌面端 gap-1.5
         bubble = self.view.bubble_rect(head) if inline else None
         for index, (icon, tip, slot, usable) in enumerate(specs):
             button = buttons[index]
@@ -6036,6 +6075,11 @@ class ChatPanel(QtWidgets.QWidget):
         msg = self._msg_shown
         if msg is None or not self._msg_buttons:
             return
+        if not any(item is msg for item in self._msgs):
+            # 这条消息已经被截断掉了（刷新时整条重来）：条子跟着作废，
+            # 别拿着旧字典去算位置——算出来的坐标落在别人的行上
+            self._hide_msg_actions()
+            return
         head = self._msg_head_block(msg, None)
         if head is None:
             self._hide_msg_actions()
@@ -6061,15 +6105,16 @@ class ChatPanel(QtWidgets.QWidget):
         text = str(msg.get("text") or "")
         if self._busy:
             # 这一轮还在流：桌面端是先叫停再恢复，停稳了（settle_turn）才真发出去
-            self._rewind_after_stop = (msg, text)
+            self._rewind_after_stop = (msg, text, False)
             self._stop_turn()
             return
         self._emit_rewind(msg, text, False)
 
     def _can_regenerate(self, msg: dict) -> bool:
-        """只有最后一条回答能重新生成：截断点由它前面那条用户消息定。"""
-        if not self._msgs or self._msgs[-1] is not msg:
-            return False
+        """每条回答都能刷新：截断点由它前面那条用户消息定，跟它在不在一在末尾无关。
+
+        桌面端那个 Reload 在每回答上都亮着，只是最后一条点了不问、前面那些点了先问一句。
+        """
         before = self._previous_user(msg)
         return bool(before and before.get("row_id") is not None)
 
@@ -6117,17 +6162,38 @@ class ChatPanel(QtWidgets.QWidget):
         )
 
     def _request_regenerate(self, msg: dict) -> None:
-        """刷新：拿这条回答前面那句原话重跑一遍（桌面端的 RefreshCw 不问、直接来）。"""
+        """刷新：拿这条回答前面那句原话重跑一遍（桌面端那颗 Reload，每条回答上都能点）。
+
+        末条直接重跑；前面那些先把话说清楚——截断点以后的问答都会被引擎删掉，
+        桌面端这时候也弹一张「恢复到此检查点」的确认卡，不弹就等于偷偷删历史。
+        """
         user_msg = self._previous_user(msg)
-        if user_msg is None:
+        if user_msg is None or user_msg.get("row_id") is None:
             return
-        self._emit_rewind(user_msg, str(user_msg.get("text") or ""), True)
+        if self._rewind_later_users(user_msg) > 0 and not ConfirmDialog.ask(
+            self.window(),
+            "恢复到此检查点？",
+            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
+            "恢复并重新运行",
+        ):
+            return  # 取消就是不动：历史一条都不删
+        self._hide_msg_actions()
+        text = str(user_msg.get("text") or "")
+        if self._busy:
+            # 这一轮还在流：先叫停，停稳了（settle）再按这条重跑
+            self._rewind_after_stop = (user_msg, text, True)
+            self._stop_turn()
+            return
+        self._emit_rewind(user_msg, text, True)
 
     def apply_rewind(self, msg: dict, text: str) -> None:
-        """引擎已经按这条消息截断过历史了：窗口回到那一刻，再把正文重新贴一遍。"""
+        """引擎已经按这条消息截断过历史了：窗口回到那一刻，再把正文重新贴一遍。
+
+        附件照原样贴回去：那条消息本来就带着图和文件，重跑后气泡还得是原来那么大。
+        """
         self._rewind_waiting = False
         self._truncate_from(msg)
-        self.append_user(text)
+        self.append_user(text, attachments=msg.get("attachments") or ())
         if self.input.toPlainText().strip() == text.strip():
             # 这段正文已经进了对话，输入框别再留一份（不然看着像没发出去）
             self.input.clear()
@@ -6153,7 +6219,12 @@ class ChatPanel(QtWidgets.QWidget):
         if target is None:
             return
         cursor = QtGui.QTextCursor(document)
-        cursor.setPosition(target.position())
+        start = target.position()
+        if start > 0:
+            # 连同它前面那个换行一起选：只删正文的话，Qt 会把那段空块留在文末，
+            # 每刷新一次就多一行空白，上面的消息整体往下挪一截——就是「刷新之后错位」。
+            start -= 1
+        cursor.setPosition(start)
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
         for index, item in enumerate(self._msgs):

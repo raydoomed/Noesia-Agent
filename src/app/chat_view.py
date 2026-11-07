@@ -93,17 +93,25 @@ class ChatView(QtWidgets.QTextBrowser):
         return rect
 
     def _collect_bubbles(self) -> None:
-        """把每条「你的话」的块合成一个气泡框。一块消息就是一块。"""
+        """把每条「你的话」的块合成一个气泡框。一块消息就是一块。
+
+        框子按**块自己占的高度**算，不按文字布局的包围盒：块里带换行符时
+        布局报的宽高不是文字真实占的（一行「123」也会报满宽），按它画，
+        气泡常常比字矮一截，第二行就被气泡边缘切掉。块占多少，气泡就多高。
+        """
         rects: list[QtCore.QRectF] = []
+        layout = self.document().documentLayout()
+        width = self.document().textWidth()
         block = self.document().begin()
         while block.isValid():
             data = block.userData()
             msg = getattr(data, "msg", None)
             if msg is not None and msg.get("role") == "user":
-                rect = self._text_rect(block)
-                if not rect.isNull():
-                    rects.append(rect.adjusted(-BUBBLE_PAD_X, -BUBBLE_PAD_Y,
-                                               BUBBLE_PAD_X, BUBBLE_PAD_Y))
+                box = layout.blockBoundingRect(block)
+                if box.height() > 0:
+                    top = max(1.0, box.top() - BUBBLE_PAD_Y)
+                    bottom = box.top() + box.height() + BUBBLE_PAD_Y
+                    rects.append(QtCore.QRectF(0.0, top, width, bottom - top))
             block = block.next()
         self._bubbles = rects
         self._bubbles_stale = False
