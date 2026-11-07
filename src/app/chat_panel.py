@@ -4588,7 +4588,7 @@ class ChatPanel(QtWidgets.QWidget):
             return None
         if item.get("data"):
             pixmap = QtGui.QPixmap()
-            return pixmap if pixmap.loadFromData(item["data"], "PNG") else None
+            return pixmap if pixmap.loadFromData(item["data"]) else None
         path = item.get("path") or ""
         if not path or not Path(path).is_file():
             return None
@@ -4617,7 +4617,7 @@ class ChatPanel(QtWidgets.QWidget):
             return False
         buffer = QtCore.QBuffer()
         buffer.open(QtCore.QIODevice.OpenModeFlag.WriteOnly)
-        image.save(buffer, b"PNG")
+        image.save(buffer, "PNG")  # pyright: ignore[reportCallIssue, reportArgumentType]
         data = bytes(buffer.data().data())
         buffer.close()
         if not data:
@@ -5016,7 +5016,7 @@ class ChatPanel(QtWidgets.QWidget):
             sequence = QtGui.QKeySequence(stored)
             if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.SequenceFormat.PortableText):
                 return sequence
-        return QtGui.QKeySequence(QtCore.Qt.KeyboardModifier.ShiftModifier | QtCore.Qt.Key.Key_Space)
+        return QtGui.QKeySequence("Shift+Space")
 
     def _global_ptt_label(self) -> str:
         return _key_name(self._global_ptt_sequence())
@@ -5764,7 +5764,8 @@ class ChatPanel(QtWidgets.QWidget):
         if head is None:
             self._hide_msg_actions()
             return
-        tail = self._msg_tail_block(msg) or head
+        tail_block = self._msg_tail_block(msg)
+        tail = tail_block if tail_block is not None else head
         while (
             tail is not None
             and tail.isValid()
@@ -5777,6 +5778,9 @@ class ChatPanel(QtWidgets.QWidget):
             tail = previous
         if self._message_at(tail) not in (None, msg) and tail is not head:
             tail = head
+        if tail is None:
+            self._hide_msg_actions()
+            return
         tail_rect = self._block_rect(tail, tail)
         view_height = self.view.viewport().height()
         tail_visible = (
