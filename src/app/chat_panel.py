@@ -33,7 +33,7 @@ from app import (
     voice_input_prefs,
 )
 from app.chat_view import ChatView
-from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap
+from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap, svg_icon
 from app.approval_dialog import ConfirmDialog
 from app.photo_view import PhotoView
 from app.speech_bar import SpeechBar
@@ -109,6 +109,25 @@ class _MsgMark(QtGui.QTextBlockUserData):
     def __init__(self, msg: dict) -> None:
         super().__init__()
         self.msg = msg
+
+
+class _BarMark(QtGui.QTextBlockUserData):
+    """动作条占的那一段：给按钮留的位置，不是一条消息的开头。"""
+
+
+class _PhotoMark(QtGui.QTextBlockUserData):
+    """用户消息里的图片那一段：属于那条消息，但不是它的开头（气泡不从这里另起一个）。
+
+    属性叫 `owner` 而不叫 `msg`：气泡收集按「带 msg 的块」数气泡，叫 msg 会多画一个。
+    """
+
+    def __init__(self, msg: dict) -> None:
+        super().__init__()
+        self.owner = msg
+
+
+MSG_GAP = 16
+MSG_GAP_TIGHT = 4
 
 
 class _JumpPill(QtWidgets.QWidget):
@@ -202,9 +221,9 @@ def _paint_range(cursor: QtGui.QTextCursor, start: int, end: int, char_format: Q
 
 
 def _plain_block_format() -> QtGui.QTextBlockFormat:
-    """普通段落：只留 5px 上间距，不带上一段的底色/缩进（代码块的底色否则会渗下来）。"""
+    """普通段落：只留 6px 上间距，不带上一段的底色/缩进（代码块的底色否则会渗下来）。"""
     block_format = QtGui.QTextBlockFormat()
-    block_format.setTopMargin(5)
+    block_format.setTopMargin(6)
     block_format.setLineHeight(130, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value)
     return block_format
 
@@ -1113,7 +1132,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
         card = QtWidgets.QFrame(self)
         card.setObjectName("pttcard")
         lay = QtWidgets.QVBoxLayout(card)
-        lay.setContentsMargins(24, 20, 24, 18)
+        lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(0)
 
         head = QtWidgets.QHBoxLayout()
@@ -1182,7 +1201,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
         frame.setObjectName("pttrow")
         frame.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         line = QtWidgets.QHBoxLayout(frame)
-        line.setContentsMargins(10, 4, 10, 4)
+        line.setContentsMargins(12, 4, 12, 4)
         line.setSpacing(12)
 
         tag = QtWidgets.QLabel(name, frame)
@@ -1409,7 +1428,7 @@ class ChatPanel(QtWidgets.QWidget):
         outer.addWidget(frame)
 
         layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
         header = QtWidgets.QHBoxLayout()
@@ -1545,16 +1564,15 @@ class ChatPanel(QtWidgets.QWidget):
         )
         self.view.attach_folds(self._folds)
 
-        self._hover_copy: HoverActionButton | None = None
+        self._el_buttons: dict[tuple, HoverActionButton] = {}
+        self._shown_buttons: list[HoverActionButton] = []
+        self._el_scan_pos = 0
+        self._user_line_width = 0
         self._zone: tuple | None = None
-        self._hover_expand: HoverActionButton | None = None
-        self._hover_download: HoverActionButton | None = None
         self._msgs: list[dict] = []
         self._stream_msg: dict | None = None
-        self._msg_buttons: list[HoverActionButton] = []
-        self._reserve_tail_space()
-        self._msg_band: QtCore.QRect | None = None
-        self._msg_shown: dict | None = None
+        self._bar_buttons: list[HoverActionButton] = []
+        self._bar_msg: dict | None = None
         self._edge_cursor_shape = None
         self._rewind_waiting = False
         self._rewind_after_stop: tuple[dict, str, bool] | None = None
@@ -1575,7 +1593,9 @@ class ChatPanel(QtWidgets.QWidget):
         bar.sliderMoved.connect(self._user_scroll_now)
         bar.actionTriggered.connect(self._user_scroll_now)
         bar.rangeChanged.connect(self._range_changed)
-        self.view.document().contentsChanged.connect(self._replace_msg_actions)
+        self.view.document().contentsChanged.connect(self._sync_elements)
+        bar.valueChanged.connect(lambda _value: self._place_msg_bars())
+        bar.rangeChanged.connect(lambda *_args: QtCore.QTimer.singleShot(0, self._place_msg_bars))
 
         self.stack = StatusStack(frame)
         self.stack.kill_requested.connect(self.process_kill_requested.emit)
@@ -1590,7 +1610,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._inputbox = box = QtWidgets.QFrame(frame)
         box.setObjectName("inputbox")
         box_row = QtWidgets.QHBoxLayout(box)
-        box_row.setContentsMargins(9, 0, 4, 0)
+        box_row.setContentsMargins(8, 0, 4, 0)
         box_row.setSpacing(2)
 
         self._attach_button = QtWidgets.QToolButton(box)
@@ -1739,7 +1759,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attach_bar = QtWidgets.QFrame(frame)
         self._attach_bar.setObjectName("attachbar")
         self._attach_row = QtWidgets.QHBoxLayout(self._attach_bar)
-        self._attach_row.setContentsMargins(6, 3, 6, 3)
+        self._attach_row.setContentsMargins(6, 4, 6, 4)
         self._attach_row.setSpacing(6)
         self._attach_row.addStretch(1)
         self._attach_bar.hide()
@@ -1748,7 +1768,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._queue_bar = QtWidgets.QFrame(frame)
         self._queue_bar.setObjectName("attachbar")
         self._queue_col = QtWidgets.QVBoxLayout(self._queue_bar)
-        self._queue_col.setContentsMargins(6, 3, 6, 3)
+        self._queue_col.setContentsMargins(6, 4, 6, 4)
         self._queue_col.setSpacing(3)
         self._queue_bar.hide()
         layout.addWidget(self._queue_bar)
@@ -1759,7 +1779,7 @@ class ChatPanel(QtWidgets.QWidget):
         layout.addLayout(row)
 
         meta_row = QtWidgets.QHBoxLayout()
-        meta_row.setContentsMargins(4, 5, 4, 0)
+        meta_row.setContentsMargins(4, 4, 4, 0)
         meta_row.setSpacing(6)
         meta_row.addWidget(hint_label)
         meta_row.addStretch(1)
@@ -1772,6 +1792,7 @@ class ChatPanel(QtWidgets.QWidget):
         frame.installEventFilter(self)
         self._init_background(frame)
         self._restore_geometry()
+        self._sync_send_button()
 
     def _init_background(self, frame) -> None:
         """右下角一张她的立绘当底纹：压在所有内容下面，淡到只当作画面。
@@ -1937,16 +1958,16 @@ class ChatPanel(QtWidgets.QWidget):
         `reason` 只进日志：窗口被清空时屏幕上东西都没了，事后只能靠这行日志判断是谁清的。
         """
         logger.info("[界面] 清空窗口（%s）", reason or "未说明")
+        self._destroy_msg_bars()
+        self._destroy_elements()
         self.view.clear()
         self._streaming = False
         self._msgs = []
         self._row_stamp_pending = None
-        self._reserve_tail_space()
         self._stream_msg = None
         self._rewind_waiting = False
         self._rewind_after_stop = None
         self._row_stamp_pending = None
-        self._hide_msg_actions()
         self._assistant_pending = ""
         self._reasoning_pending = ""
         self._md_block = []
@@ -2043,16 +2064,63 @@ class ChatPanel(QtWidgets.QWidget):
         for line in lines or ():
             self._insert_html(f"<span style='color:#8f9bb0;'>{html.escape(str(line))}</span>")
 
+    def _user_name_font(self) -> QtGui.QFont:
+        font = QtGui.QFont(self.view.font())
+        font.setPixelSize(11)
+        font.setBold(True)
+        return font
+
+    def _user_text_font(self) -> QtGui.QFont:
+        font = QtGui.QFont(self.view.font())
+        font.setPixelSize(13)
+        return font
+
+    def _user_line_html(self, shown: str) -> str:
+        """署名和正文排一行；正文由调用方先截好再进来。"""
+        name = html.escape(_user_display_name())
+        text = html.escape(shown)
+        return (
+            f"<span style='color:#c9a6e0;font-size:11px;'><b>{name} </b></span>"
+            f"<span style='color:rgba(214,198,222,168);font-size:12.5px;'>{text}</span>"
+        )
+
+    USER_BAR_PX = 52
+
+    def _user_line_room(self, name_width: float) -> float:
+        margins = ChatView.BUBBLE_PAD_X * 2 + self.USER_BAR_PX + MSG_GAP // 2
+        return max(60.0, self.view.viewport().width() - margins - name_width)
+
+    def _fit_user_line(self, msg: dict) -> None:
+        """一行装不下就把显示截断：原文不动，仍留在 msg["text"] 里。"""
+        block = msg.get("head_block")
+        text = str(msg.get("text") or "")
+        if block is None or not block.isValid():
+            return
+        name_width = QtGui.QFontMetricsF(self._user_name_font()).horizontalAdvance(
+            f"{_user_display_name()} "
+        )
+        shown = QtGui.QFontMetricsF(self._user_text_font()).elidedText(
+            text, QtCore.Qt.TextElideMode.ElideRight, self._user_line_room(name_width)
+        )
+        msg["ellipsis"] = shown != text
+        self._write_user_line(block, shown)
+
+    def _write_user_line(self, block: QtGui.QTextBlock, shown: str) -> None:
+        cursor = QtGui.QTextCursor(block)
+        cursor.setPosition(block.position())
+        cursor.setPosition(
+            block.position() + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor
+        )
+        cursor.insertHtml(self._user_line_html(shown))
+
     def append_user(self, message: str, attachments=(), row_id: int | None = None) -> None:
         self._last_error_key = ""
         message, refs = split_attachment_refs(message)
         items = [*refs, *attachments]
         start = self.view.document().characterCount() - 1
-        self._insert_html(
-            f"<span style='color:#c9a6e0;font-size:11px;'><b>{html.escape(_user_display_name())}</b></span>"
-            f"<br><span style='color:rgba(214,198,222,168);font-size:12.5px;'>{html.escape(message)}</span>"
-        )
+        self._insert_html(self._user_line_html(""))
         self._begin_message("user", start, message, row_id)
+        self._fit_user_line(self._msgs[-1])
         if attachments:
             self._msgs[-1]["attachments"] = list(attachments)
         if row_id is None and self._row_stamp_pending is not None:
@@ -2060,6 +2128,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._row_stamp_pending = None
         for item in items:
             self._append_user_attachment(item)
+        self._mount_msg_bar(self._msgs[-1])
         if not self._restoring:
             self._follow = True
             self._scroll_to_end_later()
@@ -2081,7 +2150,39 @@ class ChatPanel(QtWidgets.QWidget):
             Path(item["path"]) if item.get("path") else item.get("data") or b"",
         )
         width = min(200, pixmap.width() or 200)
-        self._insert_html(f"<br><img src='{key}' width='{width}'>")
+        self._insert_photo_block(key, width)
+
+    def _insert_photo_block(self, key: str, width: int) -> None:
+        """图自己占一段：段格式沿用这条消息的缩进与留白，行高按单倍，不另起空行。
+
+        `<br><img>` 塞进同一条消息时，Qt 会先给一行空行再把图放上去——图上方平白多
+        17px，且这一块没有消息标记，下一段就按「同一轮继续写」算间距。
+        """
+        document = self.view.document()
+        head: QtGui.QTextBlock | None = None
+        if self._msgs:
+            head = self._msgs[-1].get("head_block")
+        cursor = QtGui.QTextCursor(document)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        if head is not None and head.isValid() and not head.text().strip():
+            block = head
+            cursor.setPosition(block.position())
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock)
+        else:
+            fmt = QtGui.QTextBlockFormat()
+            if head is not None:
+                fmt = QtGui.QTextBlockFormat(head.blockFormat())
+            fmt.setTopMargin(ChatView.BUBBLE_PAD_Y + MSG_GAP_TIGHT)
+            fmt.setBottomMargin(0)
+            fmt.setLineHeight(0, QtGui.QTextBlockFormat.LineHeightTypes.SingleHeight.value)
+            cursor.insertBlock(fmt)
+            block = cursor.block()
+        if self._msgs:
+            block.setUserData(_PhotoMark(self._msgs[-1]))
+        image = QtGui.QTextImageFormat()
+        image.setName(key)
+        image.setWidth(width)
+        cursor.insertImage(image)
 
     def begin_assistant(self) -> None:
         self._end_reasoning_group()
@@ -2108,6 +2209,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._pump_assistant(final=True)
         self._flush_md()
         self._drop_trailing_blank_line()
+        self._mount_msg_bar(self._msgs[-1])
         self._assistant_pending = ""
         self._streaming = False
         self._stream_msg = None
@@ -2432,28 +2534,16 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _show_hover_download(self, key: str, rect: QtCore.QRect) -> None:
         """图上悬停时右上角的下载按钮：点一下直接存原图，不用先打开看原图。"""
-        if self._hover_download is None:
-            self._hover_download = HoverActionButton(
-                self.view.viewport(),
-                "download",
-                "下载",
-                lambda: None,
-                flash=False,
-            )
-            self._hover_download.setStyleSheet(
-                "QToolButton { border: none; border-radius: 6px;"
-                " background: rgba(16, 18, 24, 150); padding: 0; }"
-                "QToolButton:hover { background: rgba(16, 18, 24, 225); }"
-            )
-        self._hover_download.retarget(
-            "download", "下载", lambda k=key: self._download_photo(k)
+        button = self._element_button(
+            ("photo", key), "download", "下载", lambda k=key: self._download_photo(k), flash=False
         )
-        self._hover_download.place_at(rect)
-        self._hover_download.show()
-
-    def _hide_download(self) -> None:
-        if self._hover_download is not None:
-            self._hover_download.hide()
+        button.setStyleSheet(
+            "QToolButton { border: none; border-radius: 6px;"
+            " background: rgba(16, 18, 24, 150); padding: 0; }"
+            "QToolButton:hover { background: rgba(16, 18, 24, 225); }"
+        )
+        button.place_at(rect)
+        self._show_element(button)
 
     def _download_photo(self, key: str) -> None:
         """存这张图的原图。手上有原图字节就直接问存哪儿，没有就先取回来。"""
@@ -3120,9 +3210,11 @@ class ChatPanel(QtWidgets.QWidget):
                 copy_payload.get("label") or tool_tr("common.copy"),
                 copy_payload["text"],
             )
+            self._register_body(fold.key)
 
         if view.inline_diff:
             self._diff_texts[fold.key] = (path, view.inline_diff)
+            self._register_body(fold.key)
             self._folds.append_runs(fold, self._diff_rows(view.inline_diff, path=path))
             if not fold.pinned and not fold.open:
                 self._folds.set_open(fold, True)
@@ -3864,8 +3956,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._para_break = False
         block_format = QtGui.QTextBlockFormat()
         block_format.setBackground(QtGui.QColor(markdown_render.CODE_BACKGROUND))
-        block_format.setLeftMargin(10)
-        block_format.setRightMargin(8)
+        block_format.setLeftMargin(12)
+        block_format.setRightMargin(12)
         block_format.setTopMargin(0)
         block_format.setBottomMargin(0)
         head_format = QtGui.QTextBlockFormat(block_format)
@@ -3974,8 +4066,8 @@ class ChatPanel(QtWidgets.QWidget):
             self._drop_trailing_blank_line()
             cursor.insertBlock()
         block_format = QtGui.QTextBlockFormat()
-        block_format.setTopMargin(12 if level <= 2 else 9)
-        block_format.setBottomMargin(3)
+        block_format.setTopMargin(MSG_GAP if level <= 2 else MSG_GAP // 2)
+        block_format.setBottomMargin(MSG_GAP // 4)
         cursor.setBlockFormat(block_format)
         font = QtGui.QFont(self.view.font())
         font.setPixelSize(_HEADING_PX[level])
@@ -4092,6 +4184,7 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _end_range_change(self) -> None:
         self._range_changing = False
+        self._place_msg_bars()
 
     def _on_scrolled(self, _value: int) -> None:
         """滚动条动了：到没到底既决定胶囊的存亡，也决定还跟不跟随新内容。"""
@@ -4328,9 +4421,9 @@ class ChatPanel(QtWidgets.QWidget):
             self._send_button.setText("排队")
             self._send_button.setFixedWidth(52)
         else:
-            icon = icon_pixmap("stop" if label == "停止" else "arrow-up", "#2b1520", 15,
-                               self.devicePixelRatioF())
-            self._send_button.setIcon(QtGui.QIcon(icon) if icon is not None else QtGui.QIcon())
+            self._send_button.setIcon(
+                svg_icon("stop" if label == "停止" else "arrow-up", "#2b1520", 15)
+            )
             self._send_button.setText("")
             self._send_button.setFixedWidth(32)
         self._send_button.setToolTip(
@@ -4762,7 +4855,7 @@ class ChatPanel(QtWidgets.QWidget):
             for button in (self._attach_button, self._approval_button,
                            self._reasoning_button, self._voice_button, self._send_button):
                 button.hide()
-            self._box_row.setContentsMargins(9, 7, 4, 7)
+            self._box_row.setContentsMargins(8, 8, 4, 8)
             self._set_inputbox_voice(True)
             self._voice_orb.show()
             self._float_mode_button(True)
@@ -4799,7 +4892,7 @@ class ChatPanel(QtWidgets.QWidget):
             for button in (self._attach_button, self._approval_button,
                            self._reasoning_button, self._voice_button, self._send_button):
                 button.show()
-            self._box_row.setContentsMargins(9, 0, 4, 0)
+            self._box_row.setContentsMargins(8, 0, 4, 0)
             self._set_inputbox_voice(False)
             self._float_mode_button(False)
             for child, policy in self._voice_focus_backup.items():
@@ -5282,12 +5375,23 @@ class ChatPanel(QtWidgets.QWidget):
         super().resizeEvent(event)
         if hasattr(self, "_model_menu"):
             self._sync_popup_width()
+        QtCore.QTimer.singleShot(0, self._refit_user_lines)
+        QtCore.QTimer.singleShot(0, self._place_msg_bars)
+
+    def _refit_user_lines(self) -> None:
+        """窗口宽度变了：按新宽度重截一遍（只动显示）。"""
+        width = self.view.viewport().width()
+        if width == self._user_line_width:
+            return
+        self._user_line_width = width
+        for msg in self._msgs:
+            if msg.get("role") == "user":
+                self._fit_user_line(msg)
         title = getattr(self, "_title_label", None)
         if title is not None:
             title.setText(TITLE_FULL if self.width() >= TITLE_FULL_MIN_WIDTH else TITLE_SHORT)
         self._place_background()
         self._place_jump()
-        self._replace_msg_actions()
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
@@ -5379,14 +5483,11 @@ class ChatPanel(QtWidgets.QWidget):
         """
         if self._over_hover_button():
             return
-        if self._in_msg_band(pos):
-            return
+        self._show_msg_bar(self._msg_at_pos(pos))
         zone, block = self._zone_at(pos)
         if zone == self._zone:
             return
         self._hide_hover()
-        if zone is None or zone[0] != "msg":
-            self._hide_msg_actions()
         self._zone = zone
         if zone is not None and block is not None:
             self._open_zone(zone, block)
@@ -5404,11 +5505,6 @@ class ChatPanel(QtWidgets.QWidget):
         mark = block.userData()
         if isinstance(mark, disclosure._BodyMark):
             return ("body", mark.key), block
-        msg = self._message_at(block)
-        if msg is not None:
-            if not str(msg.get("text") or "").strip():
-                return None, block
-            return ("msg", id(msg)), block
         return None, block
 
     def _open_zone(self, zone: tuple, block: QtGui.QTextBlock) -> None:
@@ -5418,17 +5514,16 @@ class ChatPanel(QtWidgets.QWidget):
             fence = self._code_fence_at(block)
             if fence is not None:
                 first, last, text = fence
-                self._show_hover_copy(text, tool_tr("assistant.tool.copyCode"), first, last, edge=True)
+                self._show_hover_copy(
+                    text, tool_tr("assistant.tool.copyCode"), first, last,
+                    key=("code", first.position()),
+                )
         elif kind == "photo":
             self._show_hover_download(zone[1], zone[2])
         elif kind == "body":
             mark = block.userData()
             if isinstance(mark, disclosure._BodyMark):
                 self._open_body_zone(block, mark.key)
-        elif kind == "msg":
-            msg = self._message_at(block)
-            if msg is not None:
-                self._show_msg_actions(msg, block)
 
     def _open_body_zone(self, block: QtGui.QTextBlock, key: int) -> None:
         """工具输出正文：能复制就给复制，另外有 diff 才给「看完整 diff」。"""
@@ -5437,9 +5532,112 @@ class ChatPanel(QtWidgets.QWidget):
         if payload is None and key in self._diff_texts:
             payload = (tool_tr("assistant.tool.copyContent"), self._diff_texts[key][1])
         if payload and payload[1].strip():
-            self._show_hover_copy(payload[1], payload[0], first, last, edge=True)
+            self._show_hover_copy(
+                payload[1], payload[0], first, last, key=("body", key)
+            )
         if key in self._diff_texts:
             self._show_hover_expand(key, first, last)
+
+    def _sync_elements(self) -> None:
+        """文档里新出现的代码块、图片，各建一颗自己的按钮：创建跟着元素走，不跟着鼠标走。"""
+        document = self.view.document()
+        end = document.characterCount() - 1
+        block = document.findBlock(min(self._el_scan_pos, end))
+        while block.isValid():
+            self._register_element(block)
+            block = block.next()
+        self._el_scan_pos = max(0, end)
+        self._place_msg_bars()
+
+    def _register_element(self, block: QtGui.QTextBlock) -> None:
+        mark = block.userData()
+        if isinstance(mark, _CodeMark):
+            first = block
+            while isinstance(first.previous().userData(), _CodeMark):
+                first = first.previous()
+            self._element_button(
+                ("code", first.position()),
+                "copy",
+                tool_tr("assistant.tool.copyCode"),
+                lambda target=first: self._copy_code_run(target),
+                done_tooltip=tool_tr("common.copied"),
+            )
+            return
+        if not self._block_has_image(block):
+            return
+        fragment = block.begin()
+        while not fragment.atEnd():
+            piece = fragment.fragment()
+            if piece.isValid() and self._is_photo_format(piece.charFormat()):
+                name = piece.charFormat().toImageFormat().name()
+                button = self._element_button(
+                    ("photo", name), "download", "下载",
+                    lambda key=name: self._download_photo(key), flash=False,
+                )
+                button.setStyleSheet(
+                    "QToolButton { border: none; border-radius: 6px;"
+                    " background: rgba(16, 18, 24, 150); padding: 0; }"
+                    "QToolButton:hover { background: rgba(16, 18, 24, 225); }"
+                )
+            fragment += 1
+
+    def _register_body(self, key: int) -> None:
+        """工具正文有了内容：给它建自己的复制/看 diff 按钮，位置绑在同那段正文上。"""
+        if ("body", key) in self._el_buttons and ("expand", key) in self._el_buttons:
+            return
+        payload = self._tool_payloads.get(key)
+        if payload is not None and str(payload[1]).strip():
+            self._element_button(
+                ("body", key), "copy", payload[0],
+                lambda target=key: self._copy_body(target),
+                done_tooltip=tool_tr("common.copied"),
+            )
+        if key in self._diff_texts:
+            self._element_button(
+                ("expand", key), "expand", DIFF_PREVIEW_LABEL,
+                lambda target=key: self._open_diff_preview(target), flash=False,
+            )
+
+    def _copy_body(self, key: int) -> None:
+        payload = self._tool_payloads.get(key)
+        if payload is not None:
+            self._copy_to_clipboard(payload[1])
+            return
+        if key in self._diff_texts:
+            self._copy_to_clipboard(self._diff_texts[key][1])
+
+    def _copy_code_run(self, first: QtGui.QTextBlock) -> None:
+        """复制这段代码围栏里的正文。"""
+        fence = self._code_fence_at(first)
+        if fence is not None:
+            self._copy_to_clipboard(fence[2])
+
+    def _element_button(
+        self, key: tuple, icon: str, tooltip: str, slot: Callable[[], None],
+        *, done_tooltip: str = "", flash: bool = True,
+    ) -> HoverActionButton:
+        """一个元素自己的按钮：同一个键只建一次，往后只是换上这次的动作用。"""
+        button = self._el_buttons.get(key)
+        if button is None:
+            button = HoverActionButton(
+                self.view.viewport(), icon, tooltip, slot, done_tooltip, flash=flash
+            )
+            self._el_buttons[key] = button
+            return button
+        button.retarget(icon, tooltip, slot, done_tooltip)
+        return button
+
+    def _show_element(self, button: HoverActionButton) -> None:
+        """亮这颗；同一批里要一起亮的（比如工具正文的复制 + 看 diff）互不遮挡。"""
+        if button not in self._shown_buttons:
+            self._shown_buttons.append(button)
+        button.show()
+        button.raise_()
+
+    def _hide_elements(self) -> None:
+        for button in self._shown_buttons:
+            button.hide()
+        self._shown_buttons.clear()
 
     @classmethod
     def _block_has_image(cls, block: QtGui.QTextBlock) -> bool:
@@ -5452,14 +5650,10 @@ class ChatPanel(QtWidgets.QWidget):
             it += 1
         return False
 
-    def _in_msg_band(self, pos: QtCore.QPoint) -> bool:
-        """鼠标是否还在这条消息末尾那一带（最后一行 + 下面留给按钮的那一格）。"""
-        return self._msg_band is not None and self._msg_band.contains(pos)
-
     def _over_hover_button(self) -> bool:
         """鼠标此刻是不是压在某颗悬停按钮上（压在按钮上时正文会收到 Leave，那不是「离开」）。"""
         pos = self.view.viewport().mapFromGlobal(QtGui.QCursor.pos())
-        for button in (self._hover_copy, self._hover_expand, self._hover_download, *self._msg_buttons):
+        for button in (*self._el_buttons.values(), *self._bar_buttons):
             if button is not None and button.isVisible() and button.geometry().contains(pos):
                 return True
         return False
@@ -5540,41 +5734,31 @@ class ChatPanel(QtWidgets.QWidget):
         rect.translate(-self.view.horizontalScrollBar().value(), -self.view.verticalScrollBar().value())
         return rect
 
-    def _show_hover_copy(self, text: str, tooltip: str, first, last, edge: bool = False) -> None:
+    def _show_hover_copy(self, text: str, tooltip: str, first, last, edge: bool = False,
+                         key: tuple | None = None) -> None:
         """复制按钮：点完写剪贴板、换 ✓、1.5 秒还原。"""
-        if self._hover_copy is None:
-            self._hover_copy = HoverActionButton(
-                self.view.viewport(),
-                "copy",
-                tooltip,
-                lambda: None,
-                tool_tr("common.copied"),
-            )
-        self._hover_copy.retarget(
+        button = self._element_button(
+            key or ("copy", first.position()),
             "copy",
             tooltip,
             lambda value=text: self._copy_to_clipboard(value),
-            tool_tr("common.copied"),
+            done_tooltip=tool_tr("common.copied"),
         )
-        self._place_hover(self._hover_copy, first, last, edge=edge)
+        self._show_element(button)
+        self._place_hover(button, first, last, edge=edge)
 
     def _show_hover_expand(self, key: int, first, last) -> None:
         """放大按钮：只开预览窗，不换 ✓（那不是一次复制）。放在复制按钮左边。"""
-        if self._hover_expand is None:
-            self._hover_expand = HoverActionButton(
-                self.view.viewport(),
-                "expand",
-                DIFF_PREVIEW_LABEL,
-                lambda: None,
-                flash=False,
-            )
-        self._hover_expand.retarget(
+        button = self._element_button(
+            ("expand", key),
             "expand",
             DIFF_PREVIEW_LABEL,
             lambda target=key: self._open_diff_preview(target),
+            flash=False,
         )
-        self._place_hover(self._hover_expand, first, last,
-                          offset_x=-(HoverActionButton.BUTTON_PX + 2), edge=True)
+        self._show_element(button)
+        self._place_hover(button, first, last,
+                          offset_x=-(HoverActionButton.BUTTON_PX + 2))
 
 
     def _begin_message(self, role: str, start: int, text: str, row_id) -> None:
@@ -5590,19 +5774,18 @@ class ChatPanel(QtWidgets.QWidget):
             block = following
         msg = {"role": role, "text": text, "row_id": row_id}
         msg["mark"] = _MsgMark(msg)
+        msg["head_block"] = block
         block.setUserData(msg["mark"])
         if self._msgs:
             head_format = block.blockFormat()
-            head_format.setTopMargin(
-                8 if self._starts_after_fold(block) else HoverActionButton.BUTTON_PX + 10
-            )
+            head_format.setTopMargin(self._msg_gap(block))
             QtGui.QTextCursor(block).setBlockFormat(head_format)
         if role == "user":
             user_format = block.blockFormat()
             user_format.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
             user_format.setLeftMargin(ChatView.BUBBLE_PAD_X)
-            user_format.setRightMargin(ChatView.BUBBLE_PAD_X + 24)
-            user_format.setBottomMargin(ChatView.BUBBLE_PAD_Y + 10)
+            user_format.setRightMargin(ChatView.BUBBLE_PAD_X + self.USER_BAR_PX + MSG_GAP // 2)
+            user_format.setBottomMargin(ChatView.BUBBLE_PAD_Y)
             QtGui.QTextCursor(block).setBlockFormat(user_format)
         self._msgs.append(msg)
         if role == "assistant":
@@ -5619,270 +5802,23 @@ class ChatPanel(QtWidgets.QWidget):
             probe = probe.previous()
         if not probe.isValid():
             return False
-        return not isinstance(probe.userData(), _MsgMark)
+        return not isinstance(probe.userData(), (_MsgMark, _BarMark, _PhotoMark))
 
-    def _message_at(self, block) -> dict | None:
-        """从光标所在块往上找：这条消息是从哪一段开始的。
-
-        「这块自己就有按钮」的才不认领：代码块（`_CodeMark`）和折叠段正文（`_BodyMark`）
-        各管各的（复制代码 / 看完整 diff）。往上走的时候遇到它们**只是跳过**：一条回答里
-        夹着工具行、代码块是常态，后面接着写的正文照样属于这条消息。以前遇到就停，于是
-        代码块/工具行**下面**那几段永远认领不到消息——滚到最底下时看见的正是那几段，
-        复制/刷新整条都不出现。
-        """
-        if isinstance(block.userData(), (_CodeMark, disclosure._BodyMark)):
-            return None
-        probe = block
-        while probe.isValid():
-            mark = probe.userData()
-            if isinstance(mark, _MsgMark):
-                return mark.msg
+    def _msg_gap(self, block: QtGui.QTextBlock) -> int:
+        """两条消息之间留多少：一律按 MSG_GAP 算，上一段自带的尾距先扣掉。"""
+        if self._starts_after_fold(block):
+            return MSG_GAP_TIGHT
+        probe = block.previous()
+        while probe.isValid() and not probe.isVisible():
             probe = probe.previous()
-        return None
-
-    def _msg_head_block(self, msg: dict, near=None):
-        """这条消息开头那一块（从鼠标所在块往上找；找不到再从头往后扫一遍）。"""
-        mark = msg.get("mark")
-        if mark is None:
-            return None
-        if near is None or not near.isValid():
-            probe = self.view.document().begin()
-            while probe.isValid():
-                if probe.userData() is mark:
-                    return probe
-                probe = probe.next()
-            return None
-        probe = near
-        while probe.isValid():
-            if probe.userData() is mark:
-                return probe
-            probe = probe.previous()
-        return self._msg_head_block(msg, None)
-
-    def _msg_tail_block(self, msg: dict):
-        """这条消息的最后一段：下一条消息开头的前一段；最后一条就取文末那一段。
-
-        「文末」不能照字面用 `lastBlock()`：一轮正在跑的时候，文末是**这一轮刚流出来的
-        思考段/工具行**，它们不属于任何一条消息。照字面取的结果就是按钮挂在思考段下面
-        几十像素的空白处（他截图里那两颗按钮离自己的话两行远）。
-        所以往回退：折叠正文、折叠抬头、代码块都要跳过，落到这条消息自己最后一行字上。
-        """
-        document = self.view.document()
-        following = None
-        seen = False
-        for item in self._msgs:
-            if item is msg:
-                seen = True
-                continue
-            if seen:
-                following = item
-                break
-        if following is None:
-            tail = self._skip_blank_back(document.lastBlock())
-        else:
-            head = self._msg_head_block(following, None)
-            tail = self._skip_blank_back(head.previous()) if head is not None else None
-        mine = self._msg_head_block(msg, None)
-        heads = {f.head_block.position() for f in self._folds.all() if f.head_block is not None}
-        while tail is not None and tail.isValid() and mine is not None and tail is not mine:
-            mark = tail.userData()
-            if not isinstance(mark, (_CodeMark, disclosure._BodyMark)) and tail.position() not in heads:
-                break
-            previous = tail.previous()
-            if not previous.isValid():
-                break
-            candidate = self._skip_blank_back(previous)
-            owner = self._message_at(candidate)
-            if owner is not None and owner is not msg:
-                break
-            tail = candidate
-        return tail
-
-    @staticmethod
-    def _skip_blank_back(block):
-        """消息末尾常留一个空段用来间隔：往回收掉，落在这条消息真正有字的最后一行。"""
-        while block.isValid() and block.previous().isValid() and not block.text().strip():
-            block = block.previous()
-        return block
-
-    def _reserve_tail_space(self) -> None:
-        """文末留出悬停条那一格：最后一条回答的按钮挂在正文下方 6px，
-
-        不留这一格的话，滚到最底下时下面就是视口边缘——`tail_visible` 那条判断永远过不去，
-        按钮就永远不出现（往上滚到别的消息才看得见）。`view.clear()` 会把根框架格式冲掉，
-        所以清窗口之后要重新铺一次。
-        """
-        root = self.view.document().rootFrame()
-        fmt = root.frameFormat()
-        fmt.setBottomMargin(HoverActionButton.BUTTON_PX + 12)
-        root.setFrameFormat(fmt)
-
-    def _ensure_msg_buttons(self, count: int) -> None:
-        """按这条消息要露几个动作准备几颗按钮（回答两颗：复制、刷新；用户一颗：重新发送/停止）。
-
-        按需建、只增不减：换到别的消息时是 retarget 复用，不销毁重来。
-        """
-        while len(self._msg_buttons) < count:
-            self._msg_buttons.append(
-                HoverActionButton(self.view.viewport(), "copy", "复制", lambda: None)
-            )
-
-    def _msg_action_specs(
-        self, msg: dict,
-    ) -> list[tuple[str, str, Callable[[dict], None], bool]]:
-        """这条消息该露哪几个动作，顺序照桌面端从左往右；第四个值是可不可点。
-
-        回答那条：复制 + 刷新。桌面端那条「刷新」在**每一条回答**上都摆着、都能点：
-        末条点了直接重跑，前面那些点了先弹「恢复到此检查点」的卡（桌面端 Reload 每次都会
-        从那条回答的父提示截断重跑，不限于末尾）。还有朗读和表情回应，那两个能力我们还没有，
-        不摆空壳。
-        用户那条：一颗，最新那条在跑时是停止，其余时候是重新发送。
-        """
-        if not str(msg.get("text") or "").strip():
-            return []
-        if msg.get("role") == "user":
-            if self._busy and self._latest_user() is msg:
-                return [("stop", "停止", lambda _m: self._stop_turn(), True)]
-            if msg.get("row_id") is not None:
-                return [("resend", "重新发送", self._resend_from, True)]
-            return []
-        return [
-            ("copy", "复制", self._copy_message, True),
-            ("refresh", "刷新", self._request_regenerate, self._can_regenerate(msg)),
-        ]
-
-    def _show_msg_actions(self, msg: dict, block) -> None:
-        specs = self._msg_action_specs(msg)
-        if not specs:
-            self._hide_msg_actions()
-            return
-        self._ensure_msg_buttons(len(specs))
-        if self._msg_shown is not msg:
-            QtWidgets.QToolTip.hideText()
-        self._msg_shown = msg
-        head = self._msg_head_block(msg, block)
-        if head is None:
-            self._hide_msg_actions()
-            return
-        tail_block = self._msg_tail_block(msg)
-        tail = tail_block if tail_block is not None else head
-        while (
-            tail is not None
-            and tail.isValid()
-            and tail is not head
-            and isinstance(tail.userData(), (_CodeMark, disclosure._BodyMark))
-        ):
-            previous = tail.previous()
-            if not previous.isValid():
-                break
-            tail = previous
-        if self._message_at(tail) not in (None, msg) and tail is not head:
-            tail = head
-        if tail is None:
-            self._hide_msg_actions()
-            return
-        tail_rect = self._block_rect(tail, tail)
-        view_height = self.view.viewport().height()
-        tail_visible = (
-            tail_rect.height() > 0
-            and tail_rect.bottom() >= 0
-            and tail_rect.bottom() + 6 + HoverActionButton.BUTTON_PX <= view_height
-        )
-        if not tail_visible:
-            self._hide_msg_actions()
-            return
-        inline = msg.get("role") == "user"
-        band_height = tail_rect.height() + HoverActionButton.BUTTON_PX + 10
-        self._msg_band = QtCore.QRect(0, tail_rect.top(), self.view.viewport().width(), band_height)
-        buttons = self._msg_buttons[: len(specs)]
-        if len(buttons) < len(specs):
-            return
-        for spare in self._msg_buttons[len(specs):]:
-            spare.hide()
-        step = HoverActionButton.BUTTON_PX + 6
-        bubble = self.view.bubble_rect(head) if inline else None
-        for index, (icon, tip, slot, usable) in enumerate(specs):
-            button = buttons[index]
-            button.retarget(icon, tip, lambda m=msg, s=slot: s(m))
-            button.set_enabled(usable)
-            button.set_backdrop(bubble is not None)
-            if bubble is not None:
-                button.place_at(bubble.toRect(), offset_x=-index * step, bottom_align=True,
-                                margin=ChatView.BUBBLE_PAD_Y)
-                button.show()
-                button.raise_()
-                continue
-            self._place_hover(
-                button, tail, tail, offset_x=-index * step, below=True, anchor_right=True
-            )
-
-    def _hide_msg_actions(self) -> None:
-        self._zone = None
-        self._msg_band = None
-        self._msg_shown = None
-        for button in self._msg_buttons:
-            button.hide()
-
-    def _replace_msg_actions(self) -> None:
-        """窗口缩放/正文重新排版后，悬停条得按新的行位置重摆——不然按钮留在老地方压着别的字。"""
-        msg = self._msg_shown
-        if msg is None or not self._msg_buttons:
-            return
-        if not any(item is msg for item in self._msgs):
-            self._hide_msg_actions()
-            return
-        head = self._msg_head_block(msg, None)
-        if head is None:
-            self._hide_msg_actions()
-            return
-        self._show_msg_actions(msg, head)
-
-    def _resend_from(self, msg: dict) -> None:
-        """重新发送：从这条起把后面全删掉，立刻重跑这句话（桌面端那颗 discard）。
-
-        桌面端先弹一句「此提示之后的所有消息将从对话中移除」再动手——删的是真对话历史，
-        收不回来。确认之后就按原来的正文重跑，不回到输入框让人改（那是编辑框的事）。
-        """
-        if msg.get("row_id") is None:
-            return
-        if not ConfirmDialog.ask(
-            self.window(),
-            "恢复到此检查点？",
-            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
-            "恢复并重新运行",
-        ):
-            return
-        self._hide_msg_actions()
-        text = str(msg.get("text") or "")
-        if self._busy:
-            self._rewind_after_stop = (msg, text, False)
-            self._stop_turn()
-            return
-        self._emit_rewind(msg, text, False)
-
-    def _can_regenerate(self, msg: dict) -> bool:
-        """每条回答都能刷新：截断点由它前面那条用户消息定，跟它在不在一在末尾无关。
-
-        桌面端那个 Reload 在每回答上都亮着，只是最后一条点了不问、前面那些点了先问一句。
-        """
-        before = self._previous_user(msg)
-        return bool(before and before.get("row_id") is not None)
-
-    def _latest_user(self) -> dict | None:
-        """窗口里最后一条用户消息（桌面端拿它决定那颗按钮是停止还是重新发送）。"""
-        for item in reversed(self._msgs):
-            if item.get("role") == "user":
-                return item
-        return None
-
-    def _previous_user(self, msg: dict) -> dict | None:
-        found = None
-        for item in self._msgs:
-            if item is msg:
-                break
-            if item.get("role") == "user":
-                found = item
-        return found
+        mark = probe.userData()
+        if isinstance(mark, _BarMark):
+            return MSG_GAP - self.BAR_GAP
+        if isinstance(mark, _PhotoMark):
+            return MSG_GAP - ChatView.BUBBLE_PAD_Y
+        if isinstance(mark, _MsgMark) and mark.msg.get("role") == "user":
+            return MSG_GAP - ChatView.BUBBLE_PAD_Y
+        return MSG_GAP
 
     def _rewind_later_users(self, msg: dict) -> int:
         """这条用户消息后面还有几条用户消息（= 重发时会被一起删掉的问答轮数）。"""
@@ -5895,6 +5831,16 @@ class ChatPanel(QtWidgets.QWidget):
             if seen and item.get("role") == "user":
                 count += 1
         return count
+
+    def _previous_user(self, msg: dict) -> dict | None:
+        """这条消息之前最近的一条用户消息（截断点由它定）。"""
+        found = None
+        for item in self._msgs:
+            if item is msg:
+                break
+            if item.get("role") == "user":
+                found = item
+        return found
 
     def _rewind_empties(self, msg: dict) -> bool:
         """从这条截断会不会把整场对话都清掉（它就是第一句用户消息）。"""
@@ -5910,30 +5856,6 @@ class ChatPanel(QtWidgets.QWidget):
         self.resubmit_requested.emit(
             msg, text, regenerate, self._rewind_empties(msg), self._rewind_later_users(msg) > 0
         )
-
-    def _request_regenerate(self, msg: dict) -> None:
-        """刷新：拿这条回答前面那句原话重跑一遍（桌面端那颗 Reload，每条回答上都能点）。
-
-        末条直接重跑；前面那些先把话说清楚——截断点以后的问答都会被引擎删掉，
-        桌面端这时候也弹一张「恢复到此检查点」的确认卡，不弹就等于偷偷删历史。
-        """
-        user_msg = self._previous_user(msg)
-        if user_msg is None or user_msg.get("row_id") is None:
-            return
-        if self._rewind_later_users(user_msg) > 0 and not ConfirmDialog.ask(
-            self.window(),
-            "恢复到此检查点？",
-            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
-            "恢复并重新运行",
-        ):
-            return
-        self._hide_msg_actions()
-        text = str(user_msg.get("text") or "")
-        if self._busy:
-            self._rewind_after_stop = (user_msg, text, True)
-            self._stop_turn()
-            return
-        self._emit_rewind(user_msg, text, True)
 
     def apply_rewind(self, msg: dict, text: str) -> None:
         """引擎已经按这条消息截断过历史了：窗口回到那一刻，再把正文重新贴一遍。
@@ -5955,6 +5877,8 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _truncate_from(self, msg: dict) -> None:
         """把这个窗口从某条消息起的内容抹掉（引擎侧已经截断，界面跟上）。"""
+        self._destroy_msg_bars(msg)
+        self._destroy_elements()
         mark = msg.get("mark")
         document = self.view.document()
         target = None
@@ -5988,7 +5912,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._tool_clock.stop()
         self._folds.drop_invalid()
         self._fence_cache.clear()
-        self._hide_msg_actions()
 
     def stamp_user_row(self, row_id: int) -> None:
         """引擎回了这次提交的用户消息行号：重新生成/编辑重发靠它定位截断点。"""
@@ -6039,7 +5962,7 @@ class ChatPanel(QtWidgets.QWidget):
             button.hide()
             return
         bar = self.view.verticalScrollBar()
-        usable = self.view.viewport().width() - (bar.width() if bar.isVisible() else 0)
+        usable = self._usable_width()
         if edge:
             rect.setRight(usable)
         else:
@@ -6049,28 +5972,231 @@ class ChatPanel(QtWidgets.QWidget):
         button.show()
         button.raise_()
 
-    def _hide_copy(self) -> None:
-        if self._hover_copy is not None:
-            self._hover_copy.hide()
+    BAR_PX = 24
+    BAR_GAP = 8
 
-    def _hide_expand(self) -> None:
-        if self._hover_expand is not None:
-            self._hover_expand.hide()
+    def _mount_msg_bar(self, msg: dict) -> None:
+        """这条消息写完了：在它文末落一块动作条。
 
-    def _hide_hover(self) -> None:
-        self._hide_copy()
-        self._hide_expand()
-        self._hide_download()
-        self._hide_msg_actions()
+        桌面端把按钮条写在气泡里、靠排版占位；这里同样插一个空段落占住那 30px，
+        按钮贴着这一块摆——位置由排版给，不用再去算「最后一行在哪」。
+        """
+        if msg.get("role") == "user":
+            if "bar_buttons" in msg:
+                return
+            buttons = [
+                HoverActionButton(self.view.viewport(), icon, tip, slot)
+                for icon, tip, slot in self._bar_specs(msg)
+            ]
+            msg["bar_buttons"] = buttons
+            msg["bar_block"] = None
+            msg["bar_px"] = 0
+            self._bar_buttons.extend(buttons)
+            self._show_msg_bar(None)
+            self._place_msg_bars()
+            return
+        if msg.get("bar_block") is not None:
+            return
+        document = self.view.document()
+        cursor = QtGui.QTextCursor(document)
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        fmt = QtGui.QTextBlockFormat()
+        fmt.setTopMargin(0)
+        cursor.insertBlock(fmt)
+        block = cursor.block()
+        block.setUserData(_BarMark())
+        line = self.view.document().documentLayout().blockBoundingRect(block).height()
+        fmt.setBottomMargin(max(0.0, self.BAR_PX - line) + self.BAR_GAP)
+        cursor.setBlockFormat(fmt)
+        msg["bar_block"] = block
+        msg["bar_px"] = self.BAR_PX
+        buttons = [
+            HoverActionButton(self.view.viewport(), icon, tip, slot)
+            for icon, tip, slot in self._bar_specs(msg)
+        ]
+        msg["bar_buttons"] = buttons
+        self._bar_buttons.extend(buttons)
+        self._show_msg_bar(None)
+        self._place_msg_bars()
+        if self._follow and not self._restoring:
+            self._scroll_to_end_later()
 
-    def _copy_to_clipboard(self, text: str) -> None:
-        QtWidgets.QApplication.clipboard().setText(text)
+    def _bar_specs(self, msg: dict) -> list[tuple[str, str, Callable[[], None]]]:
+        """一条回答上摆「复制 + 刷新」，你发的那条摆「复制 + 重新发送」。"""
+        if msg.get("role") == "user":
+            return [
+                ("copy", "复制", lambda: self._copy_message(msg)),
+                ("resend", "重新发送", lambda: self._resend_message(msg)),
+            ]
+        return [
+            ("copy", "复制", lambda: self._copy_message(msg)),
+            ("refresh", "刷新", lambda: self._refresh_message(msg)),
+        ]
+
+    def _place_msg_bars(self) -> None:
+        """按钮贴着各自那条消息的动作块：块跟着文字走，重排后对一次位置。"""
+        layout = self.view.document().documentLayout()
+        bar = self.view.verticalScrollBar()
+        usable = self._usable_width()
+        pad = (self.BAR_PX - HoverActionButton.BUTTON_PX) // 2
+        for msg in self._msgs:
+            buttons = msg.get("bar_buttons") or []
+            if not buttons:
+                continue
+            box = self._msg_corner(msg, usable, pad)
+            if box is None:
+                continue
+            x = box.right()
+            top = box.bottom() - HoverActionButton.BUTTON_PX
+            total = len(buttons) * HoverActionButton.BUTTON_PX + (len(buttons) - 1) * 4
+            start = max(0, min(int(x) - total, usable - 8 - total))
+            for button in buttons:
+                button.move(start, max(0, int(top)))
+                start += HoverActionButton.BUTTON_PX + 4
+
+    def _msg_corner(self, msg: dict, usable: int, pad: int) -> QtCore.QRect | None:
+        """这条消息在视口里的那块矩形：按钮就摆它的右下角，不另算位置。"""
+        layout = self.view.document().documentLayout()
+        offset = self.view.verticalScrollBar().value()
+        if msg.get("role") == "user":
+            head = msg.get("head_block")
+            if head is None or not head.isValid():
+                return None
+            bubble = self.view.bubble_rect(head)
+            if bubble is None:
+                return None
+            return QtCore.QRect(
+                int(bubble.left()),
+                int(bubble.top()),
+                int(bubble.width()) - ChatView.BUBBLE_PAD_X - 4,
+                int(bubble.height()) - 4,
+            )
+        block = msg.get("bar_block")
+        if block is None or not block.isValid():
+            return None
+        top = layout.blockBoundingRect(block).top() - offset
+        return QtCore.QRect(0, int(top), usable - 4, self.BAR_PX - pad)
+
+    def _usable_width(self) -> int:
+        """可视宽：滚动条已显示时视口已经让过它；还没显示但内容要溢出时也要先让出来。"""
+        bar = self.view.verticalScrollBar()
+        room = self.view.viewport().width()
+        if not bar.isVisible() and bar.maximum() > bar.minimum():
+            room -= bar.sizeHint().width()
+        return room
+
+    def _msg_at_pos(self, pos: QtCore.QPoint) -> dict | None:
+        """鼠标压在哪条消息上：范围就是它自己的头块到动作块，不扫正文。"""
+        layout = self.view.document().documentLayout()
+        offset = self.view.verticalScrollBar().value()
+        for msg in reversed(self._msgs):
+            head = msg.get("head_block")
+            if head is None or not head.isValid():
+                continue
+            if msg.get("role") == "user":
+                line = layout.blockBoundingRect(head)
+                if line.top() - offset - 4 <= pos.y() <= line.bottom() - offset + 4:
+                    return msg
+                continue
+            tail = msg.get("bar_block")
+            if tail is None or not tail.isValid():
+                continue
+            top = layout.blockBoundingRect(head).top() - offset
+            bottom = layout.blockBoundingRect(tail).bottom() - offset + self.BAR_PX
+            if top <= pos.y() <= bottom:
+                return msg
+        return None
+
+    def _show_msg_bar(self, msg: dict | None) -> None:
+        """只亮鼠标所在那条的动作条，其余收起来。"""
+        if msg is self._bar_msg:
+            return
+        self._bar_msg = msg
+        self._place_msg_bars()
+        for item in self._msgs:
+            for button in item.get("bar_buttons") or []:
+                if item is msg:
+                    button.show()
+                    button.raise_()
+                else:
+                    button.hide()
+
+    def _drop_msg_bar(self, msg: dict) -> None:
+        for button in msg.get("bar_buttons") or []:
+            button.hide()
+            button.deleteLater()
+        msg.pop("bar_buttons", None)
+        msg.pop("bar_block", None)
+        self._bar_buttons = [b for item in self._msgs for b in (item.get("bar_buttons") or [])]
+        self._bar_msg = None
+
+    def _destroy_elements(self) -> None:
+        """元素按钮跟着元素走：文档被清或被截断，它们一起退场。"""
+        for button in self._el_buttons.values():
+            button.hide()
+            button.deleteLater()
+        self._el_buttons.clear()
+        self._shown_buttons.clear()
+        self._el_scan_pos = 0
+
+    def _destroy_msg_bars(self, keep_from: dict | None = None) -> None:
+        """清窗口或截断时把动作条一并带走：它们是这一轮的对象，不留到下一轮。"""
+        seen = keep_from is None
+        for item in list(self._msgs):
+            if item is keep_from:
+                seen = True
+                continue
+            if seen:
+                self._drop_msg_bar(item)
 
     def _copy_message(self, msg: dict) -> None:
-        """复制这条回答的正文（桌面端那颗复制图标；用户自己说的话在桌面端没有复制）。"""
+        """复制这条消息的正文。"""
         text = str(msg.get("text") or "")
         if text:
             self._copy_to_clipboard(text)
+
+    def _refresh_message(self, msg: dict) -> None:
+        """刷新：拿这条回答前面那句原话重跑；后面还有问答就先问一句再删。"""
+        user_msg = self._previous_user(msg)
+        if user_msg is None or user_msg.get("row_id") is None:
+            return
+        if self._rewind_later_users(user_msg) > 0 and not ConfirmDialog.ask(
+            self.window(),
+            "恢复到此检查点？",
+            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
+            "恢复并重新运行",
+        ):
+            return
+        text = str(user_msg.get("text") or "")
+        if self._busy:
+            self._rewind_after_stop = (user_msg, text, True)
+            self._stop_turn()
+            return
+        self._emit_rewind(user_msg, text, True)
+
+    def _resend_message(self, msg: dict) -> None:
+        """重新发送：从这条起把后面的删掉，按原话重跑。"""
+        if msg.get("row_id") is None:
+            return
+        if not ConfirmDialog.ask(
+            self.window(),
+            "恢复到此检查点？",
+            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
+            "恢复并重新运行",
+        ):
+            return
+        text = str(msg.get("text") or "")
+        if self._busy:
+            self._rewind_after_stop = (msg, text, False)
+            self._stop_turn()
+            return
+        self._emit_rewind(msg, text, False)
+
+    def _hide_hover(self) -> None:
+        self._hide_elements()
+
+    def _copy_to_clipboard(self, text: str) -> None:
+        QtWidgets.QApplication.clipboard().setText(text)
 
     def _open_diff_preview(self, key: int) -> None:
         source = self._diff_texts.get(key)
@@ -6091,6 +6217,8 @@ class ChatPanel(QtWidgets.QWidget):
         """frame 铺满整个窗口，边缘那圈空白上的鼠标事件在这儿接住。"""
         if obj is self.view.viewport():
             kind = event.type()
+            if kind is QtCore.QEvent.Type.Resize:
+                QtCore.QTimer.singleShot(0, self._place_msg_bars)
             if kind is QtCore.QEvent.Type.MouseMove:
                 point = event.position().toPoint()
                 self._sync_edge_cursor(self.view.viewport().mapTo(self, point))
@@ -6112,12 +6240,13 @@ class ChatPanel(QtWidgets.QWidget):
                 if kind is QtCore.QEvent.Type.Leave and self._over_hover_button():
                     return super().eventFilter(obj, event)
                 self._hide_hover()
+                self._show_msg_bar(None)
                 self.view.viewport().unsetCursor()
                 if kind is QtCore.QEvent.Type.Wheel:
                     self._user_scroll_now()
             elif kind is QtCore.QEvent.Type.Resize:
                 self._place_jump()
-                self._replace_msg_actions()
+                self._place_msg_bars()
                 if self._follow and not self._restoring:
                     self._scroll_to_end_later()
             return super().eventFilter(obj, event)

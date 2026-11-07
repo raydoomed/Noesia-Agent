@@ -54,6 +54,42 @@ def icon_pixmap(icon_name: str, color: str, px: int,
     return pixmap
 
 
+class _SvgIconEngine(QtGui.QIconEngine):
+    """矢量图标引擎：每次要图都按当前 DPI 重新栅格，不会留下启动时的旧比例。"""
+
+    def __init__(self, svg: str) -> None:
+        super().__init__()
+        self._svg = svg
+
+    def paint(self, painter, rect, mode, state) -> None:
+        self._render(painter, QtCore.QRectF(rect))
+
+    def pixmap(self, size, mode, state) -> QtGui.QPixmap:
+        pix = QtGui.QPixmap(size)
+        pix.fill(QtCore.Qt.GlobalColor.transparent)
+        painter = QtGui.QPainter(pix)
+        self._render(painter, QtCore.QRectF(0, 0, size.width(), size.height()))
+        painter.end()
+        return pix
+
+    def clone(self) -> "_SvgIconEngine":
+        return _SvgIconEngine(self._svg)
+
+    def _render(self, painter: QtGui.QPainter, rect: QtCore.QRectF) -> None:
+        from PySide6.QtSvg import QSvgRenderer
+
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        QSvgRenderer(QtCore.QByteArray(self._svg.encode("utf-8"))).render(painter, rect)
+
+
+def svg_icon(icon_name: str, color: str, px: int) -> QtGui.QIcon:
+    """图标名 + 颜色 → 矢量 QIcon；不认识的名字给空图标。"""
+    svg = ui_icon_svg(icon_name, color, px)
+    if not svg:
+        return QtGui.QIcon()
+    return QtGui.QIcon(_SvgIconEngine(svg))
+
+
 class HoverActionButton(QtWidgets.QToolButton):
     """一个悬停才显形的图标按钮，位置由调用方给。"""
 
@@ -134,7 +170,7 @@ QToolButton {
 
     def place_at(self, rect: QtCore.QRect, offset_x: int = 0, below: bool = False,
                  bottom_align: bool = False, anchor_right: bool = False,
-                 margin: int = 6) -> None:
+                 margin: int = 4) -> None:
         """贴在这块内容的右上角；`offset_x` 往左让位。
 
         `below` 挂到这一块下沿外（另起一行）；`anchor_right` 让这条另起的行贴右边
@@ -153,7 +189,7 @@ QToolButton {
         elif bottom_align:
             y = max(rect.top(), rect.bottom() - self.BUTTON_PX - margin)
         else:
-            y = max(0, rect.top() + 2)
+            y = max(0, rect.top() + 6)
         self.move(x, y)
 
     def enterEvent(self, event: QtGui.QEnterEvent) -> None:  # noqa: N802
@@ -170,9 +206,7 @@ QToolButton {
         """按给定颜色重画图标。刚点过还在显示 ✓ 的那 1.5 秒里不动它。"""
         if self._flash and self._reset.isActive():
             return
-        icon = icon_pixmap(self._icon_name, color, self.ICON_PX, self.devicePixelRatioF())
-        if icon is not None:
-            self.setIcon(QtGui.QIcon(icon))
+        self.setIcon(svg_icon(self._icon_name, color, self.ICON_PX))
 
     def _show_tip(self) -> None:
         """自己把提示弹出来：Qt 自带的悬停提示在无边框置顶窗里不弹（实测没有）。
@@ -210,16 +244,10 @@ QToolButton {
         QtWidgets.QToolTip.hideText()
         if not self._flash:
             return
-        icon = icon_pixmap("check", self.DONE_COLOR, self.ICON_PX, self.devicePixelRatioF())
-        if icon is not None:
-            self.setIcon(QtGui.QIcon(icon))
+        self.setIcon(svg_icon("check", self.DONE_COLOR, self.ICON_PX))
         self.setToolTip(self._done_tooltip)
         self._reset.start()
 
     def _back_to_idle(self) -> None:
-        icon = icon_pixmap(self._icon_name, self.IDLE_COLOR, self.ICON_PX, self.devicePixelRatioF())
-        if icon is not None:
-            self.setIcon(QtGui.QIcon(icon))
-        else:
-            self.setIcon(QtGui.QIcon())
+        self.setIcon(svg_icon(self._icon_name, self.IDLE_COLOR, self.ICON_PX))
         self.setToolTip(self._idle_tooltip)
