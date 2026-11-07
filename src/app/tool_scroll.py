@@ -108,11 +108,15 @@ class ToolScroll(QtWidgets.QTextBrowser):
         if color is not None and color.isValid():
             fmt.setForeground(color)
         cursor.insertText(text, fmt)
+        # 底色铺满整行（段落底色），不是只盖在字上——一半宽的颜色块看着像漏了。
+        # `insertBlock()` 会把上一块的段落格式（连底色）抄过来，所以没有底色的行必须显式清掉：
+        # 不清的话，diff 里紧跟 `+` 行的上下文行会被一路染绿（紧跟 `-` 的染红），ANSI 输出同理。
+        block_fmt = cursor.blockFormat()
         if bg is not None and bg.isValid():
-            # 底色铺满整行（段落底色），不是只盖在字上——一半宽的颜色块看着像漏了
-            block_fmt = cursor.blockFormat()
             block_fmt.setBackground(bg)
-            cursor.setBlockFormat(block_fmt)
+        else:
+            block_fmt.clearBackground()
+        cursor.setBlockFormat(block_fmt)
 
     def _apply_line_height(self, start: int = -1) -> None:
         """行距按 18px 固定——默认那点行距几行字就糊成一片。

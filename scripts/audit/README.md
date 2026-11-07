@@ -21,6 +21,7 @@ export QT_QPA_PLATFORM=offscreen
 | `contract_check.py` | E13 | `$P scripts/audit/contract_check.py` | `CALLS 27 METHODS 18 CONTRACTS 255` / `UNKNOWN []` / `PARAM_MISMATCH 0` |
 | `render_time.py` | E16 | `$P scripts/audit/render_time.py` | `TIME <控件> build=…ms render=…ms` |
 | `shots.py` | E11 截图 | `$P scripts/audit/shots.py` | `SHOTS True True`，PNG 落在系统临时目录的 `noesia-audit/shots/` |
+| `review_check.py` | §9 外部复核 4 条 | `$P scripts/audit/review_check.py` | 逐条打印实测值：工具行底色 `— / #55a583 / — / #e75e78 / —`、`border/padding` 丢失、抬头判定 6 行真假、气泡底色差值 |
 
 `ui_probe.py` 的要点：**一个进程只建一个控件**。同一个进程里连着建多个，模态 `QMenu.exec()` / `QDialog.exec()` 会卡住自己的事件循环（实测整批 300 秒超时）。它内部用 60ms 的 `QTimer` 把弹出的菜单/对话框逐个 `reject()`，所以 `chat_panel` 这类会弹菜单的控件也能跑完。
 
