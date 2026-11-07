@@ -2649,6 +2649,28 @@ class ChatPanel(QtWidgets.QWidget):
         except Exception:
             logger.warning("原图落地出错：%s", url, exc_info=True)
 
+    def _relax_image_line(self, block: "QtGui.QTextBlock | None" = None) -> None:
+        """图独自占一整行时，别让 130% 的行距把图上下撑开。
+
+        行距是按字高算的；一段里只有图、没有字，Qt 仍然按「字高 × 1.3」给这一行定高，
+        图被塞在中间，上下各留半行——几张图连着排，每两张之间就空出小半张图，
+        看着像每条图后面都跟了个空行。
+        """
+        if block is None:
+            block = self.view.document().lastBlock()
+        if block is None or not block.isValid():
+            return
+        text = block.text()
+        if "\ufffc" not in text:
+            return
+        if text.replace("\u2028", "").replace("\ufffc", "").strip():
+            return  # 图跟字混在一行：这个行距是给字留的，不动
+        fmt = block.blockFormat()
+        if fmt.lineHeightType() != QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value:
+            return
+        fmt.setLineHeight(0, QtGui.QTextBlockFormat.LineHeightTypes.SingleHeight.value)
+        QtGui.QTextCursor(block).setBlockFormat(fmt)
+
     def _insert_inline(self, markup: str) -> None:
         """行内片段：接在当前段里，不另起一段（普通句子不该每行一个大间距）。"""
         if not markup:
@@ -2666,6 +2688,7 @@ class ChatPanel(QtWidgets.QWidget):
             cursor.setBlockFormat(_plain_block_format())
         self._para_break = False
         cursor.insertHtml(_keep_edge_spaces(self._adopt_images(markup)))
+        self._relax_image_line()
         self._settle_insert()
 
     def _drop_trailing_blank_line(self) -> None:
@@ -3987,6 +4010,7 @@ class ChatPanel(QtWidgets.QWidget):
                 # 重设就把块从列表里摘出来，圆点/序号/缩进全没了。它们的间距由列表样式给。
                 if block.textList() is None:
                     QtGui.QTextCursor(block).setBlockFormat(_plain_block_format())
+                    self._relax_image_line(block)
                 block = block.next()
         self._settle_insert()
 
