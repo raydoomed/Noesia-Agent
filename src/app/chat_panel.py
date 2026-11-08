@@ -4828,6 +4828,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._ptt_watch = QtCore.QTimer(self)
         self._ptt_watch.setInterval(150)
         self._ptt_watch.timeout.connect(self._hold_watch)
+        self._rehook_watch = QtCore.QTimer(self)
+        self._rehook_watch.setInterval(1000)
+        self._rehook_watch.timeout.connect(self._global_ptt.rearm)
         self._global_ptt.pressed.connect(self._hold_begin)
         self._global_ptt.released.connect(self._hold_end)
         self._voice_draft_focus = False
@@ -4899,8 +4902,10 @@ class ChatPanel(QtWidgets.QWidget):
             self.voice_input_opened.emit()
             self._apply_global_ptt()
             self._ptt_watch.start()
+            self._rehook_watch.start()
         else:
             self._ptt_watch.stop()
+            self._rehook_watch.stop()
             self._global_ptt.stop()
             try:
                 self._recorder.cancel()

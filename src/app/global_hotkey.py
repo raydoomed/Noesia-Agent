@@ -3,8 +3,10 @@
 为什么不用 RegisterHotKey：它只发 WM_HOTKEY（也就是按下），没有松开这一半，
 而按住说话必须知道手什么时候抬起来。低层钩子按下、松开都拿得到。
 
-匹配上就吞掉（返回 1）：Shift+Space 在中文输入法里是全角/半角切换，不吞的话
-每说一次话输入法也跟着切一次。独占是按住说话本来该有的代价。
+匹配上就吞掉（返回 1）：不吞的话输入法也会跟着收到这个组合，说一次话就切一次全角。
+Shift+Space 同时也是输入法的语音键（微信输入法直接进它自己的语音），所以这个钩子
+必须比输入法的钩子更靠前——靠 rearm() 定期重装，Windows 先调最新装的那个。
+只在自家窗口或桌面前台时才吞，别的程序里 Shift+Space 原样交给输入法。
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import logging
+import os
 import threading
 import time
 
@@ -21,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 WH_KEYBOARD_LL = 13
 HC_ACTION = 0
+_WM_REHOOK = 0x8001
 
 WM_KEYDOWN = 0x0100
 WM_KEYUP = 0x0101
@@ -104,6 +108,11 @@ def _declare():
     u.UnregisterHotKey.restype = wt.BOOL
     u.PostThreadMessageW.argtypes = [wt.DWORD, wt.UINT, _WPARAM, _LPARAM]
     u.PostThreadMessageW.restype = wt.BOOL
+    u.GetForegroundWindow.restype = wt.HWND
+    u.GetWindowThreadProcessId.argtypes = [wt.HWND, ctypes.POINTER(wt.DWORD)]
+    u.GetWindowThreadProcessId.restype = wt.DWORD
+    u.GetClassNameW.argtypes = [wt.HWND, wt.LPWSTR, ctypes.c_int]
+    u.GetClassNameW.restype = ctypes.c_int
 
 
 _declare()
@@ -124,11 +133,33 @@ def current_modifiers() -> int:
     return mods
 
 
+_DESKTOP_CLASSES = frozenset({"Progman", "WorkerW", "Shell_TrayWnd", "TrayNotifyWnd", "SysListView32"})
+
+
+def foreground_takes_voice() -> bool:
+    """前台这一格该不该由我们接管 Shift+Space。
+
+    自家的窗口（面板、悬浮人物、对话框）当然算；桌面、任务栏也算——那里没有输入目标，
+    输入法拿这个键没用，我们要接着能说话。
+    """
+    u = _user32()
+    hwnd = u.GetForegroundWindow()
+    if not hwnd:
+        return True
+    pid = wt.DWORD(0)
+    u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    if pid.value == os.getpid():
+        return True
+    buf = ctypes.create_unicode_buffer(64)
+    u.GetClassNameW(hwnd, buf, 64)
+    return buf.value in _DESKTOP_CLASSES
+
+
 def probe(mods: int, vk: int) -> tuple[bool, str]:
     """这个组合能不能拿来用：试着注册一下，能注册说明没被别的程序占着。
 
-    只能查「注册型热键」的占用。输入法那种不是注册来的（比如 Shift+Space 切全角），
-    查不出来——那种靠钩子吞键解决，见模块开头的说明。
+    只能查「注册型热键」的占用。输入法那种不是注册来的（比如 Shift+Space 切全角、
+    微信输入法抢 Shift+Space），查不出来——那种靠钩子吞键解决，见模块开头的说明。
     """
     if mods == 0:
         return False, "系统级的键至少要带一个修饰键（Ctrl / Alt / Shift / Win）"
@@ -162,6 +193,7 @@ class GlobalHotkey(QtCore.QObject):
         self._hook = None
         self._proc = None
         self._last_error = 0
+        self._swallowing = False
 
 
     def start_capture(self) -> None:
@@ -181,6 +213,17 @@ class GlobalHotkey(QtCore.QObject):
     def set_sequence(self, mods: int, vk: int) -> None:
         self._mods = mods & (MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN)
         self._vk = vk
+
+    def rearm(self) -> None:
+        """把钩子重装一遍，抢到最前面。
+
+        Windows 先调最新装的那个钩子；输入法（微信输入法的语音键也是 Shift+Space）
+        后装的钩子会把 Space 吞掉，我们就再也收不到。定期重装就能重新排到它前面。
+        """
+        thread = self._thread
+        if thread is None or not thread.is_alive() or thread.ident is None or self._hook is None:
+            return
+        _user32().PostThreadMessageW(thread.ident, _WM_REHOOK, 0, 0)
 
     @property
     def sequence(self) -> tuple[int, int]:
@@ -205,6 +248,7 @@ class GlobalHotkey(QtCore.QObject):
     def stop(self) -> None:
         thread = self._thread
         self._capture = False
+        self._swallowing = False
         if thread is not None and thread.is_alive():
             self._stop.set()
             ident = thread.ident
@@ -235,6 +279,14 @@ class GlobalHotkey(QtCore.QObject):
         try:
             msg = wt.MSG()
             while not self._stop.is_set() and u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == _WM_REHOOK:
+                    u.UnhookWindowsHookEx(hook)
+                    hook = u.SetWindowsHookExW(WH_KEYBOARD_LL, self._proc, None, 0) or None
+                    self._hook = hook
+                    if hook is None:
+                        self._last_error = _kernel32().GetLastError()
+                        break
+                    continue
                 u.TranslateMessage(ctypes.byref(msg))
                 u.DispatchMessageW(ctypes.byref(msg))
         finally:
@@ -279,8 +331,12 @@ class GlobalHotkey(QtCore.QObject):
         """
         u = _user32()
         if w_param in _DOWN and self._held_mods == self._mods:
+            if not foreground_takes_voice():
+                return u.CallNextHookEx(None, HC_ACTION, w_param, l_param)
+            self._swallowing = True
             self.pressed.emit()
             return 1
-        if w_param in _UP:
+        if w_param in _UP and self._swallowing:
+            self._swallowing = False
             self.released.emit()
         return u.CallNextHookEx(None, HC_ACTION, w_param, l_param)
