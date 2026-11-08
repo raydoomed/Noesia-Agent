@@ -72,6 +72,7 @@ class Fold:
     slot: QtGui.QTextBlock | None = field(default=None, repr=False)
     chunks: list[tuple[str, QtGui.QColor | None, QtGui.QColor | None]] = field(default_factory=list, repr=False)
     drawn: int = 0
+    needs_fit: bool = False
 
 
 class Folds:
@@ -283,15 +284,40 @@ class Folds:
         fold.has_body = True
         self._sync_slot(fold)
 
-    def relayout(self) -> None:
-        """窗口宽度变了：滚动的那些按新宽度重新量高度，正文里留的空位跟着改。"""
+    def relayout(self, window: tuple[int, int] | None = None) -> None:
+        """窗口宽度变了：滚动的那些按新宽度重新量高度，正文里留的空位跟着改。
+
+        给了 `window`（字符位区间）就只量落在里面的：几百个工具框每个都要重排一遍，
+        窗口每动一格全来一次，拉伸就卡在这上面。没量的记下 `needs_fit`，滚到时补。
+        """
         for fold in self._items.values():
-            if fold.scroll is not None:
-                self._sync_slot(fold)
+            if fold.scroll is None:
+                continue
+            if window is not None and not self._in_window(fold, window):
+                fold.needs_fit = True
+                continue
+            fold.needs_fit = False
+            self._sync_slot(fold)
+
+    def _in_window(self, fold: Fold, window: tuple[int, int]) -> bool:
+        slot = fold.slot
+        if slot is None or not slot.isValid():
+            return False
+        return window[0] <= slot.position() <= window[1]
+
+    def fit_window(self, window: tuple[int, int]) -> None:
+        """滚进来才发现宽度变过的那些，就地量一次。"""
+        for fold in self._items.values():
+            if fold.scroll is None or not fold.needs_fit:
+                continue
+            if not self._in_window(fold, window):
+                continue
+            fold.needs_fit = False
+            self._sync_slot(fold)
 
     def _sync_slot(self, fold: Fold) -> None:
         """让正文里那块空位和控件一样高——版面按空位算，滚到它时才对得上。"""
-        width = max(1, int(self._doc.pageSize().width()))
+        width = max(1, int(self._doc.pageSize().width()) - 2 * int(self._doc.documentMargin()))
         scroll = fold.scroll
         if scroll is None:
             return

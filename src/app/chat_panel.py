@@ -114,6 +114,10 @@ class _MsgMark(QtGui.QTextBlockUserData):
 class _BarMark(QtGui.QTextBlockUserData):
     """动作条占的那一段：给按钮留的位置，不是一条消息的开头。"""
 
+    def __init__(self, msg: dict) -> None:
+        super().__init__()
+        self.msg = msg
+
 
 class _PhotoMark(QtGui.QTextBlockUserData):
     """用户消息里的图片那一段：属于那条消息，但不是它的开头（气泡不从这里另起一个）。
@@ -1550,6 +1554,7 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.setOpenExternalLinks(False)
         self.view.anchorClicked.connect(self._on_anchor)
         self.view.scrolled.connect(self._hide_hover)
+        self.view.scrolled.connect(self._fit_visible_user_lines)
         self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self.view, 1)
@@ -2084,21 +2089,42 @@ class ChatPanel(QtWidgets.QWidget):
         font.setPixelSize(13)
         return font
 
-    def _user_line_html(self, shown: str) -> str:
-        """署名和正文排一行；正文由调用方先截好再进来。"""
-        name = html.escape(_user_display_name())
-        text = html.escape(shown)
-        return (
-            f"<span style='color:#c9a6e0;font-size:13px;'><b>{name} </b></span>"
-            f"<span style='color:rgba(214,198,222,168);font-size:13px;'>{text}</span>"
-        )
-
     USER_BAR_PX = 52
+    FRAME_PAD = 8
+    FRAME_EDGE = QtGui.QColor(243, 172, 206, 130)
     BODY_BUTTON_MARGIN = 16
 
     def _user_line_room(self, name_width: float) -> float:
-        margins = ChatView.BUBBLE_PAD_X * 2 + self.USER_BAR_PX + MSG_GAP // 2
+        document = self.view.document()
+        margins = 2 * (document.documentMargin() + self.FRAME_PAD) + self.USER_BAR_PX + 4
         return max(60.0, self.view.viewport().width() - margins - name_width)
+
+    @staticmethod
+    def _close_user_frame(frame: QtGui.QTextFrame) -> None:
+        """框后面留一个空段：往后的内容落在气泡外面，不会写进这条消息里。"""
+        cursor = frame.lastCursorPosition()
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.NextBlock)
+        if cursor.currentFrame() is frame:
+            cursor.insertBlock()
+
+    @staticmethod
+    def _apply_frame_gap(frame: QtGui.QTextFrame, gap: int) -> None:
+        """两条消息之间的空白挂在框外面，气泡里就只剩自己的留白。"""
+        fmt = frame.frameFormat()
+        fmt.setTopMargin(gap)
+        fmt.setBottomMargin(0)
+        frame.setFrameFormat(fmt)
+
+    def _open_user_frame(self) -> QtGui.QTextFrame:
+        """给这条消息开一个框：只描一条边，里面不填色。"""
+        fmt = QtGui.QTextFrameFormat()
+        fmt.setBorder(1)
+        fmt.setBorderBrush(QtGui.QBrush(self.FRAME_EDGE))
+        fmt.setBorderStyle(QtGui.QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+        fmt.setPadding(self.FRAME_PAD)
+        cursor = QtGui.QTextCursor(self.view.document())
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
+        return cursor.insertFrame(fmt)
 
     def _fit_user_line(self, msg: dict) -> None:
         """一行装不下就把显示截断：原文不动，仍留在 msg["text"] 里。"""
@@ -2113,32 +2139,67 @@ class ChatPanel(QtWidgets.QWidget):
             text, QtCore.Qt.TextElideMode.ElideRight, self._user_line_room(name_width)
         )
         msg["ellipsis"] = shown != text
+        msg["fit_width"] = self.view.viewport().width()
         self._write_user_line(block, shown)
-        self._apply_head_gap(block)
+        self._apply_head_format(block)
 
-    def _apply_head_gap(self, block: QtGui.QTextBlock) -> None:
-        """重写那一行会把块格式一并换掉，段前距按排版重新算一遍。"""
+    def _apply_head_format(self, block: QtGui.QTextBlock) -> None:
+        """重写那一行会把块格式一并换掉：段前距和气泡里给按钮留的宽度重算一遍。
+
+        气泡的底色和留白不在这里——它们挂在段框上（见 `_open_user_frame`）。
+        """
         fmt = block.blockFormat()
         gap = self._msg_gap(block)
-        if int(fmt.topMargin()) != gap:
+        mark = block.userData()
+        bubble = isinstance(mark, _MsgMark) and mark.msg.get("role") == "user"
+        changed = False
+        if bubble:
+            if int(fmt.leftMargin()) != 0:
+                fmt.setLeftMargin(0)
+                changed = True
+            if int(fmt.rightMargin()) != self.USER_BAR_PX:
+                fmt.setRightMargin(self.USER_BAR_PX)
+                changed = True
+            if int(fmt.bottomMargin()) != 0:
+                fmt.setBottomMargin(0)
+                changed = True
+            if fmt.background().style() != QtCore.Qt.BrushStyle.NoBrush:
+                fmt.setBackground(QtGui.QBrush(QtCore.Qt.BrushStyle.NoBrush))
+                changed = True
+            if not fmt.nonBreakableLines():
+                # 这一行按算好的宽度截断，不让它自己折行：折了就不是「一行加省略号」了。
+                fmt.setNonBreakableLines(True)
+                changed = True
+        elif int(fmt.topMargin()) != gap:
             fmt.setTopMargin(gap)
+            changed = True
+        if changed:
             QtGui.QTextCursor(block).setBlockFormat(fmt)
 
     def _write_user_line(self, block: QtGui.QTextBlock, shown: str) -> None:
+        """这一行只有「署名 + 正文」两段字，直接按字符格式写，不走 HTML 解析。"""
         cursor = QtGui.QTextCursor(block)
-        cursor.setPosition(block.position())
-        cursor.setPosition(
-            block.position() + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor
+        cursor.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
+        cursor.movePosition(
+            QtGui.QTextCursor.MoveOperation.EndOfBlock, QtGui.QTextCursor.MoveMode.KeepAnchor
         )
-        cursor.insertHtml(self._user_line_html(shown))
+        cursor.removeSelectedText()
+        name = QtGui.QTextCharFormat()
+        name.setFont(self._user_name_font())
+        name.setForeground(QtGui.QColor("#c9a6e0"))
+        body = QtGui.QTextCharFormat()
+        body.setFont(self._user_text_font())
+        body.setForeground(QtGui.QColor(214, 198, 222, 215))
+        cursor.insertText(f"{_user_display_name()} ", name)
+        cursor.insertText(shown, body)
 
     def append_user(self, message: str, attachments=(), row_id: int | None = None) -> None:
         self._last_error_key = ""
         message, refs = split_attachment_refs(message)
         items = [*refs, *attachments]
         start = self.view.document().characterCount() - 1
-        self._insert_html(self._user_line_html(""))
-        self._begin_message("user", start, message, row_id)
+        frame = self._open_user_frame()
+        self._begin_message("user", start, message, row_id, frame)
         self._fit_user_line(self._msgs[-1])
         if attachments:
             self._msgs[-1]["attachments"] = list(attachments)
@@ -2147,6 +2208,9 @@ class ChatPanel(QtWidgets.QWidget):
             self._row_stamp_pending = None
         for item in items:
             self._append_user_attachment(item)
+        frame = self._msgs[-1].get("frame")
+        if frame is not None:
+            self._close_user_frame(frame)
         self._mount_msg_bar(self._msgs[-1])
         if not self._restoring:
             self._follow = True
@@ -2468,11 +2532,6 @@ class ChatPanel(QtWidgets.QWidget):
         while len(self._originals) > _ORIGINAL_CACHE:
             self._originals.pop(next(iter(self._originals)))
 
-    def _image_at(self, pos: QtCore.QPoint) -> str:
-        """这一点落在哪张图上？返回资源名，不是图就返回空。"""
-        hit = self._photo_at(pos)
-        return hit[0] if hit is not None else ""
-
     @staticmethod
     def _is_photo_format(fmt: QtGui.QTextCharFormat) -> bool:
         """是不是一张能看、能下载的原图。
@@ -2523,11 +2582,6 @@ class ChatPanel(QtWidgets.QWidget):
         if width <= 0 or height <= 0:
             return None
         return QtCore.QRect(line.left(), line.top(), width, height)
-
-    def _photo_rect_at(self, pos: QtCore.QPoint, key: str) -> QtCore.QRect | None:
-        """这张图在视口里占的那块地方；鼠标不在图上就返回 None。"""
-        hit = self._photo_at(pos)
-        return hit[1] if hit is not None and hit[0] == key else None
 
     def _photo_at(self, pos: QtCore.QPoint) -> tuple[str, QtCore.QRect] | None:
         """鼠标是不是真落在某张图上：认出块里的图片字符，逐张拿它自己的矩形验一遍。
@@ -5406,17 +5460,30 @@ class ChatPanel(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._place_msg_bars)
 
     def _refit_user_lines(self) -> None:
-        """窗口宽度变了：按新宽度重截一遍（只动显示）。"""
+        """窗口宽度变了：只重截眼前这几条，其余滚到时再补（见 `_fit_visible_user_lines`）。"""
         width = self.view.viewport().width()
         if width == self._user_line_width:
             return
         self._user_line_width = width
-        for msg in self._msgs:
-            if msg.get("role") == "user":
-                self._fit_user_line(msg)
+        self._fit_visible_user_lines()
         title = getattr(self, "_title_label", None)
         if title is not None:
             title.setText(TITLE_FULL if self.width() >= TITLE_FULL_MIN_WIDTH else TITLE_SHORT)
+
+    def _fit_visible_user_lines(self) -> None:
+        """眼前这几条按当前宽度重截；离开视口的不动，滚回来时再补。
+
+        每次改一条都要重排它后面那段文档，文档上百条时挨个改一遍就是几百次重排——
+        窗口每动一格都要重来一遍，拉伸才会越拉越卡。
+        """
+        width = self.view.viewport().width()
+        for block in self.view.visible_blocks():
+            msg = getattr(block.userData(), "msg", None)
+            if msg is None or msg.get("role") != "user":
+                continue
+            if msg.get("fit_width") == width:
+                continue
+            self._fit_user_line(msg)
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802
         super().showEvent(event)
@@ -5798,34 +5865,32 @@ class ChatPanel(QtWidgets.QWidget):
                           offset_x=-(HoverActionButton.BUTTON_PX + 2), margin=margin)
 
 
-    def _begin_message(self, role: str, start: int, text: str, row_id) -> None:
+    def _begin_message(self, role: str, start: int, text: str, row_id, frame=None) -> None:
         """给刚插进来的那条消息的开头块打标记，并记进清单。
 
         `start` 是插入**前**的文末字符位：插入时若新开了一段，这条消息就从下一段开始
         （`next().position() == start + 1` 正好说明段界开在这里）。
         """
         document = self.view.document()
-        block = document.findBlock(start)
-        following = block.next()
-        if following.isValid() and following.position() == start + 1:
-            block = following
+        if frame is not None:
+            block = frame.firstCursorPosition().block()
+        else:
+            block = document.findBlock(start)
+            following = block.next()
+            if following.isValid() and following.position() == start + 1:
+                block = following
         msg = {"role": role, "text": text, "row_id": row_id}
+        if frame is not None:
+            msg["frame"] = frame
         msg["mark"] = _MsgMark(msg)
         msg["head_block"] = block
         block.setUserData(msg["mark"])
+        gap = self._msg_gap(block)
         head_format = block.blockFormat()
-        head_format.setTopMargin(self._msg_gap(block))
+        head_format.setTopMargin(0 if frame is not None else gap)
         QtGui.QTextCursor(block).setBlockFormat(head_format)
-        if role == "user":
-            user_format = block.blockFormat()
-            user_format.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
-            user_format.setLeftMargin(ChatView.BUBBLE_PAD_X)
-            user_format.setRightMargin(ChatView.BUBBLE_PAD_X + self.USER_BAR_PX + MSG_GAP // 2)
-            user_format.setBottomMargin(ChatView.BUBBLE_PAD_Y)
-            user_format.setLineHeight(
-                0, QtGui.QTextBlockFormat.LineHeightTypes.SingleHeight.value
-            )
-            QtGui.QTextCursor(block).setBlockFormat(user_format)
+        if frame is not None:
+            self._apply_frame_gap(frame, gap)
         self._msgs.append(msg)
         if role == "assistant":
             self._stream_msg = msg
@@ -6035,7 +6100,6 @@ class ChatPanel(QtWidgets.QWidget):
         if not below and rect.top() < 0:
             button.hide()
             return
-        bar = self.view.verticalScrollBar()
         usable = self._usable_width()
         if edge:
             rect.setRight(usable)
@@ -6078,7 +6142,7 @@ class ChatPanel(QtWidgets.QWidget):
         fmt.setTopMargin(0)
         cursor.insertBlock(fmt)
         block = cursor.block()
-        block.setUserData(_BarMark())
+        block.setUserData(_BarMark(msg))
         line = self.view.document().documentLayout().blockBoundingRect(block).height()
         fmt.setBottomMargin(max(0.0, self.BAR_PX - line) + self.BAR_GAP)
         cursor.setBlockFormat(fmt)
@@ -6108,42 +6172,77 @@ class ChatPanel(QtWidgets.QWidget):
         ]
 
     def _place_msg_bars(self) -> None:
-        """按钮贴着各自那条消息的动作块：块跟着文字走，重排后对一次位置。"""
-        layout = self.view.document().documentLayout()
-        bar = self.view.verticalScrollBar()
+        """按钮贴着各自那条消息的动作块：只摆眼前这几块。
+
+        光标问出可见块之后，谁带消息标记就摆谁——不再拿整张消息表去对位置。
+        """
         usable = self._usable_width()
         pad = (self.BAR_PX - HoverActionButton.BUTTON_PX) // 2
-        for msg in self._msgs:
+        seen: set[int] = set()
+        for block in self.view.visible_blocks():
+            msg = self._msg_of_block(block)
+            if msg is None or id(msg) in seen:
+                continue
+            seen.add(id(msg))
             buttons = msg.get("bar_buttons") or []
             if not buttons:
                 continue
             box = self._msg_corner(msg, usable, pad)
             if box is None:
                 continue
-            x = box.right()
-            top = box.bottom() - HoverActionButton.BUTTON_PX
             total = len(buttons) * HoverActionButton.BUTTON_PX + (len(buttons) - 1) * 4
-            start = max(0, min(int(x) - total, usable - 8 - total))
+            start = max(0, min(int(box.right()) - total, usable - 8 - total))
+            if "frame" in msg:
+                # 有框的那条：按钮和框里的字站同一行，不挂到框底下去。
+                top = box.top() + (box.height() - HoverActionButton.BUTTON_PX) // 2
+            else:
+                top = int(box.bottom()) - HoverActionButton.BUTTON_PX
+            top = max(0, top)
             for button in buttons:
-                button.move(start, max(0, int(top)))
+                button.move(start, top)
                 start += HoverActionButton.BUTTON_PX + 4
 
+    @staticmethod
+    def _msg_of_block(block: QtGui.QTextBlock) -> dict | None:
+        """这一块属于哪条消息：块自己带着标记，不扫表。"""
+        mark = block.userData()
+        if isinstance(mark, _MsgMark):
+            return mark.msg
+        if isinstance(mark, _BarMark):
+            return mark.msg
+        if isinstance(mark, _PhotoMark):
+            return mark.owner
+        return None
+
     def _msg_corner(self, msg: dict, usable: int, pad: int) -> QtCore.QRect | None:
-        """这条消息在视口里的那块矩形：按钮就摆它的右下角，不另算位置。"""
+        """这条消息在视口里的那块矩形（排版给的），按钮贴着它摆。
+
+        有框的那条：横向取框的左右两边，纵向取框里第一行字自己的上下沿——按钮跟字站
+        同一行，不会被框的高度带偏。
+        """
         layout = self.view.document().documentLayout()
         offset = self.view.verticalScrollBar().value()
         if msg.get("role") == "user":
             head = msg.get("head_block")
             if head is None or not head.isValid():
                 return None
-            bubble = self.view.bubble_rect(head)
-            if bubble is None:
-                return None
+            frame = msg.get("frame")
+            if frame is not None:
+                box = layout.frameBoundingRect(frame).translated(0, -offset)
+                fmt = frame.frameFormat()
+                box = box.adjusted(
+                    fmt.leftMargin(), fmt.topMargin(), -fmt.rightMargin(), -fmt.bottomMargin()
+                )
+                line = layout.blockBoundingRect(head).translated(0, -offset)
+                return QtCore.QRect(
+                    int(box.left()),
+                    int(line.top()),
+                    max(1, int(box.width())),
+                    max(1, int(line.height())),
+                )
+            box = layout.blockBoundingRect(head).translated(0, -offset)
             return QtCore.QRect(
-                int(bubble.left()),
-                int(bubble.top()),
-                int(bubble.width()) - ChatView.BUBBLE_PAD_X - 4,
-                int(bubble.height()) - 4,
+                int(box.left()), int(box.top()), max(1, int(box.width())), int(box.height())
             )
         block = msg.get("bar_block")
         if block is None or not block.isValid():
@@ -6160,25 +6259,17 @@ class ChatPanel(QtWidgets.QWidget):
         return room
 
     def _msg_at_pos(self, pos: QtCore.QPoint) -> dict | None:
-        """鼠标压在哪条消息上：范围就是它自己的头块到动作块，不扫正文。"""
-        layout = self.view.document().documentLayout()
-        offset = self.view.verticalScrollBar().value()
-        for msg in reversed(self._msgs):
-            head = msg.get("head_block")
-            if head is None or not head.isValid():
-                continue
-            if msg.get("role") == "user":
-                line = layout.blockBoundingRect(head)
-                if line.top() - offset - 4 <= pos.y() <= line.bottom() - offset + 4:
-                    return msg
-                continue
-            tail = msg.get("bar_block")
-            if tail is None or not tail.isValid():
-                continue
-            top = layout.blockBoundingRect(head).top() - offset
-            bottom = layout.blockBoundingRect(tail).bottom() - offset + self.BAR_PX
-            if top <= pos.y() <= bottom:
+        """鼠标压在哪条消息上：问光标落在哪一块，再顺着块往前找它的开头。
+
+        往前找而不是往后：鼠标压在消息的正文/工具块上要认成这条消息，压在两条消息之间
+        的空白（第一条上面那种）就该是谁都不认，不能顺手把下一条算进来。
+        """
+        block = self._block_at(pos)
+        while block is not None and block.isValid():
+            msg = self._msg_of_block(block)
+            if msg is not None:
                 return msg
+            block = block.previous()
         return None
 
     def _show_msg_bar(self, msg: dict | None) -> None:
