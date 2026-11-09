@@ -1593,7 +1593,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._follow = True
         self._self_scroll = False
         self._user_scroll = False
-        self._range_changing = False
+        self._resizing = False
         self._restoring = False
         self._diff_texts: dict[int, tuple[str | None, str]] = {}
         self._tool_payloads: dict[int, tuple[str, str]] = {}
@@ -4173,8 +4173,24 @@ class ChatPanel(QtWidgets.QWidget):
             self._self_scroll = False
 
     def _at_end(self) -> bool:
+        """到底没有。
+
+        留 4px 余量不是随手拍的：Qt 的滚动范围是整数，文档高度常带小数
+        （行高 17 加半像素这种），取整后最后一两像素滚不到。按 1px 判就永远
+        判不到底，症状是胶囊不消失、新内容不跟随——桌面端用 0.5px 是因为
+        浏览器里滚动值是精确的浮点值，这边不能照搬那个数。
+        """
         bar = self.view.verticalScrollBar()
         return bar.value() >= bar.maximum() - 4
+
+    def _text_selected(self) -> bool:
+        """正文里有选中的字，且焦点还在正文上：这时候不许替人滚。
+
+        桌面端 `hasTranscriptTextSelection` 管的就是这个：选着字的时候视口不许动。
+        多判一个焦点——焦点跑到输入框里以后，正文那条选中的高亮早就灰了，
+        再按它算就会一直不跟随，看着像「底部不锁」。
+        """
+        return self.view.hasFocus() and self.view.textCursor().hasSelection()
 
     def _scroll_to_end_later(self) -> None:
         """等这一轮事件处理完（排版落了）再滚——插完字当拍滚不到底。"""
@@ -4191,6 +4207,8 @@ class ChatPanel(QtWidgets.QWidget):
         最大值，按位置判就一块都跟不上。
         """
         if self._restoring:
+            return
+        if self._text_selected():
             return
         if self._follow:
             self._scroll_to_end_later()
@@ -4251,25 +4269,32 @@ class ChatPanel(QtWidgets.QWidget):
     def _end_user_scroll(self) -> None:
         self._user_scroll = False
 
-    def _range_changed(self, _minimum: int, _maximum: int) -> None:
-        """滚动范围变了：这一拍里跟着来的位移是 Qt 按新排版挪的，不是用户翻的。"""
-        self._range_changing = True
-        QtCore.QTimer.singleShot(0, self._end_range_change)
+    def _resize_started(self) -> None:
+        """窗口在拉伸：这一拍里滚动值怎么变都是 Qt 按新视口挪的，消息流不许跟着动。"""
+        self._resizing = True
+        QtCore.QTimer.singleShot(0, self._end_resize)
 
-    def _end_range_change(self) -> None:
-        self._range_changing = False
-        self._place_msg_bars()
+    def _end_resize(self) -> None:
+        self._resizing = False
+
+    def _range_changed(self, _minimum: int, _maximum: int) -> None:
+        """滚动范围变了（排版长高、窗口拉伸）：按钮这些按新位置再摆一遍。"""
+        QtCore.QTimer.singleShot(0, self._place_msg_bars)
 
     def _on_scrolled(self, _value: int) -> None:
-        """滚动条动了：到没到底既决定胶囊的存亡，也决定还跟不跟随新内容。"""
+        """滚动条动了：到底就锁回来，用户翻走才松手，排版自己挪的不算数。"""
         self._hide_hover()
         if self._self_scroll:
+            return
+        if self._resizing:
             return
         if self._at_end():
             self._follow = True
             self._hide_jump()
             return
-        if self._range_changing and not self._user_scroll:
+        if not self._user_scroll:
+            # 值被 Qt 挪的（排版长高、窗口拉伸、范围回填）：跟着的人继续跟着，
+            # 不许因为这种挪动就脱锁——桌面端判定脱锁只看用户自己的滚动。
             if self._follow and not self._restoring:
                 self._scroll_to_end_later()
             return
@@ -5451,6 +5476,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._model_menu.adjustSize()
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:  # noqa: N802
+        self._resize_started()
         super().resizeEvent(event)
         if hasattr(self, "_model_menu"):
             self._sync_popup_width()
@@ -6425,10 +6451,9 @@ class ChatPanel(QtWidgets.QWidget):
                 if kind is QtCore.QEvent.Type.Wheel:
                     self._user_scroll_now()
             elif kind is QtCore.QEvent.Type.Resize:
+                self._resize_started()
                 self._place_jump()
                 self._place_msg_bars()
-                if self._follow and not self._restoring:
-                    self._scroll_to_end_later()
             return super().eventFilter(obj, event)
         if obj is self.view and event.type() is QtCore.QEvent.Type.KeyPress:
             if event.key() in _SCROLL_KEYS:
