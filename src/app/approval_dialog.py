@@ -78,6 +78,7 @@ class ApprovalDialog(QtWidgets.QDialog):
             | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.setModal(False)
         self.setStyleSheet(_CARD_STYLE)
@@ -242,6 +243,7 @@ class ConfirmDialog(QtWidgets.QDialog):
         self.setWindowFlags(
             QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.WindowStaysOnTopHint
         )
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setModal(True)
         self.setStyleSheet(_CARD_STYLE)
 

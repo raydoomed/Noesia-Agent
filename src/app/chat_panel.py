@@ -434,7 +434,7 @@ from app.window_geometry import (
 PANEL_WIDTH = 420
 PANEL_HEIGHT = 460
 MIN_PANEL_WIDTH = 280
-MIN_PANEL_HEIGHT = 240
+MIN_PANEL_HEIGHT = 300
 TITLE_FULL = "Noesia Agent"
 TITLE_SHORT = "Noesia"
 TITLE_FULL_MIN_WIDTH = 430
@@ -6280,7 +6280,11 @@ class ChatPanel(QtWidgets.QWidget):
         target = None
         probe = document.begin()
         while probe.isValid():
-            if probe.userData() is mark:
+            try:
+                hit = probe.userData() is mark
+            except RuntimeError:
+                hit = False
+            if hit:
                 target = probe
                 break
             probe = probe.next()
@@ -6288,11 +6292,27 @@ class ChatPanel(QtWidgets.QWidget):
             return
         cursor = QtGui.QTextCursor(document)
         start = target.position()
-        if start > 0:
-            start -= 1
+        prev = target.previous()
+        prev_mark = prev.userData() if prev.isValid() else None
+        prev_owner = getattr(prev_mark, "msg", None)
+        prev_kind = None
+        if isinstance(prev_mark, _BarMark):
+            prev_kind = "bar"
+        elif isinstance(prev_mark, _MsgMark):
+            prev_kind = "msg"
         cursor.setPosition(start)
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
+        if prev_owner is not None and prev_kind is not None:
+            slot = document.lastBlock()
+            if prev_kind == "bar":
+                slot.setUserData(_BarMark(prev_owner))
+                prev_owner["bar_block"] = slot
+            else:
+                fresh = _MsgMark(prev_owner)
+                slot.setUserData(fresh)
+                prev_owner["mark"] = fresh
+                prev_owner["head_block"] = slot
         self._stream_msg = None
         self._streaming = False
         self._assistant_pending = ""
@@ -6443,6 +6463,8 @@ class ChatPanel(QtWidgets.QWidget):
                 continue
             box = self._msg_corner(msg, usable, pad)
             if box is None:
+                for button in buttons:
+                    button.hide()
                 continue
             total = len(buttons) * HoverActionButton.BUTTON_PX + (len(buttons) - 1) * 4
             start = max(0, min(int(box.right()) - total, usable - 8 - total))
@@ -6459,13 +6481,70 @@ class ChatPanel(QtWidgets.QWidget):
     @staticmethod
     def _msg_of_block(block: QtGui.QTextBlock) -> dict | None:
         """这一块属于哪条消息：块自己带着标记，不扫表。"""
-        mark = block.userData()
-        if isinstance(mark, _MsgMark):
-            return mark.msg
-        if isinstance(mark, _BarMark):
-            return mark.msg
-        if isinstance(mark, _PhotoMark):
-            return mark.owner
+        try:
+            mark = block.userData()
+            if isinstance(mark, _MsgMark):
+                return mark.msg
+            if isinstance(mark, _BarMark):
+                return mark.msg
+            if isinstance(mark, _PhotoMark):
+                return mark.owner
+        except RuntimeError:
+            return None
+        return None
+
+    def _resolve_head(self, msg: dict) -> QtGui.QTextBlock | None:
+        """这条消息的开头块：句柄和标记对不上就按标记重新找回来。
+
+        截断重贴会动文档，存下的 QTextBlock 句柄可能指到别的块上——位置只认
+        「块自己带着这条消息的标记」，不认旧句柄。
+        """
+        head = msg.get("head_block")
+        mark = msg.get("mark")
+        if head is not None and head.isValid():
+            try:
+                if head.userData() is mark:
+                    return head
+            except RuntimeError:
+                pass
+        if mark is None:
+            return head if head is not None and head.isValid() else None
+        probe = self.view.document().begin()
+        while probe.isValid():
+            try:
+                if probe.userData() is mark:
+                    msg["head_block"] = probe
+                    return probe
+            except RuntimeError:
+                pass
+            probe = probe.next()
+        return None
+
+    def _resolve_bar(self, msg: dict) -> QtGui.QTextBlock | None:
+        """这条回答的动作块：句柄没指到带自己标记的块，就顺着开头块往后找回。"""
+        block = msg.get("bar_block")
+        if block is not None and block.isValid():
+            try:
+                mark = block.userData()
+            except RuntimeError:
+                mark = None
+            if isinstance(mark, _BarMark) and mark.msg is msg:
+                return block
+        head = msg.get("head_block")
+        if head is None or not head.isValid():
+            return None
+        probe = head.next()
+        while probe.isValid():
+            try:
+                ud = probe.userData()
+            except RuntimeError:
+                ud = None
+            if isinstance(ud, _BarMark) and ud.msg is msg:
+                msg["bar_block"] = probe
+                return probe
+            if isinstance(ud, _MsgMark):
+                return None
+            probe = probe.next()
         return None
 
     def _msg_corner(self, msg: dict, usable: int, pad: int) -> QtCore.QRect | None:
@@ -6477,8 +6556,8 @@ class ChatPanel(QtWidgets.QWidget):
         layout = self.view.document().documentLayout()
         offset = self.view.verticalScrollBar().value()
         if msg.get("role") == "user":
-            head = msg.get("head_block")
-            if head is None or not head.isValid():
+            head = self._resolve_head(msg)
+            if head is None:
                 return None
             frame = msg.get("frame")
             if frame is not None:
@@ -6498,8 +6577,8 @@ class ChatPanel(QtWidgets.QWidget):
             return QtCore.QRect(
                 int(box.left()), int(box.top()), max(1, int(box.width())), int(box.height())
             )
-        block = msg.get("bar_block")
-        if block is None or not block.isValid():
+        block = self._resolve_bar(msg)
+        if block is None:
             return None
         top = layout.blockBoundingRect(block).top() - offset
         return QtCore.QRect(0, int(top), usable - 4, self.BAR_PX - pad)
@@ -6531,7 +6610,6 @@ class ChatPanel(QtWidgets.QWidget):
         if msg is self._bar_msg:
             return
         self._bar_msg = msg
-        self._place_msg_bars()
         for item in self._msgs:
             for button in item.get("bar_buttons") or []:
                 if item is msg:
@@ -6539,6 +6617,7 @@ class ChatPanel(QtWidgets.QWidget):
                     button.raise_()
                 else:
                     button.hide()
+        self._place_msg_bars()
 
     def _drop_msg_bar(self, msg: dict) -> None:
         for button in msg.get("bar_buttons") or []:
@@ -6566,7 +6645,6 @@ class ChatPanel(QtWidgets.QWidget):
         for item in list(self._msgs):
             if item is keep_from:
                 seen = True
-                continue
             if seen:
                 self._drop_msg_bar(item)
 
