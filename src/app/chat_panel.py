@@ -201,6 +201,85 @@ class _JumpPill(QtWidgets.QWidget):
         super().mouseReleaseEvent(event)
 
 
+class _StickyPrompt(QtWidgets.QWidget):
+    """这一轮的回答还在屏幕上时，把你这轮的提示词钉在正文顶上。
+
+    桌面上它就是同一条气泡加了 `position: sticky`：气泡还占着原位，被它盖住的
+    内容由 `use-sticky-prompt-clip` 裁掉，不是往上糊一块实心矩形。照这个做，就不该
+    自己画底色——这条带占的是正文视口让出来的那一块，本来露着面板背景，等于裁掉了。
+    只作展示：不挂按钮、不接鼠标，滚轮落上去直接交给正文。
+    """
+
+    PAD = 8
+    EDGE_PX = 1
+    NAME = QtGui.QColor("#c9a6e0")
+    TEXT = QtGui.QColor(214, 198, 222, 215)
+
+    def __init__(self, parent: QtWidgets.QWidget, edge: QtGui.QColor,
+                 name_font: QtGui.QFont, text_font: QtGui.QFont) -> None:
+        super().__init__(parent)
+        self._edge = edge
+        self._name_font = name_font
+        self._text_font = text_font
+        self._name = ""
+        self._shown = ""
+        self._inset = 0.0
+        self._gap = 0
+        self._top = 0.0
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoSystemBackground)
+        self.hide()
+
+    def set_line(self, name: str, shown: str) -> None:
+        if name == self._name and shown == self._shown:
+            return
+        self._name = name
+        self._shown = shown
+        self.update()
+
+    def set_layout(self, margin: float, gap: int, top: float) -> None:
+        """气泡画在哪：margin 是左边距（跟文档里那条同一个数），gap 是下面那段
+        间距（对应桌面端粘顶容器的 `pb-(--conversation-turn-gap)`），top 是气泡
+        外沿相对带子顶的位置——被自己这一轮的底边顶上去时会变成负数。
+        """
+        key = (float(margin), int(gap), float(top))
+        if key == (self._inset, self._gap, self._top):
+            return
+        self._inset = float(margin)
+        self._gap = int(gap)
+        self._top = float(top)
+        self.update()
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:  # noqa: N802
+        margin = self._inset
+        top = self._top
+        painter = QtGui.QPainter(self)
+        box = QtCore.QRectF(
+            margin + 0.5,
+            top + 0.5,
+            self.width() - 2 * margin - 1,
+            self.height() - top - self._gap - 1,
+        )
+        painter.setPen(QtGui.QPen(self._edge, self.EDGE_PX))
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        painter.drawRect(box)
+
+        metrics = QtGui.QFontMetricsF(self._text_font)
+        baseline = top + self.EDGE_PX + self.PAD + metrics.ascent()
+        x = margin + self.EDGE_PX + self.PAD
+        painter.setFont(self._name_font)
+        painter.setPen(self.NAME)
+        head = f"{self._name} "
+        painter.drawText(QtCore.QPointF(x, baseline), head)
+        painter.setFont(self._text_font)
+        painter.setPen(self.TEXT)
+        painter.drawText(
+            QtCore.QPointF(x + QtGui.QFontMetricsF(self._name_font).horizontalAdvance(head), baseline),
+            self._shown,
+        )
+        painter.end()
+
+
 _SELF_BLOCK_TAGS = ("<ul", "<ol", "<table", "<hr")
 _HEADING_RE = re.compile(r"^\s*<h([1-6])[^>]*>(.*)</h\1>\s*$", re.S | re.I)
 _HEADING_PX = {1: 20, 2: 18, 3: 16, 4: 15, 5: 14, 6: 14}
@@ -1594,6 +1673,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._self_scroll = False
         self._user_scroll = False
         self._resizing = False
+        self._sticky: _StickyPrompt | None = None
+        self._sticky_busy = False
+        self._sticky_dirty = False
         self._restoring = False
         self._diff_texts: dict[int, tuple[str | None, str]] = {}
         self._tool_payloads: dict[int, tuple[str, str]] = {}
@@ -1974,9 +2056,9 @@ class ChatPanel(QtWidgets.QWidget):
         logger.info("[界面] 清空窗口（%s）", reason or "未说明")
         self._destroy_msg_bars()
         self._destroy_elements()
+        self._msgs = []
         self.view.clear()
         self._streaming = False
-        self._msgs = []
         self._row_stamp_pending = None
         self._stream_msg = None
         self._rewind_waiting = False
@@ -2124,7 +2206,20 @@ class ChatPanel(QtWidgets.QWidget):
         fmt.setPadding(self.FRAME_PAD)
         cursor = QtGui.QTextCursor(self.view.document())
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
-        return cursor.insertFrame(fmt)
+        frame = cursor.insertFrame(fmt)
+        self._collapse_doc_head()
+        return frame
+
+    def _collapse_doc_head(self) -> None:
+        """文档起手那个空块还空着就塌成 0 高，首条消息顶到第一行。"""
+        block = self.view.document().firstBlock()
+        if block.text() or block.userData() is not None:
+            return
+        fmt = block.blockFormat()
+        fmt.setLineHeight(
+            0.0, QtGui.QTextBlockFormat.LineHeightTypes.ProportionalHeight.value
+        )
+        QtGui.QTextCursor(block).setBlockFormat(fmt)
 
     def _fit_user_line(self, msg: dict) -> None:
         """一行装不下就把显示截断：原文不动，仍留在 msg["text"] 里。"""
@@ -4280,10 +4375,142 @@ class ChatPanel(QtWidgets.QWidget):
     def _range_changed(self, _minimum: int, _maximum: int) -> None:
         """滚动范围变了（排版长高、窗口拉伸）：按钮这些按新位置再摆一遍。"""
         QtCore.QTimer.singleShot(0, self._place_msg_bars)
+        QtCore.QTimer.singleShot(0, self._place_sticky)
+
+    def _set_band(self, height: int) -> None:
+        """顶上给黏顶那条让位：只改视口上边距，滚动值同步加同样的量。
+
+        视口矮多少、滚动范围就大多少，值跟着加这么多，屏上的字一个像素都不动：
+        等于桌面端把被盖住的内容裁掉，而不是把整条正文往下推。改边距会在同一拍
+        触发 rangeChanged / valueChanged：这里裹着 `_self_scroll` 挡住跟随判定，
+        重算侧另有 `_sticky_busy` 守卫，嵌套只记脏、值由外层这一次补回去。
+        """
+        was = self.view.viewportMargins().top()
+        height = max(0, int(height))
+        if height == was:
+            return
+        bar = self.view.verticalScrollBar()
+        value = bar.value()
+        outer = self._self_scroll
+        self._self_scroll = True
+        try:
+            self.view.setViewportMargins(0, height, 0, 0)
+            bar.setValue(value + height - was)
+        finally:
+            self._self_scroll = outer
+        strip = max(was, height) + 2
+        self.update(
+            QtCore.QRect(
+                self.view.mapTo(self, QtCore.QPoint(0, 0)),
+                QtCore.QSize(self.view.width(), strip),
+            )
+        )
+
+    def _sticky_px(self) -> int:
+        """顶上那条黏顶带有多高：文档边距 + 一行提示词的气泡高 + 消息间距。
+
+        只用眼前这条用户行自己的排版高度算，跟具体哪一条提示词无关，所以钉住期间
+        这条带永远是同一个高度。
+        """
+        stick = int(round(self.view.document().documentMargin()))
+        line = 0
+        for msg in reversed(self._msgs):
+            head = msg.get("head_block")
+            if msg.get("role") == "user" and head is not None and head.isValid():
+                line = int(round(self.view.document().documentLayout().blockBoundingRect(head).height()))
+                break
+        if line <= 0:
+            line = int(round(QtGui.QFontMetricsF(self._user_text_font()).height()))
+        pad = self.FRAME_PAD + _StickyPrompt.EDGE_PX
+        return stick + line + 2 * pad + MSG_GAP
+
+    def _sticky_target(self) -> tuple[dict | None, float]:
+        """该钉哪一条：`(这一条, 这一轮底边在视口里的位置)`，没有就是 `(None, 0.0)`。
+
+        判据照桌面端 `use-sticky-prompt-clip` 抄：气泡顶翻过 `视口顶 + stickyTop + 1px`
+        这条线、且这一轮还没翻出窗口顶（`promptRect.bottom > viewportTop`）才候选，
+        文档序靠后那条接手（activePrompt 取 FOLLOWING）。桌面端的提示词是 sticky 的，
+        钉住后 rect.top 恒等于钉线、rect.bottom 跟着这一轮的底边走；这边段框不能真
+        sticky，就用「框外沿顶 ≤ 钉线」加「这一轮底边 > 0」两件事等价地判，从新到旧
+        走到头一个候选即止。
+        """
+        layout = self.view.document().documentLayout()
+        offset = float(self.view.verticalScrollBar().value())
+        margin_top = float(self.view.viewportMargins().top())
+        stick = float(int(round(self.view.document().documentMargin())))
+        pin_line = stick + 1.0
+        later = float(self.view.document().size().height())
+        for msg in reversed(self._msgs):
+            if msg.get("role") != "user":
+                continue
+            head = msg.get("head_block")
+            frame = msg.get("frame")
+            if head is None or not head.isValid() or frame is None:
+                continue
+            fmt = frame.frameFormat()
+            border_top = layout.frameBoundingRect(frame).top() + float(fmt.topMargin())
+            turn_end = later - offset + margin_top
+            if border_top - offset + margin_top <= pin_line and turn_end > 0:
+                return msg, turn_end
+            later = border_top
+        return None, 0.0
+
+    def _place_sticky(self) -> None:
+        """顶上那条：重算一遍钉没钉住（带子高度固定，钉住时只换显示哪一条）。
+
+        滚动、范围、拉伸都会走到这里，且必须同步走（拉伸时 Qt 在 setGeometry 里
+        同步把滚动值夹到新范围，排到 singleShot 就是「旧黏顶 + 新滚动值」那一帧）。
+        重算里自己改滚动值引发的嵌套调用只记脏，值由外层这一次补回去。
+        """
+        if self._sticky_busy:
+            self._sticky_dirty = True
+            return
+        self._sticky_busy = True
+        try:
+            for _ in range(4):
+                self._sticky_dirty = False
+                self._place_sticky_once()
+                if not self._sticky_dirty:
+                    break
+        finally:
+            self._sticky_busy = False
+
+    def _place_sticky_once(self) -> None:
+        px = self._sticky_px()
+        target = None
+        bottom = 0.0
+        if self.view.height() - px >= 80:
+            target, bottom = self._sticky_target()
+        strip = max(0, min(px, int(bottom))) if target is not None else 0
+        self._set_band(strip)
+        if target is None:
+            if self._sticky is not None:
+                self._sticky.hide()
+            return
+        if self._sticky is None:
+            self._sticky = _StickyPrompt(
+                self.view, self.FRAME_EDGE, self._user_name_font(), self._user_text_font()
+            )
+        name = _user_display_name()
+        label = f"{name} "
+        room = self._user_line_room(QtGui.QFontMetricsF(self._user_name_font()).horizontalAdvance(label))
+        shown = QtGui.QFontMetricsF(self._user_text_font()).elidedText(
+            str(target.get("text") or ""), QtCore.Qt.TextElideMode.ElideRight, room
+        )
+        self._sticky.set_line(name, shown)
+        margin = self.view.document().documentMargin()
+        frame_h = px - int(round(margin)) - MSG_GAP
+        top = min(margin, strip - MSG_GAP - frame_h)
+        self._sticky.set_layout(margin, MSG_GAP, top)
+        geo = self.view.viewport().geometry()
+        self._sticky.setGeometry(geo.left(), 0, geo.width(), strip)
+        self._sticky.show()
+        self._sticky.raise_()
 
     def _on_scrolled(self, _value: int) -> None:
         """滚动条动了：到底就锁回来，用户翻走才松手，排版自己挪的不算数。"""
         self._hide_hover()
+        self._place_sticky()
         if self._self_scroll:
             return
         if self._resizing:
@@ -5484,6 +5711,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._place_jump()
         QtCore.QTimer.singleShot(0, self._refit_user_lines)
         QtCore.QTimer.singleShot(0, self._place_msg_bars)
+        QtCore.QTimer.singleShot(0, self._place_sticky)
 
     def _refit_user_lines(self) -> None:
         """窗口宽度变了：只重截眼前这几条，其余滚到时再补（见 `_fit_visible_user_lines`）。"""
@@ -6043,6 +6271,10 @@ class ChatPanel(QtWidgets.QWidget):
         """把这个窗口从某条消息起的内容抹掉（引擎侧已经截断，界面跟上）。"""
         self._destroy_msg_bars(msg)
         self._destroy_elements()
+        for index, item in enumerate(self._msgs):
+            if item is msg:
+                self._msgs = self._msgs[:index]
+                break
         mark = msg.get("mark")
         document = self.view.document()
         target = None
@@ -6061,10 +6293,6 @@ class ChatPanel(QtWidgets.QWidget):
         cursor.setPosition(start)
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
-        for index, item in enumerate(self._msgs):
-            if item is msg:
-                self._msgs = self._msgs[:index]
-                break
         self._stream_msg = None
         self._streaming = False
         self._assistant_pending = ""
@@ -6329,6 +6557,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._el_buttons.clear()
         self._shown_buttons.clear()
         self._el_scan_pos = 0
+        if self._sticky is not None:
+            self._sticky.hide()
 
     def _destroy_msg_bars(self, keep_from: dict | None = None) -> None:
         """清窗口或截断时把动作条一并带走：它们是这一轮的对象，不留到下一轮。"""
@@ -6455,9 +6685,19 @@ class ChatPanel(QtWidgets.QWidget):
                 self._place_jump()
                 self._place_msg_bars()
             return super().eventFilter(obj, event)
-        if obj is self.view and event.type() is QtCore.QEvent.Type.KeyPress:
-            if event.key() in _SCROLL_KEYS:
+        if obj is self.view:
+            kind = event.type()
+            if kind is QtCore.QEvent.Type.KeyPress:
+                if event.key() in _SCROLL_KEYS:
+                    self._user_scroll_now()
+                return super().eventFilter(obj, event)
+            if kind is QtCore.QEvent.Type.Wheel:
+                # 黏顶带占着视口上边那一条时，滚轮落在正文外面：事件目标是 view，
+                # 先标上「用户自己滚的」松开跟随，再原样转给视口去滚。
+                self._hide_hover()
                 self._user_scroll_now()
+                QtWidgets.QApplication.sendEvent(self.view.viewport(), event)
+                return True
             return super().eventFilter(obj, event)
         if obj is getattr(self, "input", None):
             kind = event.type()
