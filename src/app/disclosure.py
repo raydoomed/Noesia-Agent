@@ -466,6 +466,10 @@ class Folds:
         """换抬头文字（「思考中」→「思考了 3s」）。
 
         只改抬头那一块：正文由块标记自己带着走，这里不用补偿任何位置。
+
+        删旧插新包进同一个编辑块：不包的话「删光」那一瞬文档只剩一行，滚动上限
+        跟着塌一次，贴底的视口值被夹到瞬时最大值上，等内容插回、上限涨回去时
+        Qt 只发 rangeChanged 不发 valueChanged，就再也回不到真底。
         """
         block = fold.head_block
         if block is None or not block.isValid():
@@ -474,12 +478,14 @@ class Folds:
             return
         pos = block.position()
         cursor = QtGui.QTextCursor(self._doc)
+        cursor.beginEditBlock()
         cursor.setPosition(pos)
         cursor.setPosition(pos + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor)
         if fold.glyph is not None:
             cursor.insertImage(fold.glyph)
             cursor.insertText(" ")
         cursor.insertText(head_text(label, fold.open), self._head_link(fold))
+        cursor.endEditBlock()
         fold.label = label
         fold.head_block = self._doc.findBlock(pos)
 
