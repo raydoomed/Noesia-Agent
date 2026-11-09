@@ -6293,26 +6293,16 @@ class ChatPanel(QtWidgets.QWidget):
         cursor = QtGui.QTextCursor(document)
         start = target.position()
         prev = target.previous()
-        prev_mark = prev.userData() if prev.isValid() else None
-        prev_owner = getattr(prev_mark, "msg", None)
-        prev_kind = None
-        if isinstance(prev_mark, _BarMark):
-            prev_kind = "bar"
-        elif isinstance(prev_mark, _MsgMark):
-            prev_kind = "msg"
+        prev_mark = None
+        if prev.isValid():
+            try:
+                prev_mark = prev.userData()
+            except RuntimeError:
+                prev_mark = None
         cursor.setPosition(start)
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.removeSelectedText()
-        if prev_owner is not None and prev_kind is not None:
-            slot = document.lastBlock()
-            if prev_kind == "bar":
-                slot.setUserData(_BarMark(prev_owner))
-                prev_owner["bar_block"] = slot
-            else:
-                fresh = _MsgMark(prev_owner)
-                slot.setUserData(fresh)
-                prev_owner["mark"] = fresh
-                prev_owner["head_block"] = slot
+        self._reseat_tail(prev_mark)
         self._stream_msg = None
         self._streaming = False
         self._assistant_pending = ""
@@ -6324,6 +6314,33 @@ class ChatPanel(QtWidgets.QWidget):
         self._tool_clock.stop()
         self._folds.drop_invalid()
         self._fence_cache.clear()
+
+    def _reseat_tail(self, prev_mark: QtGui.QTextBlockUserData | None) -> None:
+        """截断删到文末，Qt 会把切点前那块并进文末那块：块标记会被丢掉，被删那轮的标记
+        还可能搬上来。并出来的就是文末这一块，收拾回原样——它原来带谁的标记就给谁贴个
+        新的回去（旧的已经跟着合并没了，句柄改指这块），原来没标记或挂着被删那轮搬来的
+        脏标记就清掉：脏标记会把「首条顶到第一行」的折叠挡掉，还会让悬停把这块认成已经
+        删掉的消息。"""
+        slot = self.view.document().lastBlock()
+        owner: dict | None = None
+        if isinstance(prev_mark, (_MsgMark, _BarMark)):
+            owner = prev_mark.msg
+        elif isinstance(prev_mark, _PhotoMark):
+            owner = prev_mark.owner
+        fresh = None
+        if owner is not None and any(owner is item for item in self._msgs):
+            if isinstance(prev_mark, _BarMark):
+                fresh = _BarMark(owner)
+                owner["bar_block"] = slot
+            elif isinstance(prev_mark, _MsgMark):
+                fresh = _MsgMark(owner)
+                owner["mark"] = fresh
+                owner["head_block"] = slot
+            else:
+                fresh = _PhotoMark(owner)
+        elif isinstance(prev_mark, _CodeMark):
+            fresh = _CodeMark()
+        slot.setUserData(fresh)
 
     def stamp_user_row(self, row_id: int) -> None:
         """引擎回了这次提交的用户消息行号：重新生成/编辑重发靠它定位截断点。"""
@@ -6390,7 +6407,7 @@ class ChatPanel(QtWidgets.QWidget):
     def _mount_msg_bar(self, msg: dict) -> None:
         """这条消息写完了：在它文末落一块动作条。
 
-        桌面端把按钮条写在气泡里、靠排版占位；这里同样插一个空段落占住那 30px，
+        桌面端把按钮条写在气泡里、靠排版占位；这里同样插一个空段落把动作条那一段占住，
         按钮贴着这一块摆——位置由排版给，不用再去算「最后一行在哪」。
         """
         if msg.get("role") == "user":
@@ -6402,7 +6419,6 @@ class ChatPanel(QtWidgets.QWidget):
             ]
             msg["bar_buttons"] = buttons
             msg["bar_block"] = None
-            msg["bar_px"] = 0
             self._bar_buttons.extend(buttons)
             self._show_msg_bar(None)
             self._place_msg_bars()
@@ -6421,7 +6437,6 @@ class ChatPanel(QtWidgets.QWidget):
         fmt.setBottomMargin(max(0.0, self.BAR_PX - line) + self.BAR_GAP)
         cursor.setBlockFormat(fmt)
         msg["bar_block"] = block
-        msg["bar_px"] = self.BAR_PX
         buttons = [
             HoverActionButton(self.view.viewport(), icon, tip, slot)
             for icon, tip, slot in self._bar_specs(msg)
