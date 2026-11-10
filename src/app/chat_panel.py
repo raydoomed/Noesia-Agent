@@ -1685,6 +1685,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._sticky: _StickyPrompt | None = None
         self._sticky_busy = False
         self._sticky_dirty = False
+        self._band_freeze = False
         self._restoring = False
         self._diff_texts: dict[int, tuple[str | None, str]] = {}
         self._tool_payloads: dict[int, tuple[str, str]] = {}
@@ -2128,7 +2129,7 @@ class ChatPanel(QtWidgets.QWidget):
             return True
         return bool(self.view.toPlainText().strip())
 
-    HISTORY_PAGE = 50
+    HISTORY_PAGE = 15
 
     def set_history(self, messages) -> None:
         """界面打开：把上一段对话铺出来（不是让用户去输入什么）。
@@ -2180,11 +2181,19 @@ class ChatPanel(QtWidgets.QWidget):
     def _restore_scroll(self, old_height: float, old_value: int) -> None:
         """按新增高度把视野让回来：正在看的那行停在原位。
 
-        公式对黏顶条的视口上边距免疫：补页前后同一套坐标，差值抵消；这拍里带子若
-        正好让位，`_set_band` 会把边距增量同步加进滚动值，屏上字一个像素不动。
+        滚动值就是「内容区顶上是哪一行」：补页铺了多少高度就把值让多少，刚补出来的那页
+        正好顶到内容区顶、贴着带子下沿，跟补页前贴着带子下沿一致。这拍里带子若正好让位，
+        `_set_band` 的值补偿会把顶上的行裁进带子底下——恢复是有意重定位，不是无感换带，
+        这里的补偿冻住不认。
         """
         new_height = self.view.document().documentLayout().documentSize().height()
-        self.view.verticalScrollBar().setValue(int(old_value + (new_height - old_height)))
+        bar = self.view.verticalScrollBar()
+        frozen = self._band_freeze
+        self._band_freeze = True
+        try:
+            bar.setValue(int(old_value + (new_height - old_height)))
+        finally:
+            self._band_freeze = frozen
 
     def _maybe_load_older_history(self) -> None:
         """滚到顶就往前补一页。"""
@@ -4516,7 +4525,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._self_scroll = True
         try:
             self.view.setViewportMargins(0, height, 0, 0)
-            bar.setValue(value + height - was)
+            if not self._band_freeze:
+                bar.setValue(value + height - was)
         finally:
             self._self_scroll = outer
         strip = max(was, height) + 2

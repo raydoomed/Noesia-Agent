@@ -1445,11 +1445,13 @@ def _probe_credentials(agent) -> str:
 
 
 def _probe_config_health(cfg: dict) -> str:
-    """Warn on bare YAML keys (`agent:` → None, silently dropping nested settings) and an unknown ``display.personality``."""
+    """Warn on bare YAML section keys (`agent:` → None, silently dropping nested settings) and an unknown ``display.personality``."""
     if not isinstance(cfg, dict):
         return ""
+    from noesia_cli.config_defaults import DEFAULT_CONFIG
     warnings: list[str] = []
-    if null_keys := sorted(k for k, v in cfg.items() if v is None):
+    if null_keys := sorted(k for k, v in cfg.items()
+                          if v is None and isinstance(DEFAULT_CONFIG.get(k), dict) and DEFAULT_CONFIG[k]):
         keys = ", ".join(f"`{k}`" for k in null_keys)
         warnings.append(f"config.yaml has empty section(s): {keys}. Remove the line(s) or set them to `{{}}` — "
                         f"empty sections silently drop nested settings.")
