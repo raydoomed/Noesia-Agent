@@ -43,12 +43,14 @@ ASSET_MAX_DAYS = 85
 ASSET_PENDING_SECONDS = 60.0
 
 def warm_avatar_asset(
-    image: pathlib.Path, digest: str = "", wait_seconds: float = 90.0, interval: float = 5.0
+    image: pathlib.Path, digest: str = "", wait_seconds: float = 90.0, interval: float = 5.0,
+    on_status=None,
 ) -> str:
     """把这张图存成云端资产并写缓存，返回编号；过了等待时间还没好就返回空串。
 
     不建会话、不计费。整图**只上传这一次**，之后每隔 `interval` 秒按编号查状态
     （`avatar_status`）——重复 POST 整图会被平台判成刷接口，直接 429。
+    `on_status`：查状态不顺（网络抽风）时回调一声，界面好把「还在等」换成实话。
     """
     digest = digest or hashlib.sha256(image.read_bytes()).hexdigest()
     token = read_token()
@@ -68,6 +70,8 @@ def warm_avatar_asset(
             break
         time.sleep(interval)
         status = avatar_status(token, avatar_id)
+        if status == "unknown" and on_status is not None:
+            on_status("unknown")
     if status != "success":
         logger.warning(
             "[数字人] 形象没成功（id=%s status=%s），先不拿它建会话", avatar_id, status

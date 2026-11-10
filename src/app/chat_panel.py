@@ -2072,6 +2072,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._destroy_msg_bars()
         self._destroy_elements()
         self._msgs = []
+        self._history_older = []
+        self._history_rendered = []
         self.view.clear()
         self._streaming = False
         self._row_stamp_pending = None
@@ -2081,8 +2083,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._row_stamp_pending = None
         self._flush_timer.stop()
         self._assistant_pending = ""
-        self._history_older = []
-        self._history_rendered = []
         self._reasoning_pending = ""
         self._md_block = []
         self._md_fence = False

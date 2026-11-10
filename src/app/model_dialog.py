@@ -608,6 +608,7 @@ class _LazyCombo(_NarrowCombo):
 class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
     avatar_uploaded = QtCore.Signal(str, bool)
+    avatar_progress = QtCore.Signal(str)
     FAIL_STYLE = "color: #ff6b6b; font-size: 11px;"
     OK_COLOR = "#4ade80"
     LIVE_TEXT_STYLE = f"color: {OK_COLOR}; font-size: 11.5px;"
@@ -1878,6 +1879,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._avatar_status = _AvatarStatus(page)
         layout.addWidget(self._avatar_status)
         self.avatar_uploaded.connect(self._avatar_uploaded_done)
+        self.avatar_progress.connect(lambda t: self._set_avatar_note(t, busy=True))
         self._refresh_avatar_image()
 
         self._avatar_key_label = QtWidgets.QLabel("凭证", page)
@@ -2000,8 +2002,15 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
         def run() -> None:
             reason = ""
+            warned = {"net": False}
+
+            def on_status(_status: str) -> None:
+                if not warned["net"]:
+                    warned["net"] = True
+                    self.avatar_progress.emit("连不上云端，网络恢复后自动继续…")
+
             try:
-                ok = bool(avatar_rtc.warm_avatar_asset(image))
+                ok = bool(avatar_rtc.warm_avatar_asset(image, on_status=on_status))
                 if not ok:
                     reason = "云端 90 秒内没处理完"
             except Exception as exc:  # noqa: BLE001
