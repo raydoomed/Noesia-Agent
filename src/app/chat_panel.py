@@ -1578,6 +1578,13 @@ class ChatPanel(QtWidgets.QWidget):
         self._busy = False
         self._interrupted = False
         self._assistant_pending = ""
+        self._history_older: list = []
+        self._history_rendered: list = []
+        self._history_loading = False
+        self._flush_timer = QtCore.QTimer(self)
+        self._flush_timer.setSingleShot(True)
+        self._flush_timer.setInterval(self.FLUSH_SLICE_MS)
+        self._flush_timer.timeout.connect(lambda: self._pump_assistant(final=False))
         self._last_error_key = ""
         self._review_count = 0
         self._review_folded = False
@@ -1635,6 +1642,7 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.anchorClicked.connect(self._on_anchor)
         self.view.scrolled.connect(self._hide_hover)
         self.view.scrolled.connect(self._fit_visible_user_lines)
+        self.view.scrolled.connect(self._maybe_load_older_history)
         self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         layout.addWidget(self.view, 1)
@@ -2065,7 +2073,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._rewind_waiting = False
         self._rewind_after_stop = None
         self._row_stamp_pending = None
+        self._flush_timer.stop()
         self._assistant_pending = ""
+        self._history_older = []
+        self._history_rendered = []
         self._reasoning_pending = ""
         self._md_block = []
         self._md_fence = False
@@ -2117,10 +2128,14 @@ class ChatPanel(QtWidgets.QWidget):
             return True
         return bool(self.view.toPlainText().strip())
 
-    def set_history(self, messages) -> None:
-        """界面打开：把上一段对话直接铺出来（不是让用户去输入什么）。
+    HISTORY_PAGE = 50
 
-        内容来自引擎的会话库，界面只负责显示——所以这里是整窗重画，不留第二份历史。
+    def set_history(self, messages) -> None:
+        """界面打开：把上一段对话铺出来（不是让用户去输入什么）。
+
+        内容来自引擎的会话库，界面只负责显示——所以这里是整窗重画，不留第二份历史
+        状态。为开窗快，只铺最近 `HISTORY_PAGE` 条；剩下的暂存成「还没铺的那截」，
+        翻到顶再往前补（`load_older_history`），那截也只是显示源。
 
         但这个窗口里已经铺了正文/工具行时**绝不能**重画：引擎的 `session.resume` 会在
         开窗、重连、切模型之后陆续回来，一旦重画，刚显示出来的工具行（历史里没有它们，
@@ -2128,10 +2143,59 @@ class ChatPanel(QtWidgets.QWidget):
         """
         if self.has_transcript():
             return
-        self.clear_conversation("历史重铺")
+        items = [item for item in (messages or ()) if str(item.get("text") or "").strip()]
+        tail = items[-self.HISTORY_PAGE:]
+        self._history_loading = True
+        try:
+            self.clear_conversation("历史重铺")
+            self._history_older = items[: -self.HISTORY_PAGE]
+            self._history_rendered = list(tail)
+            self._paint_history(tail)
+        finally:
+            self._history_loading = False
+        self._follow = True
+        self._scroll_to_end()
+
+    def load_older_history(self) -> None:
+        """翻到顶：往前补一页更早的消息，铺完把滚动位置按新增高度让回来。"""
+        if not self._history_older or self._restoring or self._history_loading:
+            return
+        self._history_loading = True
+        try:
+            self._follow = False
+            take = self._history_older[-self.HISTORY_PAGE:]
+            older = self._history_older[: -self.HISTORY_PAGE]
+            rendered = take + self._history_rendered
+            layout = self.view.document().documentLayout()
+            old_height = layout.documentSize().height()
+            old_value = self.view.verticalScrollBar().value()
+            self.clear_conversation("历史补页")
+            self._history_older = older
+            self._history_rendered = rendered
+            self._paint_history(rendered)
+            QtCore.QTimer.singleShot(0, lambda: self._restore_scroll(old_height, old_value))
+        finally:
+            self._history_loading = False
+
+    def _restore_scroll(self, old_height: float, old_value: int) -> None:
+        """按新增高度把视野让回来：正在看的那行停在原位。
+
+        公式对黏顶条的视口上边距免疫：补页前后同一套坐标，差值抵消；这拍里带子若
+        正好让位，`_set_band` 会把边距增量同步加进滚动值，屏上字一个像素不动。
+        """
+        new_height = self.view.document().documentLayout().documentSize().height()
+        self.view.verticalScrollBar().setValue(int(old_value + (new_height - old_height)))
+
+    def _maybe_load_older_history(self) -> None:
+        """滚到顶就往前补一页。"""
+        if self.view.verticalScrollBar().value() <= 0:
+            self.load_older_history()
+
+    def _paint_history(self, items) -> None:
+        """把一批历史消息按顺序铺出来；只管画，清窗与分页状态由调用方处理。"""
         self._restoring = True
         try:
-            for item in messages or ():
+            for item in items:
                 text = str(item.get("text") or "")
                 if not text.strip():
                     continue
@@ -2154,8 +2218,6 @@ class ChatPanel(QtWidgets.QWidget):
                     self.end_assistant()
         finally:
             self._restoring = False
-        self._follow = True
-        self._scroll_to_end()
 
     def append_notice_lines(self, lines) -> None:
         """灰色说明行：引擎回灌给模型的机器消息（子代理完成之类），不把英文原文铺出来。"""
@@ -2373,6 +2435,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._streaming = True
         self._bubble_has_text = False
 
+    FLUSH_SLICE_MS = 40
+
     def append_chunk(self, chunk: str) -> None:
         if self._interrupted:
             return
@@ -2382,9 +2446,11 @@ class ChatPanel(QtWidgets.QWidget):
         self._assistant_pending += chunk
         if self._stream_msg is not None:
             self._stream_msg["text"] += chunk
-        self._pump_assistant(final=False)
+        if not self._flush_timer.isActive():
+            self._flush_timer.start()
 
     def end_assistant(self) -> None:
+        self._flush_timer.stop()
         self._end_reasoning_group()
         self._pump_assistant(final=True)
         self._flush_md()
@@ -4050,6 +4116,7 @@ class ChatPanel(QtWidgets.QWidget):
     def show_error(self, message: str) -> None:
         self._end_reasoning_group()
         if not self._streaming:
+            self._flush_timer.stop()
             self._assistant_pending = ""
         text = (message or "").strip()
         if not text:
@@ -6363,6 +6430,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._reseat_tail(prev_mark)
         self._stream_msg = None
         self._streaming = False
+        self._flush_timer.stop()
         self._assistant_pending = ""
         self._md_block = []
         self._md_fence = False
