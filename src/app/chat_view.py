@@ -93,23 +93,35 @@ class ChatView(QtWidgets.QTextBrowser):
         return blocks
 
     def _relayout_tools(self) -> None:
-        """长内容按它在正文里占的那块空位摆好；收起时整块不显示。"""
+        """长内容按它在正文里占的那块空位摆好；收起时整块不显示。
+
+        只给落在视口里的那几块做几何换算，屏外的藏掉就好：这里挂在每次插入和
+        滚动上，工具框一多，每帧全量摆一遍就把滚动拖卡了。
+        """
         folds = self._folds
         if folds is None:
             return
         dy = -self.verticalScrollBar().value()
         layout = self.document().documentLayout()
+        window = self.visible_range()
         for fold in folds.all():
             widget = getattr(fold, "scroll", None)
             if widget is None:
                 continue
             slot = getattr(fold, "slot", None)
-            if not fold.open or slot is None or not slot.isValid():
-                widget.hide()
+            if (
+                not fold.open
+                or slot is None
+                or not slot.isValid()
+                or not folds.in_window(fold, window)
+            ):
+                if widget.isVisible():
+                    widget.hide()
                 continue
             rect = layout.blockBoundingRect(slot).translated(0, dy)
             if rect.height() <= 0:
-                widget.hide()
+                if widget.isVisible():
+                    widget.hide()
                 continue
             widget.setGeometry(rect.toRect())
             widget.show()

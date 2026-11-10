@@ -293,13 +293,13 @@ class Folds:
         for fold in self._items.values():
             if fold.scroll is None:
                 continue
-            if window is not None and not self._in_window(fold, window):
+            if window is not None and not self.in_window(fold, window):
                 fold.needs_fit = True
                 continue
             fold.needs_fit = False
             self._sync_slot(fold)
 
-    def _in_window(self, fold: Fold, window: tuple[int, int]) -> bool:
+    def in_window(self, fold: Fold, window: tuple[int, int]) -> bool:
         slot = fold.slot
         if slot is None or not slot.isValid():
             return False
@@ -310,7 +310,7 @@ class Folds:
         for fold in self._items.values():
             if fold.scroll is None or not fold.needs_fit:
                 continue
-            if not self._in_window(fold, window):
+            if not self.in_window(fold, window):
                 continue
             fold.needs_fit = False
             self._sync_slot(fold)
