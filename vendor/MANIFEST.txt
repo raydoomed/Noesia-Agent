@@ -1,5 +1,5 @@
 # Noesia vendor 清单（随包运行环境：不进仓库，只跟发布整合包走）
-# 生成 2026-11-08 17:34 (+08:00) · 10783 个文件 · 1.04 GB
+# 生成 2026-11-10 17:59 (+08:00) · 10789 个文件 · 1.05 GB
 #
 # 校验（在项目根目录跑；Windows 上用随包的 git-bash）：
 #   sha256sum -c vendor/MANIFEST.txt
@@ -10706,8 +10706,10 @@ e4e81e09c1578b8df602e3db08b0b3ea0a6947ad612f52bf8dc5ea8d47691f0c  vendor/wheels/
 255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360  vendor/wheels/click-8.5.0-py3-none-any.whl
 4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6  vendor/wheels/colorama-0.4.6-py2.py3-none-any.whl
 0d6c077fbaef2dae49a25975dcf72a602fe0a6a4ce80a3b7c37696d37e10459a  vendor/wheels/concurrent_log_handler-0.9.29-py3-none-any.whl
+181bea01bc742734ae672fa00c717d855dd35e1f029536406538c52e7b0cd73d  vendor/wheels/contourpy-1.4.0-cp314-cp314-win_amd64.whl
 2f878c3856f17896979b2a4379ba1f09c83e374931ea15cc835c5dd2eee9b368  vendor/wheels/croniter-6.0.0-py2.py3-none-any.whl
 aed8db4f6d71c51efb89530e12d9464e7bf2923d46c3205dc794a2a93f8c0648  vendor/wheels/cryptography-50.0.1-cp311-abi3-win_amd64.whl
+85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30  vendor/wheels/cycler-0.12.1-py3-none-any.whl
 7bffd925d65168f85027d8da9af6bddab658135b840670a223589bc0c8ef02b2  vendor/wheels/distro-1.9.0-py3-none-any.whl
 2a3c79d6235a7a736d681233823ce5492e829b43eb47beae49aa181237a8f9a4  vendor/wheels/edge_tts-7.3.1-py3-none-any.whl
 3785963de305dd09912426cb81f2d230fce98ab3521cdfe97265c8d14983128c  vendor/wheels/fastapi-0.162.0-py3-none-any.whl
@@ -10715,6 +10717,7 @@ b7885f2907e7920373fa75dcdb00afd6e603a25a9ee2151aa2881f5465e1a2c0  vendor/wheels/
 e43fd8a5033a9001e7e2973bab96070694b9f12f2e0ecf96d4683971b5ab1882  vendor/wheels/fire-0.7.1-py3-none-any.whl
 7c9ffc81946e6954c124560ed1d395e0103a1a08fdc0f6be382e2f35daf6dbc9  vendor/wheels/firecrawl_anydoc-0.2.4-cp310-abi3-win_amd64.whl
 7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4  vendor/wheels/flatbuffers-25.12.19-py2.py3-none-any.whl
+1782f2cf952eb262c4126b1f57b5f0e027e71bf2b632350a033dec526f448428  vendor/wheels/fonttools-4.68.0-cp314-cp314-win_amd64.whl
 3e0761f4d1a44f1d1a47996511752cf3dcec5bbdd9cc2b4fe595caf97754b7a0  vendor/wheels/frozenlist-1.8.0-cp314-cp314-win_amd64.whl
 63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86  vendor/wheels/h11-0.16.0-py3-none-any.whl
 2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55  vendor/wheels/httpcore-1.0.9-py3-none-any.whl
@@ -10725,9 +10728,11 @@ ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c  vendor/wheels/
 85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67  vendor/wheels/jinja2-3.1.6-py3-none-any.whl
 f1e738b851019d6bb6ff4a42c6319bdede967dec958ef3ec6feb7ab9d12408f7  vendor/wheels/jiter-0.18.0-cp314-cp314-win_amd64.whl
 2c09389cf43e9c13550df4712ebf7e81db64f7f569fac227a617b62d6523b685  vendor/wheels/kaldi_native_fbank-1.22.5-cp314-cp314-win_amd64.whl
+f4167e87b397f273dc2356fcf1eaf50a6bac51e6105f45103ef7129c8efb0255  vendor/wheels/kiwisolver-1.5.1-cp314-cp314-win_amd64.whl
 e91464b71ae3ee7afd3017d9f358ef0baf158fd9a298db92f1d4761133824c36  vendor/wheels/markdown-3.10.2-py3-none-any.whl
 9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a  vendor/wheels/markdown_it_py-4.2.0-py3-none-any.whl
 c1bc67752d5f21013cfe430df4062441714eab79f65a6a05e01505957e9c35fe  vendor/wheels/markupsafe-3.0.4-cp314-cp314-win_amd64.whl
+ecea603dd2fbf8242fd31a305a8b12a4ece2de28096870c65fdd0d1e35b8d9a6  vendor/wheels/matplotlib-3.11.2-cp314-cp314-win_amd64.whl
 84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8  vendor/wheels/mdurl-0.1.2-py3-none-any.whl
 6e22756c6e2d4f57ead0d2e6be179d8a16d661bee424b81de0c6c0c1305ec39f  vendor/wheels/multidict-7.2.1-cp314-cp314-win_amd64.whl
 26e30775e0fdb2740b165c90a477c673082c92fe580475ee3834f6ddd1483030  vendor/wheels/nemo_relay-0.10.4-cp311-abi3-win_amd64.whl
@@ -10750,6 +10755,7 @@ a076f3f489b39b43ed13563a1dafe42447445bec2e294154ec5c57fcdda4c85e  vendor/wheels/
 811ff8e9c313ab425368bcbb36e5c4ebd7108c2bbf4e4089cfbb0b01eff63fac  vendor/wheels/pydantic_core-2.46.4-cp314-cp314-win_amd64.whl
 2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9  vendor/wheels/pygments-2.21.0-py3-none-any.whl
 42d59d631f7768a1028a64c7ff581a9bf7519804daf91fc5b6c56e30eec5e193  vendor/wheels/pyjwt-2.15.1-py3-none-any.whl
+ece8c00a69cf01b45d0b1dedabb469c90d8caf996d4fda40f147627a122849a4  vendor/wheels/pyparsing-3.3.3-py3-none-any.whl
 31a8d2893f2f28ab483b1534dde0438f27af6e234593de30425cb4729052d8f8  vendor/wheels/pyside6-6.12.0-cp310-abi3-win_amd64.whl
 98d8d62010da6605344cee83e5c96fb846170a1f2d924523f10f5d92078b02b0  vendor/wheels/pyside6_addons-6.12.0-cp310-abi3-win_amd64.whl
 c9a95102aa23c1f86516a30d5a9be37552d324eee7e567eb7508973f1218cb42  vendor/wheels/pyside6_essentials-6.12.0-cp310-abi3-win_amd64.whl
