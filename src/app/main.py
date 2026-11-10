@@ -93,6 +93,8 @@ QT_BINDING = "PySide6"
 
 INSTANCE_NAME = "NoesiaAvatar"
 
+_INSTANCE_MUTEX = None
+
 
 def _flag(value, *, default: bool = True) -> bool:
     """配置里的开关：只有 `false` / `"false"` / `0` 算关（桌面端 `setShowReasoningFromConfig` 同一条判据）。"""
@@ -2442,35 +2444,68 @@ def _reap_browser_daemons() -> int:
     return len(victims)
 
 
+def claim_instance() -> bool:
+    """抢单实例的名额：抢到返回 True（本进程就是主实例）。
+
+    判据用命名互斥量，不用"连 socket 看有没有人应"——后者要赌对端在 1 秒内回执，
+    而老实例正忙或正在退出时回不上来，第二个进程就会自己启动，变成两个实例。
+    互斥量由系统按进程回收：正常退出、被强杀都会自动释放，不会留下抢不掉的名字。
+    """
+    global _INSTANCE_MUTEX
+    if sys.platform != "win32":
+        return True
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.CreateMutexW(None, False, "Local\\NoesiaAvatarInstance")
+    if not handle:
+        return True
+    if ctypes.get_last_error() == 183:
+        kernel32.CloseHandle(handle)
+        return False
+    _INSTANCE_MUTEX = handle
+    return True
+
+
 def notify_existing_instance(command: str = "show") -> bool:
     """已有实例在跑就给它发一条命令，返回 True（本进程应退出）。
 
     为什么要等回执：socket 一析构，没送出去的数据就随对象一起没了；而第二个实例发完命令
     立刻退出，靠时序赌它送出去迟早会翻车。所以对端处理完回一个 "ok"，这里等它。
+
+    等待只走 socket 自己的定时等待，不在这里跑通用事件循环：对端正在退出的那一两秒里，
+    事件派发可能整块卡住，本进程就会挂成一个没窗口、没托盘的僵尸。再加一道硬兜底——
+    握手超过 3 秒直接结束进程，宁可这次不启动，也不留残骸。
     """
     sock = QtNetwork.QLocalSocket()
     sock.connectToServer(INSTANCE_NAME)
     if not sock.waitForConnected(500):
         return False
 
-    sock.write(f"{command}\n".encode())
-    sock.flush()
+    guard = threading.Timer(3.0, lambda: os._exit(0))
+    guard.daemon = True
+    guard.start()
+    try:
+        sock.write(f"{command}\n".encode())
+        sock.flush()
 
-    deadline = time.monotonic() + 1.0
-    acked = False
-    while time.monotonic() < deadline:
-        if sock.bytesAvailable():
-            if bytes(sock.readAll().data()).strip() == b"ok":
-                acked = True
+        deadline = time.monotonic() + 1.0
+        acked = False
+        while time.monotonic() < deadline:
+            if sock.bytesAvailable():
+                if bytes(sock.readAll().data()).strip() == b"ok":
+                    acked = True
                 break
-        if sock.state() != QtNetwork.QLocalSocket.LocalSocketState.ConnectedState:
-            break
-        QtCore.QCoreApplication.processEvents(QtCore.QEventLoop.ProcessEventsFlag.AllEvents, 20)
-        sock.waitForReadyRead(20)
+            if sock.state() != QtNetwork.QLocalSocket.LocalSocketState.ConnectedState:
+                break
+            msecs = max(1, min(50, int((deadline - time.monotonic()) * 1000)))
+            sock.waitForReadyRead(msecs)
 
-    sock.disconnectFromServer()
-    if sock.state() != QtNetwork.QLocalSocket.LocalSocketState.UnconnectedState:
-        sock.waitForDisconnected(200)
+        sock.disconnectFromServer()
+        if sock.state() != QtNetwork.QLocalSocket.LocalSocketState.UnconnectedState:
+            sock.waitForDisconnected(200)
+    finally:
+        guard.cancel()
     return acked
 
 
@@ -2599,8 +2634,11 @@ def main() -> int:
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(_TIP_QSS)
     app.setQuitOnLastWindowClosed(False)
-    if notify_existing_instance("show"):
-        say("[单实例] 已有一个 Noesia 在运行，窗口已唤回（本进程退出）")
+    if not claim_instance():
+        if notify_existing_instance("show"):
+            say("[单实例] 已有一个 Noesia 在运行，窗口已唤回（本进程退出）")
+        else:
+            say("[单实例] 已有一个 Noesia 在运行，但没响应唤回；本进程退出（只允许一个实例）")
         return 0
     _reap_browser_daemons()
 
