@@ -15,7 +15,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 from urllib.parse import unquote, urlparse
 
 import PySide6.QtCore as QtCore
@@ -4274,9 +4274,25 @@ class ChatPanel(QtWidgets.QWidget):
         （行高 17 加半像素这种），取整后最后一两像素滚不到。按 1px 判就永远
         判不到底，症状是胶囊不消失、新内容不跟随——桌面端用 0.5px 是因为
         浏览器里滚动值是精确的浮点值，这边不能照搬那个数。
+
+        文末动作条那截也算「到底」：按钮是这条消息的一部分（桌面端就占在气泡里），
+        文字见底就算到这条消息的底。不然文字一见底就被判「没到底」，动作条永远压在
+        折叠线下，要人再手动往下滚才露出来。
         """
         bar = self.view.verticalScrollBar()
-        return bar.value() >= bar.maximum() - 4
+        return bar.value() >= bar.maximum() - 4 - self._trailing_bar_px()
+
+    def _trailing_bar_px(self) -> int:
+        """文末动作条占的那截高（没有就是 0）。见 `_at_end`。
+
+        块的外接矩形不含段前段后距，要自己加上——动作条垫高主要就是那段后距。
+        """
+        block = self.view.document().lastBlock()
+        if not isinstance(block.userData(), _BarMark):
+            return 0
+        fmt = block.blockFormat()
+        height = self.view.document().documentLayout().blockBoundingRect(block).height()
+        return int(height + fmt.topMargin() + fmt.bottomMargin())
 
     def _text_selected(self) -> bool:
         """正文里有选中的字，且焦点还在正文上：这时候不许替人滚。
@@ -4325,6 +4341,8 @@ class ChatPanel(QtWidgets.QWidget):
 
         每次都按当下的视口算，不留旧坐标：窗口一变、正文一长，按旧高度摆出来的位置就悬在
         半空里了。桌面端那颗是 `bottom: calc(...)` 锚在底边的，怎么变都贴底，这里等价地重算。
+        每次滚动也要重摆：Qt 滚一下会把视口里的子件跟着内容拖走（消息条就是每 tick 重摆的），
+        不重摆就跟着滚动条上下跑，不在底边。
         """
         if self._jump is None:
             return
@@ -4511,12 +4529,16 @@ class ChatPanel(QtWidgets.QWidget):
         """滚动条动了：到底就锁回来，用户翻走才松手，排版自己挪的不算数。"""
         self._hide_hover()
         self._place_sticky()
+        self._place_jump()
         if self._self_scroll:
             return
         if self._resizing:
             return
         if self._at_end():
+            # 桌面端（use-stick-to-bottom）的语义是「滚回底部就重新钉住」，钉住就是钉到
+            # 真底：动作条那截要跟着露出来，不能钉在文字见底、按钮还压在折叠线下的位置。
             self._follow = True
+            self._scroll_to_end_later()
             self._hide_jump()
             return
         if not self._user_scroll:
@@ -6340,7 +6362,8 @@ class ChatPanel(QtWidgets.QWidget):
                 fresh = _PhotoMark(owner)
         elif isinstance(prev_mark, _CodeMark):
             fresh = _CodeMark()
-        slot.setUserData(fresh)
+        # 传 None 就是摘掉用户数据（Qt 文档：data 为 0 即移除）；PySide 的桩没把参数写成可空。
+        slot.setUserData(cast(QtGui.QTextBlockUserData, fresh))
 
     def stamp_user_row(self, row_id: int) -> None:
         """引擎回了这次提交的用户消息行号：重新生成/编辑重发靠它定位截断点。"""
@@ -6445,7 +6468,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._bar_buttons.extend(buttons)
         self._show_msg_bar(None)
         self._place_msg_bars()
-        if self._follow and not self._restoring:
+        if (self._follow or self._at_end()) and not self._restoring:
             self._scroll_to_end_later()
 
     def _bar_specs(self, msg: dict) -> list[tuple[str, str, Callable[[], None]]]:
