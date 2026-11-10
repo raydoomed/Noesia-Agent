@@ -150,6 +150,8 @@ QToolButton {
         self.setToolTip(tooltip)
         self.setAccessibleName(tooltip)
         if same:
+            self._reset.stop()
+            self._back_to_idle()
             return
         QtWidgets.QToolTip.hideText()
         self._reset.stop()
@@ -183,8 +185,8 @@ QToolButton {
         right = rect.right() - edge + offset_x
         x = max(0, min(right, parent.width() - self.BUTTON_PX))
         if below:
-            x = (max(0, rect.right() - edge + offset_x) if anchor_right
-                 else max(0, rect.left() + 2 + offset_x))
+            x = (max(0, min(rect.right() - edge + offset_x, parent.width() - self.BUTTON_PX)) if anchor_right
+                 else max(0, min(rect.left() + 2 + offset_x, parent.width() - self.BUTTON_PX)))
             y = min(rect.bottom() + 6, parent.height() - self.BUTTON_PX - 4)
         elif bottom_align:
             y = max(rect.top(), rect.bottom() - self.BUTTON_PX - margin)
@@ -198,7 +200,8 @@ QToolButton {
         super().enterEvent(event)
 
     def leaveEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
-        self._set_icon(self.IDLE_COLOR)
+        self._reset.stop()
+        self._back_to_idle()
         QtWidgets.QToolTip.hideText()
         super().leaveEvent(event)
 

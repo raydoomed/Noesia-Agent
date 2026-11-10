@@ -12,7 +12,7 @@ import re
 
 _RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{6,}"), "***"),
-    (re.compile(r"(?i)\b(bearer|basic)(\s+)[A-Za-z0-9._~+/=-]{12,}"), r"\1\2***"),
+    (re.compile(r"(?i)\b(bearer|basic)(\s+)(?=[A-Za-z0-9._~+/=-]{12,}(?![A-Za-z0-9._~+/=-]))(?=[A-Za-z0-9._~+/=-]*[0-9._~+/=-])[A-Za-z0-9._~+/=-]{12,}"), r"\1\2***"),
     (
         re.compile(
             r"(?i)(--(?:api[-_]?key|access[-_]?key|token|secret|password|passwd|auth)"

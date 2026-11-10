@@ -5743,10 +5743,15 @@ class ChatPanel(QtWidgets.QWidget):
         menu.setObjectName("modelmenu")
         menu.setStyleSheet(STYLE)
 
-        current = recorder.current()
-        current_guid = current.guid if current else ""
-
-        endpoints = recorder.devices()
+        try:
+            current = recorder.current()
+            current_guid = current.guid if current else ""
+            endpoints = recorder.devices()
+            chosen = recorder.chosen_guid()
+        except Exception as exc:
+            logger.warning("[语音] 读不了麦克风列表：%s", exc)
+            self.show_notice("voice-input", f"麦克风列表读不出来：{exc}", ttl_ms=5000, level="warn")
+            return
         group = QtGui.QActionGroup(menu)
         group.setExclusive(True)
         if not endpoints:
@@ -5766,7 +5771,7 @@ class ChatPanel(QtWidgets.QWidget):
         follow = menu.addAction("跟随系统默认")
         follow.setCheckable(True)
         follow.setActionGroup(group)
-        follow.setChecked(not recorder.chosen_guid())
+        follow.setChecked(not chosen)
         follow.triggered.connect(lambda _checked=False: self._choose_mic(""))
         menu.exec(self._mic_button.mapToGlobal(pos))
         menu.deleteLater()
@@ -5775,7 +5780,12 @@ class ChatPanel(QtWidgets.QWidget):
         recorder = self._recorder
         if recorder is None:
             return
-        recorder.choose(guid)
+        try:
+            recorder.choose(guid)
+        except Exception as exc:
+            logger.warning("[语音] 换不了麦克风：%s", exc)
+            self.show_notice("voice-input", f"麦克风换不了：{exc}", ttl_ms=5000, level="warn")
+            return
         if self._voice_prefs is not None:
             try:
                 self._voice_prefs.remember(guid)

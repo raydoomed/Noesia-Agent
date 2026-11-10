@@ -101,6 +101,7 @@ class ApprovalDialog(QtWidgets.QDialog):
             sub = QtWidgets.QLabel(desc, card)
             sub.setObjectName("desc")
             sub.setTextFormat(QtCore.Qt.TextFormat.PlainText)
+            sub.setWordWrap(True)
             lay.addWidget(sub)
 
         command_box = None

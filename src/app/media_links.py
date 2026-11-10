@@ -17,8 +17,8 @@ import os
 import re
 from pathlib import Path
 
-_MEDIA_LINE = re.compile(r"^\s*(?:[-*+]\s*)?`?(?:media:\s*)(?P<path>.+?)`?\s*$", re.IGNORECASE)
-_LEAD = re.compile(r"^\s*(?:[-*+]\s*)?`?(?P<rest>.*)$", re.IGNORECASE)
+_MEDIA_LINE = re.compile(r"^\s*(?:[-*+]\s*)?[`\"']?(?:media:\s*)(?P<path>.+?)[`\"']?\s*$", re.IGNORECASE)
+_LEAD = re.compile(r"^\s*(?:[-*+]\s*)?[`\"']?(?P<rest>.*)$", re.IGNORECASE)
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico", ".tif", ".tiff"})
 AUDIO_SUFFIXES = frozenset({".mp3", ".wav", ".ogg", ".m4a", ".flac", ".opus"})
 VIDEO_SUFFIXES = frozenset({".mp4", ".mov", ".webm", ".mkv", ".avi"})
@@ -32,7 +32,7 @@ def _clean(raw: str) -> str:
     if text.lower().startswith("file:///"):
         text = text[8:]
     elif text.lower().startswith("file://"):
-        text = text[7:]
+        text = "\\\\" + text[7:]
     return text.strip()
 
 

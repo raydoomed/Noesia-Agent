@@ -28,7 +28,7 @@ def looks_like_path(value: str) -> bool:
     )
 
 
-URL_PATTERN = re.compile(r"""https?://[^\s'"<>)\]]+""", re.IGNORECASE)
+URL_PATTERN = re.compile(r"""https?://[^\s'"<>)\]\u3000-\u303f\uff00-\uffef]+""", re.IGNORECASE)
 
 
 def find_first_url(*sources: Any) -> str:

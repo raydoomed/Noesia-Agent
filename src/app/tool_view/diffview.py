@@ -60,13 +60,18 @@ def diff_rows(text: str) -> list[tuple[str, str]]:
         return []
 
     rows: list[tuple[str, str]] = []
+    seen_hunk = False
     for line in text.splitlines():
-        stripped = line.rstrip("\r")
+        stripped = line.rstrip("\
+")
         if stripped.startswith("@@"):
+            seen_hunk = True
             rows.append((HUNK, stripped))
-        elif stripped.startswith("+++") or stripped.startswith("---"):
-            rows.append((META, stripped))
-        elif stripped.startswith(META_PREFIXES):
+        elif not seen_hunk and (
+            stripped.startswith("+++")
+            or stripped.startswith("---")
+            or stripped.startswith(META_PREFIXES)
+        ):
             rows.append((META, stripped))
         elif stripped.startswith("+"):
             rows.append((ADD, stripped))

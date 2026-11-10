@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 
 CSI_RE = re.compile(r"\x1b\[([\d;]*)([\x40-\x7e])")
-OTHER_ESCAPE_RE = re.compile(r"\x1b[@-Z\\-_]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+OTHER_ESCAPE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\\\)|\x1b\[(?![\d;]*m)[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\x1b[@-Z\\\\-_]")
 
 FG_BY_CODE = {
     30: "black",
@@ -36,7 +36,7 @@ FG_BY_CODE = {
 
 def has_ansi_codes(text: str) -> bool:
     """有转义才走解析，没转义就当普通字符串。"""
-    return "\x1b[" in text
+    return "\x1b[" in text or "\x1b]" in text
 
 
 def parse_ansi(text: str) -> list[tuple[str, bool, str | None]]:

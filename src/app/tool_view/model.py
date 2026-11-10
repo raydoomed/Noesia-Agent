@@ -138,6 +138,14 @@ def read_file_line_label(args: dict[str, Any], result: dict[str, Any]) -> str:
         if limit is None or limit <= 1:
             return f"L{_num(offset)}"
 
+        lines = [
+            int(match.group(1))
+            for match in (READ_FILE_LINE_RE.match(line) for line in content.split("\n"))
+            if match
+        ]
+        if lines:
+            start, end = min(lines), max(lines)
+            return f"L{start}" if start == end else f"L{start}-{end}"
         return f"L{_num(offset)}-{_num(offset + limit - 1)}"
 
     lines = [
@@ -723,9 +731,7 @@ def tool_error_text(part: ToolPart, result: dict[str, Any]) -> str:
     exit_code = number_value(result.get("exit_code"))
 
     if exit_code is not None and exit_code != 0:
-        has_output = bool(first_string_field(result, ["output", "stdout", "stderr", "output_preview"]))
-
-        return "" if has_output else f"Command failed with exit code {_num(exit_code)}."
+        return f"Command failed with exit code {_num(exit_code)}."
 
     return ""
 
@@ -1183,16 +1189,16 @@ def file_search_detail(part: ToolPart, result_record: dict[str, Any], limit: int
 
     counts = result_record.get("counts")
     if isinstance(counts, dict):
-        lines.extend(f"{path}  {count} 处" for path, count in counts.items())
+        lines.extend(tr("assistant.tool.details.matchCount", path, count) for path, count in counts.items())
 
     total = number_value(result_record.get("total_count"))
     if total is not None and total > len(lines):
-        lines.append(f"…共 {int(total)} 条" + ("（已截断）" if result_record.get("truncated") else ""))
+        lines.append(tr("assistant.tool.details.totalCount", int(total)) + (tr("assistant.tool.details.truncatedMark") if result_record.get("truncated") else ""))
 
     if not lines and part.result is not None and not any(
         first_string_field(result_record, [key]) for key in ("output", "stdout", "stderr", "content", "text", "message")
     ):
-        return "没有匹配文件"
+        return tr("assistant.tool.details.noMatches")
 
     return "\n".join(lines[:limit])
 

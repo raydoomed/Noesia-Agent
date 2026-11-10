@@ -96,17 +96,18 @@ def fill_menu(
     """
     menu.clear()
     groups = group_models(items)
-    if not any(group["provider"] for group in groups):
+    if not any(str(row.get("id") or "") for group in groups for row in group["items"]):
         menu.addAction("模型清单没取到，点下面的刷新重试").setEnabled(False)
         if on_refresh is not None:
             return _add_refresh_action(menu, on_refresh, refreshing)
         return None
     for group in groups:
-        if not group["provider"]:
+        if not group["provider"] and not any(str(row.get("id") or "") for row in group["items"]):
             continue
 
         count = len(group["items"])
-        title = f"{group['label']} · {count} 个模型" if group["available"] else f"{group['label']} · 还没配置"
+        label = group["label"] or "没接上后端"
+        title = f"{label} · {count} 个模型" if group["available"] else f"{label} · 还没配置"
         sub = menu.addMenu(title)
         sub.menuAction().setData(group["label"])
         sub.setObjectName("modelmenu")

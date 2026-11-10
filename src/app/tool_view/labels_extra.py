@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 _ENTRIES: dict[str, tuple[str, str, str, str, str, str]] = {
     "annotate_preview": ("已标注预览", "正在标注预览", "正在标注", "Annotated preview", "Annotating preview", "Annotating"),
     "close_terminal": ("已关闭终端标签", "正在关闭终端标签", "正在关闭", "Closed terminal tab", "Closing terminal tab", "Closing"),
@@ -65,4 +67,21 @@ def _flatten_entries() -> dict[str, dict[str, str]]:
     return extra
 
 
-EXTRA: dict[str, dict[str, str]] = _flatten_entries()
+EXTRA: dict[str, dict[str, Any]] = _flatten_entries()
+
+EXTRA["zh"].update(
+    {
+        "assistant.tool.details.matchCount": lambda path, count: f"{path}  {count} 处",
+        "assistant.tool.details.totalCount": lambda total: f"…共 {total} 条",
+        "assistant.tool.details.truncatedMark": "（已截断）",
+        "assistant.tool.details.noMatches": "没有匹配文件",
+    }
+)
+EXTRA["en"].update(
+    {
+        "assistant.tool.details.matchCount": lambda path, count: f"{path}  {count} matches",
+        "assistant.tool.details.totalCount": lambda total: f"…{total} in total",
+        "assistant.tool.details.truncatedMark": " (truncated)",
+        "assistant.tool.details.noMatches": "No matching files",
+    }
+)

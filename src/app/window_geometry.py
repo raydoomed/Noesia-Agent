@@ -99,7 +99,10 @@ def fit_width(
     height = clamped * aspect
     if max_height and height > max_height:
         height = float(max_height)
-        clamped = max(float(min_width), height / aspect)
+        clamped = height / aspect
+        if clamped < min_width:
+            clamped = float(min_width)
+            height = clamped * aspect
     return QtCore.QSize(max(1, round(clamped)), max(1, round(height)))
 
 
