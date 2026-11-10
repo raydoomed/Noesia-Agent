@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
+import threading
 import time
 from collections import Counter
 from pathlib import Path
@@ -158,9 +160,16 @@ def build(messages: list[str]) -> dict:
 def save(payload: dict, path: Path) -> None:
     """先写临时文件再改名：另一个进程随时可能来读，不能让它读到写了一半的内容。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp.replace(path)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(path)
+    except BaseException:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def vocab_path() -> Path:
@@ -251,14 +260,18 @@ def _trim_corpus() -> None:
     if len(texts) <= _MAX_CORPUS:
         return
     kept = texts[-_MAX_CORPUS:]
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        temp = path.with_name(path.name + ".tmp")
         temp.write_text(
             "".join(json.dumps({"t": t}, ensure_ascii=False) + "\n" for t in kept),
             encoding="utf-8",
         )
         temp.replace(path)
     except OSError:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
         logger.debug("[词表] 语料没裁掉", exc_info=True)
 
 

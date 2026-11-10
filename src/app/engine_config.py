@@ -151,12 +151,26 @@ def _prune_legacy(merged: dict[str, Any], defaults: dict[str, Any]) -> None:
 
 
 def _scalar(value: Any) -> str:
-    import yaml
+    """单行 JSON 字面量：YAML 双引号标量的子集，任何值都不折行。
 
-    text = yaml.safe_dump(value, default_flow_style=True, allow_unicode=True, sort_keys=False).strip()
-    if text.endswith("..."):
-        text = text[: -len("...")].strip()
-    return text or "''"
+    `yaml.safe_dump` 的 plain/单引号长值会按 80 列折行，续行固定缩进两格，跟深层键的缩进
+    平齐，YAML 解析器当成新条目（`ScannerError while scanning a simple key`），config.yaml
+    从此坏掉——而解析失败的设计是「不写盘」，配置会永久卡在坏状态。
+
+    nan/inf 不在 JSON 里，落回 `safe_dump` 的 `.nan`/`.inf` 写法（这些值很短，不触折行），
+    并剥掉返回值尾部的 `...` 文档结束标记——拼进 `key: <text>` 会截断文档，后面的键全部失效。
+    """
+    import json
+
+    try:
+        return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    except ValueError:
+        import yaml
+
+        text = yaml.safe_dump(value, default_flow_style=True, allow_unicode=True, sort_keys=False).strip()
+        if text.endswith("..."):
+            text = text[: -len("...")].strip()
+        return text or "''"
 
 
 def _render_section(

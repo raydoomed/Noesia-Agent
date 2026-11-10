@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import threading
 from pathlib import Path
 
 from app import env_keys
@@ -41,7 +43,16 @@ def _write(data: dict) -> None:
     """整份写回：`load()` 已经带上了不认识的键（比如 `image_asset`），这里不许筛。"""
     target = path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(target)
+    except BaseException:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def path() -> Path:
@@ -52,8 +63,7 @@ def load() -> dict:
     """读 avatar.json：没有就按模板写一份；有但缺键就报错，不拿代码默认值兜着。"""
     target = path()
     if not target.is_file():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(_TEMPLATE, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write(dict(_TEMPLATE))
         return dict(_TEMPLATE)
     try:
         stored = json.loads(target.read_text(encoding="utf-8"))

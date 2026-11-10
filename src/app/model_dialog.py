@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -2204,7 +2205,16 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         try:
             target = _soul_path()
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(text, encoding="utf-8", newline="")
+            temp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            try:
+                temp.write_text(text, encoding="utf-8", newline="")
+                temp.replace(target)
+            except BaseException:
+                try:
+                    temp.unlink()
+                except OSError:
+                    pass
+                raise
         except Exception as exc:  # noqa: BLE001
             self._soul_hint.setStyleSheet(self.FAIL_STYLE)
             self._soul_hint.setText(f"写不进去：{exc}")
@@ -2399,9 +2409,16 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                     continue
                 path = _memory_file(name)
                 path.parent.mkdir(parents=True, exist_ok=True)
-                temp = path.with_name(path.name + ".tmp")
-                temp.write_text(text, encoding="utf-8", newline="")
-                temp.replace(path)
+                temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+                try:
+                    temp.write_text(text, encoding="utf-8", newline="")
+                    temp.replace(path)
+                except BaseException:
+                    try:
+                        temp.unlink()
+                    except OSError:
+                        pass
+                    raise
             if (user_limit, memory_limit) != self._limits_at_open:
                 set_engine_config(
                     ROOT / SETTINGS.engine.core_path,

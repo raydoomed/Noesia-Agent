@@ -56,25 +56,25 @@ def read(key: str) -> str:
 
 
 def write(key: str, value: str) -> None:
-    """只改 `.env` 里这一个变量那一行，别的行原样留着。"""
+    """只改 `.env` 里这一个变量那一行，别的行按字节原样留着（不转码、不追加不删除）。"""
 
     value = value.strip()
     env = env_file()
     env.parent.mkdir(parents=True, exist_ok=True)
-    lines = env.read_text(encoding="utf-8", errors="replace").splitlines() if env.is_file() else []
-    kept = []
+    lines = env.read_bytes().splitlines() if env.is_file() else []
+    kept: list[bytes] = []
     for line in lines:
-        entry = line.strip()
+        entry = line.decode("utf-8", "replace").strip()
         probe = entry[len("export "):] if entry.startswith("export ") else entry
         name, sep, _old = probe.partition("=")
         if sep and name.strip() == key:
             continue
         kept.append(line)
-    kept.append(f"{key}={value}")
-    body = "\n".join(kept) + "\n"
+    kept.append(f"{key}={value}".encode("utf-8"))
+    body = b"\n".join(kept) + b"\n"
     tmp = env.with_name(f".{env.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(body, encoding="utf-8")
+        tmp.write_bytes(body)
         os.replace(tmp, env)
     except BaseException:
         try:

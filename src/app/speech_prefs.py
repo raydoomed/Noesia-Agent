@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -79,8 +81,7 @@ def load() -> dict:
     """读 speech.json：没有就按模板写全一份；有但缺键就报错，不静默兜底。"""
     target = path()
     if not target.is_file():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(_TEMPLATE, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write(json.loads(json.dumps(_TEMPLATE)))
         return json.loads(json.dumps(_TEMPLATE))
     try:
         stored = json.loads(target.read_text(encoding="utf-8"))
@@ -101,6 +102,9 @@ def load() -> dict:
     return data
 
 
+_SAVE_LOCK = threading.Lock()
+
+
 def _write(data: dict) -> None:
     """整份落盘：先写临时文件再改名。
 
@@ -109,9 +113,16 @@ def _write(data: dict) -> None:
     """
     target = path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(target.name + ".tmp")
-    temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temp.replace(target)
+    temp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(target)
+    except BaseException:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def save(**changes) -> dict:
@@ -125,39 +136,40 @@ def save(**changes) -> dict:
                 "这把 Key 里有中文或空格以外的非英文字符，多半是复制时把说明文字带上了；"
                 "只粘 sk-… 这一串"
             )
-    data = load()
-    for key in ("model_id", "voice_id", "voice_name"):
-        if key in changes and not str(changes[key] or "").strip():
-            changes.pop(key)
-    if "model_id" in changes and (changes.get("provider") or data.get("provider")) == "doubao":
-        known = doubao_voices.resources()
-        if str(changes["model_id"]).strip() not in known:
-            raise ConfigError(
-                f"豆包的资源 id 不认识：{changes['model_id']}；"
-                f"能填的是 {'、'.join(sorted(known))}（换资源时先在控制台开通）"
+    with _SAVE_LOCK:
+        data = load()
+        for key in ("model_id", "voice_id", "voice_name"):
+            if key in changes and not str(changes[key] or "").strip():
+                changes.pop(key)
+        if "model_id" in changes and (changes.get("provider") or data.get("provider")) == "doubao":
+            known = doubao_voices.resources()
+            if str(changes["model_id"]).strip() not in known:
+                raise ConfigError(
+                    f"豆包的资源 id 不认识：{changes['model_id']}；"
+                    f"能填的是 {'、'.join(sorted(known))}（换资源时先在控制台开通）"
+                )
+        old_provider = str(data.get("provider") or "edge")
+        history = dict(data.get("voice_history") or {})
+        if data.get("voice_id"):
+            history[old_provider] = {"id": data["voice_id"], "name": data.get("voice_name") or ""}
+        data.update({key: value for key, value in changes.items() if key in _TEMPLATE})
+        provider = data.get("provider") or "edge"
+        models = dict(data.get("model_history") or {})
+        if "model_id" in changes:
+            models[provider] = str(data.get("model_id") or "").strip()
+        elif "provider" in changes:
+            data["model_id"] = models.get(provider) or (
+                doubao_voices.default_resource() if provider == "doubao" else _TEMPLATE["model_id"]
             )
-    old_provider = str(data.get("provider") or "edge")
-    history = dict(data.get("voice_history") or {})
-    if data.get("voice_id"):
-        history[old_provider] = {"id": data["voice_id"], "name": data.get("voice_name") or ""}
-    data.update({key: value for key, value in changes.items() if key in _TEMPLATE})
-    provider = data.get("provider") or "edge"
-    models = dict(data.get("model_history") or {})
-    if "model_id" in changes:
-        models[provider] = str(data.get("model_id") or "").strip()
-    elif "provider" in changes:
-        data["model_id"] = models.get(provider) or (
-            doubao_voices.default_resource() if provider == "doubao" else _TEMPLATE["model_id"]
-        )
-    data["model_history"] = models
-    if "provider" in changes and "voice_id" not in changes:
-        picked = history.get(provider) or {}
-        data["voice_id"] = str(picked.get("id") or "")
-        data["voice_name"] = str(picked.get("name") or "")
-    if data.get("voice_id"):
-        history[provider] = {"id": data["voice_id"], "name": data.get("voice_name") or ""}
-    data["voice_history"] = history
-    _write(data)
+        data["model_history"] = models
+        if "provider" in changes and "voice_id" not in changes:
+            picked = history.get(provider) or {}
+            data["voice_id"] = str(picked.get("id") or "")
+            data["voice_name"] = str(picked.get("name") or "")
+        if data.get("voice_id"):
+            history[provider] = {"id": data["voice_id"], "name": data.get("voice_name") or ""}
+        data["voice_history"] = history
+        _write(data)
     if typed_key is not None:
         write_api_key(str(typed_key), provider)
     return data
@@ -170,11 +182,12 @@ def remember_voice(provider: str, voice_id: str, voice_name: str = "") -> None:
     """
     if not provider or not voice_id:
         return
-    data = load()
-    history = dict(data.get("voice_history") or {})
-    history[provider] = {"id": voice_id, "name": voice_name or ""}
-    data["voice_history"] = history
-    _write(data)
+    with _SAVE_LOCK:
+        data = load()
+        history = dict(data.get("voice_history") or {})
+        history[provider] = {"id": voice_id, "name": voice_name or ""}
+        data["voice_history"] = history
+        _write(data)
 
 
 def _doubao_model_id(value) -> str:
