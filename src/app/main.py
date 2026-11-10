@@ -18,7 +18,6 @@ import time
 import math
 import sys
 from pathlib import Path
-from typing import cast
 
 from paths import project_root, repo_root
 
@@ -38,6 +37,7 @@ QMenu {
     font-size: 12px;
 }
 QMenu::item { padding: 7px 26px 7px 12px; border-radius: 6px; }
+QMenu::item:disabled { color: rgba(236, 230, 239, 90); }
 QMenu::item:selected { background-color: rgba(240, 178, 210, 52); color: #ffffff; }
 QMenu::separator { height: 1px; background: rgba(255, 255, 255, 20); margin: 5px 10px; }
 """
@@ -284,6 +284,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._reasoning_fresh = False
         self._reasoning_wire = ""
         self._boot_done = False
+        self._revealed = False
         self.boot_splash = None
         self._history_asked = False
         self._restore_geometry()
@@ -416,6 +417,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._toggle_action = menu.addAction("隐藏")
         self._toggle_action.triggered.connect(self.toggle_visible)
         menu.addAction("退出 Noesia Agent", QtWidgets.QApplication.quit)
+        menu.aboutToShow.connect(self._sync_toggle_text)
         tray.setContextMenu(menu)
         tray.activated.connect(self._on_tray_activated)
         tray.show()
@@ -435,6 +437,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     def _sync_toggle_text(self) -> None:
         if self._toggle_action is not None:
             self._toggle_action.setText("隐藏" if self.isVisible() else "显示")
+            self._toggle_action.setEnabled(bool(getattr(self, "_revealed", True)))
 
     def _on_tray_activated(self, reason) -> None:  # noqa: ANN001
         if reason in (
@@ -448,7 +451,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         menu = QtWidgets.QMenu(self)
         menu.setStyleSheet(_MENU_QSS)
         menu.addAction("聊天", self.open_chat)
-        menu.addAction("隐藏" if self.isVisible() else "显示", self.toggle_visible)
+        toggle = menu.addAction("隐藏" if self.isVisible() else "显示", self.toggle_visible)
+        toggle.setEnabled(bool(getattr(self, "_revealed", True)))
         menu.addAction("恢复默认大小", self.reset_size)
         menu.addSeparator()
         menu.addAction("重新认识一次（跑一遍起名）", self.restart_onboarding)
@@ -1346,6 +1350,16 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._pending_notices.append(("boot", text, "note"))
         self.finish_boot()
 
+    def show(self) -> None:
+        """启动画面（含收尾动画）没走完时人物窗口不露脸；唤回请求只把启动画面提到前面。"""
+        if not getattr(self, "_revealed", True):
+            splash = getattr(self, "boot_splash", None)
+            if splash is not None:
+                splash.raise_()
+                splash.activateWindow()
+            return
+        super().show()
+
     def finish_boot(self) -> None:
         """加载完成：收起动画、露出人物窗口——之后点开聊天窗就是即时的。
 
@@ -1355,12 +1369,14 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return
         self._boot_done = True
         splash = getattr(self, "boot_splash", None)
-        self.boot_splash = None
         if splash is None:
+            self._revealed = True
             self.show()
             return
 
         def reveal() -> None:
+            self.boot_splash = None
+            self._revealed = True
             splash.close()
             splash.deleteLater()
             self.show()
@@ -2243,9 +2259,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     ok, note = False, f"接管出错：{exc}"
                 QtCore.QMetaObject.invokeMethod(
                     self,
-                    # 运行时只收 str（传 bytes 直接 TypeError），PySide 自带的桩沿旧签名把 member
-                    # 写成了 bytes；cast 只是让检查器闭嘴，运行时零变化。
-                    cast(bytes, "_finish_takeover"),
+                    "_finish_takeover",
                     QtCore.Qt.ConnectionType.QueuedConnection,
                     QtCore.Q_ARG(bool, ok),
                     QtCore.Q_ARG(str, note),
@@ -2533,10 +2547,13 @@ def start_instance_server(window) -> QtNetwork.QLocalServer | None:  # noqa: ANN
                 return
             if raw == "show":
                 window.show()
-                window.raise_()
-                window.activateWindow()
-                window._sync_toggle_text()
-                say("[单实例] 收到 show，窗口已唤回")
+                if getattr(window, "_revealed", True):
+                    window.raise_()
+                    window.activateWindow()
+                    window._sync_toggle_text()
+                    say("[单实例] 收到 show，窗口已唤回")
+                else:
+                    say("[单实例] 收到 show（还在启动，只把启动画面提到前面）")
             elif raw == "quit":
                 QtWidgets.QApplication.quit()
             else:

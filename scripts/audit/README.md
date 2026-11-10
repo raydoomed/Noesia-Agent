@@ -3,7 +3,7 @@
 `AUDIT.md` 里每一格判定都要能复算。这里是本轮审计用到的**本项目自写**探针，路径全部相对仓库根定位，输出不带时间戳，跑出来的行可以直接和 `AUDIT.md` 的证据表对（`AUDIT.md` / `BACKLOG.md` 在仓库根、已在 `.gitignore` 里，不入库）。
 
 ```bash
-cd "D:/AI project/hermes/projects/noesia"
+cd <仓库根目录>
 unset PYTHONPATH          # Hermes 宿主会把自身 site-packages 塞进 PYTHONPATH，先清掉
 P=.venv/Scripts/python.exe
 export QT_QPA_PLATFORM=offscreen
