@@ -1585,6 +1585,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._md_block: list[str] = []
         self._para_break = False
         self._md_fence = False
+        self._md_math = False
         self._media_roots: tuple = ()
         self._photos: dict[str, QtGui.QPixmap] = {}
         self._photo_keys: dict[str, str] = {}
@@ -2068,6 +2069,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._reasoning_pending = ""
         self._md_block = []
         self._md_fence = False
+        self._md_math = False
         self._para_break = False
         self._reason_fold = None
 
@@ -2417,11 +2419,13 @@ class ChatPanel(QtWidgets.QWidget):
         stripped = data.strip()
         hold_partial = (
             self._md_fence
+            or self._md_math
             or (not self._md_block and "```".startswith(stripped))
             or data.count("**") % 2
             or data.rstrip().endswith("*")
             or data.count("`") % 2
             or _open_link(data)
+            or markdown_render.math_incomplete(data)
             or markdown_render.is_structural_prefix(data)
         )
         if (
@@ -2460,6 +2464,22 @@ class ChatPanel(QtWidgets.QWidget):
         if self._md_fence:
             self._md_block.append(line)
             return
+        if self._md_math:
+            self._md_block.append(line)
+            if markdown_render.math_fence_closes(line):
+                self._md_math = False
+                self._flush_md()
+            return
+        if markdown_render.is_math_fence(line):
+            self._flush_md()
+            self._md_block.append(line)
+            self._md_math = True
+            return
+        if markdown_render.is_math_line(line):
+            self._flush_md()
+            self._md_block.append(line)
+            self._flush_md()
+            return
         if not line.strip():
             self._flush_md()
             self._break_paragraph()
@@ -2489,6 +2509,7 @@ class ChatPanel(QtWidgets.QWidget):
         text = "\n".join(self._md_block).strip("\n")
         self._md_block = []
         self._md_fence = False
+        self._md_math = False
         if not text.strip():
             return
         self._bubble_has_text = True
@@ -2581,12 +2602,14 @@ class ChatPanel(QtWidgets.QWidget):
             logger.warning("正文图片落地时出错：%s", url, exc_info=True)
 
     def _adopt_images(self, markup: str) -> str:
-        """把正文里的网络图片换成文档资源名。
+        """把正文里的图片备好资源：网络图换成文档资源名，公式图注册好 PNG。
 
         Qt 的富文本不会去下载 `http(s)` 的图，直接插 `<img src="https://…">` 只剩一块空白；
         换成注册过的资源名，取回来以后才画得出来。被流式切开的那种半截网址到这里已经完整
-        （`_open_link` 会压到括号到齐才放行）。
+        （`_open_link` 会压到括号到齐才放行）。公式图（`noesia-math://`）是本地渲好的 PNG，
+        插之前注册进文档资源，`<img>` 才有东西可画。
         """
+        self._register_math_images(markup)
         if "http" not in markup:
             return markup
         try:
@@ -2594,6 +2617,19 @@ class ChatPanel(QtWidgets.QWidget):
         except Exception:
             logger.warning("正文图片处理失败，按原文插入", exc_info=True)
             return markup
+
+    def _register_math_images(self, markup: str) -> None:
+        """公式图注册进 QTextDocument 文档资源；同名重复注册只是覆盖，没有副作用。"""
+        if "noesia-math:" not in markup:
+            return
+        for src in re.findall(r'src="(noesia-math://[^"]+)"', markup):
+            pixmap = QtGui.QPixmap()
+            pixmap.loadFromData(markdown_render.math_png(src))
+            self.view.document().addResource(
+                QtGui.QTextDocument.ResourceType.ImageResource,
+                QtCore.QUrl(src),
+                pixmap,
+            )
 
     def _swap_image_sources(self, markup: str) -> str:
         marker = 'src="'

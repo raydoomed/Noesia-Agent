@@ -19,6 +19,10 @@ dependencies = [
     # 代码高亮 / 浏览器守护进程清理：缺了会降级（纯文本、跳过清理），但都在用，如实声明
     "pygments>=2",
     "psutil>=5",
+    # 公式渲染（app/markdown_render.py）：$…$ / $$…$$ 用 matplotlib 的 mathtext 渲成图——
+    # Qt 没有 JS 环境，桌面端那套 KaTeX 用不了。镜像源可能还没收录 py3.14 的轮子，
+    # 装不上就加 `-i https://pypi.org/simple`（跟 edge-tts 同款）。
+    "matplotlib>=3.10",
     # 引擎侧（src/engine）用：`make serve`、干净房间体检、跑起来的那条命令行都会 import 它们。
     # 外壳本身不 import，但这是同一个项目的一份依赖表，删了就装不出能跑的树。
     "pydantic>=2",
