@@ -365,8 +365,9 @@ def set_engine_config(core_path: Path, home: Path, values: dict[str, Any]) -> bo
     if not isinstance(disk, dict):
         raise ValueError(f"{config_path} 顶层不是键值表，暂停写入以免覆盖你的配置")
 
+    nested: dict[str, Any] = {}
     for dotted, value in values.items():
-        node: dict[str, Any] = disk
+        node = nested
         parts = dotted.split(".")
         for part in parts[:-1]:
             child = node.get(part)
@@ -377,7 +378,6 @@ def set_engine_config(core_path: Path, home: Path, values: dict[str, Any]) -> bo
         node[parts[-1]] = value
 
     home.mkdir(parents=True, exist_ok=True)
-    _atomic_write(config_path, yaml.safe_dump(disk, allow_unicode=True, sort_keys=False))
-    changed = sync_engine_config(core_path, home)
+    changed = sync_engine_config(core_path, home, overrides=nested)
     logger.info("已写入引擎配置：%s", ", ".join(values))
     return changed

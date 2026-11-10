@@ -473,6 +473,7 @@ def _restore_math(markup: str, holders: dict[str, tuple[str, bool]]) -> str:
 
 
 _PNG_BYTES: dict[str, bytes] = {}
+_PNG_CACHE_MAX = 512
 
 _MATH_ALIAS = (
     ("\\dfrac", "\\frac"),
@@ -587,6 +588,9 @@ def _math_png(tex: str, display: bool) -> tuple[str, bytes, int, int]:
     data = _transparent_png(buffer.getvalue())
     width, height = struct.unpack(">II", data[16:24])
     src = MATH_SRC + hashlib.sha1(f"{display}|{tex}".encode("utf-8")).hexdigest()[:12]
+    if len(_PNG_BYTES) >= _PNG_CACHE_MAX:
+        for stale in list(_PNG_BYTES)[: _PNG_CACHE_MAX // 4]:
+            _PNG_BYTES.pop(stale, None)
     _PNG_BYTES[src] = data
     return src, data, width // 2, height // 2
 

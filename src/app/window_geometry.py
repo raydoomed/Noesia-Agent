@@ -206,11 +206,19 @@ def hit_region(image: QtGui.QImage, size: QtCore.QSize, step: int = 6,
     scaled = image.scaled(size, QtCore.Qt.AspectRatioMode.IgnoreAspectRatio, QtCore.Qt.TransformationMode.FastTransformation)
     if scaled.format() != QtGui.QImage.Format.Format_Alpha8:
         scaled = scaled.convertToFormat(QtGui.QImage.Format.Format_Alpha8)
-    region = QtGui.QRegion()
+    rects: list[QtCore.QRect] = []
     for y in range(0, scaled.height(), step):
-        for x in range(0, scaled.width(), step):
-            if scaled.pixelColor(x, y).alpha() > alpha_min:
-                region = region.united(QtGui.QRegion(x, y, step, step))
+        run_start = -1
+        for x in range(0, scaled.width() + step, step):
+            on = x < scaled.width() and scaled.pixelColor(x, y).alpha() > alpha_min
+            if on and run_start < 0:
+                run_start = x
+            elif not on and run_start >= 0:
+                rects.append(QtCore.QRect(run_start, y, x - run_start, step))
+                run_start = -1
+    region = QtGui.QRegion()
+    for rect in rects:
+        region = region.united(QtGui.QRegion(rect))
     for dx, dy in ((step, 0), (-step, 0), (0, step), (0, -step)):
         region = region.united(region.translated(dx, dy))
     return region

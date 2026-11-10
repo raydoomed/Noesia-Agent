@@ -126,10 +126,12 @@ def _enumerator():
     """新建一个 IMMDeviceEnumerator。调用者负责释放。"""
     _com_ready()
     enumerator = c_void_p()
-    _ole32.CoCreateInstance(
+    hr = _ole32.CoCreateInstance(
         byref(_guid(CLSID_MMDeviceEnumerator)), None, CLSCTX_ALL,
         byref(_guid(IID_IMMDeviceEnumerator)), byref(enumerator),
     )
+    if hr != 0 or not enumerator:
+        raise OSError(f"创建音频枚举器失败：0x{hr & 0xFFFFFFFF:08X}")
     return enumerator
 
 
@@ -187,8 +189,10 @@ def _endpoints(flow: int, *, states: int = DEVICE_STATE_ACTIVE) -> list[Endpoint
 
 def _describe(device) -> Endpoint:
     device_id = c_wchar_p()
-    if _call(device, 5, ctypes.c_long, POINTER(c_wchar_p))(device, byref(device_id)) != 0:
-        device_id = c_wchar_p("")
+    hr = _call(device, 5, ctypes.c_long, POINTER(c_wchar_p))(device, byref(device_id))
+    guid = device_id.value or ""
+    if hr == 0 and device_id:
+        _ole32.CoTaskMemFree(device_id)
     state = ctypes.c_uint()
     _call(device, 6, ctypes.c_long, POINTER(ctypes.c_uint))(device, byref(state))
 
@@ -203,7 +207,7 @@ def _describe(device) -> Endpoint:
             _release(store)
 
     return Endpoint(
-        guid=device_id.value or "",
+        guid=guid,
         name=name or "未命名设备",
         state=state.value,
         bluetooth=enumerator.upper() in _BLUETOOTH_ENUMERATORS,

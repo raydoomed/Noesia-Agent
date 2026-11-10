@@ -145,6 +145,8 @@ class ToolScroll(QtWidgets.QTextBrowser):
     def fit(self, width: int) -> int:
         """定宽、按内容定高（封顶），返回最终高度。"""
         text_width = max(1, width - PAD_H * 2 - 2)
+        if self._narrowed:
+            text_width = max(1, text_width - 6)
         if text_width != self._text_width:
             self._text_width = text_width
             self.setFixedWidth(max(1, width))
@@ -152,7 +154,7 @@ class ToolScroll(QtWidgets.QTextBrowser):
         height = int(self.document().size().height()) + PAD_V * 2 + 2
         if height > MAX_HEIGHT and not self._narrowed:
             self._narrowed = True
-            self._text_width = max(1, text_width - 6)
+            self._text_width = max(1, self._text_width - 6)
             self.document().setTextWidth(self._text_width)
             height = int(self.document().size().height()) + PAD_V * 2 + 2
         self.setFixedHeight(min(height, MAX_HEIGHT))

@@ -22,6 +22,7 @@ CREATE_NO_WINDOW = 0x08000000
 PROCESS_TERMINATE = 0x0001
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SYNCHRONIZE = 0x00100000
+ERROR_ACCESS_DENIED = 5
 STILL_ACTIVE = 259
 KEY_EVENT = 0x0001
 LEFT_CTRL_PRESSED = 0x0008
@@ -101,7 +102,7 @@ def process_alive(pid: int) -> bool:
     kernel32 = _kernel32()
     handle = kernel32.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
-        return False
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
     try:
         code = ctypes.c_ulong()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
@@ -327,6 +328,7 @@ def _press_within(pid: int, budget: float) -> bool:
     worker.join(budget)
     if worker.is_alive():
         logger.warning("按 Ctrl+C 超过 %.1f 秒没回来（pid %s），不等它了", budget, pid)
+        _kernel32().FreeConsole()
         return False
     return bool(outcome and outcome[0])
 

@@ -1698,7 +1698,11 @@ class ChatPanel(QtWidgets.QWidget):
         bar.sliderMoved.connect(self._user_scroll_now)
         bar.actionTriggered.connect(self._user_scroll_now)
         bar.rangeChanged.connect(self._range_changed)
-        self.view.document().contentsChanged.connect(self._sync_elements)
+        self._sync_timer = QtCore.QTimer(self)
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(50)
+        self._sync_timer.timeout.connect(self._sync_elements)
+        self.view.document().contentsChanged.connect(self._sync_timer.start)
         bar.valueChanged.connect(lambda _value: self._place_msg_bars())
         bar.rangeChanged.connect(lambda *_args: QtCore.QTimer.singleShot(0, self._place_msg_bars))
 

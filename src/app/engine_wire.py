@@ -506,6 +506,9 @@ class _EngineProcess(QtCore.QObject):
         self._lock = threading.Lock()
         self._env: dict[str, str] | None = None
         self._cwd: str | None = None
+        self._gen = 0
+        self._out_thread: threading.Thread | None = None
+        self._err_thread: threading.Thread | None = None
 
     def reset_buffers(self) -> None:
         """把管道上攒着没读的字节扔掉：换一趟引擎进程时，旧字节会和新的第一帧粘一起。"""
@@ -546,9 +549,12 @@ class _EngineProcess(QtCore.QObject):
             self._proc = None
             self.errorOccurred.emit(str(exc))
             return
-        threading.Thread(target=self._pump, args=(self._proc.stdout, True), daemon=True).start()
-        threading.Thread(target=self._pump, args=(self._proc.stderr, False), daemon=True).start()
-        threading.Thread(target=self._watch, daemon=True).start()
+        self._gen += 1
+        self._out_thread = threading.Thread(target=self._pump, args=(self._proc.stdout, True), daemon=True)
+        self._err_thread = threading.Thread(target=self._pump, args=(self._proc.stderr, False), daemon=True)
+        self._out_thread.start()
+        self._err_thread.start()
+        threading.Thread(target=self._watch, args=(self._gen,), daemon=True).start()
 
     def _pump(self, stream, is_out: bool) -> None:
         """把管道里的字节攒起来并发信号——读的动作在后台线程，界面线程只管取。"""
@@ -569,11 +575,16 @@ class _EngineProcess(QtCore.QObject):
             else:
                 self.readyReadStandardError.emit()
 
-    def _watch(self) -> None:
+    def _watch(self, gen: int) -> None:
         proc = self._proc
         if proc is None:
             return
         code = proc.wait()
+        for thread in (self._out_thread, self._err_thread):
+            if thread is not None:
+                thread.join(timeout=2)
+        if gen != self._gen:
+            return
         self.finished.emit(code, 0)
 
 

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 PYGMENTS_STYLE = "one-dark"
 
 _LEXER_CACHE: dict[str, "Lexer | None"] = {}
+_LEXER_CACHE_MAX = 128
 _COLOR_CACHE: dict | None = None
 
 
@@ -47,6 +48,8 @@ def _lexer_for(path: str | None) -> "Lexer | None":
     except Exception:
         lexer = None
 
+    if len(_LEXER_CACHE) >= _LEXER_CACHE_MAX:
+        _LEXER_CACHE.clear()
     _LEXER_CACHE[name] = lexer
     return lexer
 

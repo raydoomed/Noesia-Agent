@@ -253,12 +253,9 @@ class Speaker(QtCore.QObject):
     def _on_failed(self, seq: int, message: str) -> None:
         if seq != self._seq:
             return
-        was_announced = self._announced
         self._active = False
         self._playback.stop()
-        if was_announced:
-            self.finished.emit()
-            return
+        self.stopped.emit()
         self.failed.emit(message)
 
     def _on_progress(self, position: int, duration: int) -> None:

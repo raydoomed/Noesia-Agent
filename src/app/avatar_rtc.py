@@ -403,6 +403,7 @@ class AvatarRtc(QtCore.QObject):
             self._warm_seq += 1
             self._state = "idle"
         self._send_run.clear()
+        self.ended.emit()
         self.failed.emit(message)
 
     @property
@@ -522,7 +523,10 @@ class AvatarRtc(QtCore.QObject):
             session = self._session
             if session is None:
                 break
-            frame = self._queue.popleft() if self._queue else self._silence
+            try:
+                frame = self._queue.popleft()
+            except IndexError:
+                frame = self._silence
             try:
                 session.push_frame(frame)
             except Exception as exc:  # noqa: BLE001

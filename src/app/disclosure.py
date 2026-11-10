@@ -93,7 +93,6 @@ class Folds:
         self._gap = gap
         self._host = host
         self._items: dict[int, Fold] = {}
-        self._marks: list[_BodyMark] = []
         self._seq = 0
         self._uid = 0
 
@@ -112,7 +111,6 @@ class Folds:
                 fold.scroll.deleteLater()
                 fold.scroll = None
         self._items.clear()
-        self._marks.clear()
 
     def drop_invalid(self) -> None:
         """文档被截断后，把已经不在文档里的段丢出登记表。
@@ -125,7 +123,11 @@ class Folds:
             for key, fold in self._items.items()
             if fold.head_block is None or not fold.head_block.isValid()
         ]:
-            self._items.pop(key, None)
+            fold = self._items.pop(key, None)
+            if fold is not None and fold.scroll is not None:
+                fold.scroll.setParent(None)
+                fold.scroll.deleteLater()
+                fold.scroll = None
 
     def owns(self, pos: int) -> bool:
         """这个位置是不是落在某个折叠段的正文里（抬头不算）。"""
@@ -343,9 +345,7 @@ class Folds:
 
     def _mark(self, fold: Fold) -> _BodyMark:
         self._uid += 1
-        mark = _BodyMark(fold.key, self._uid)
-        self._marks.append(mark)
-        return mark
+        return _BodyMark(fold.key, self._uid)
 
     def _block_of(self, mark: _BodyMark) -> QtGui.QTextBlock | None:
         block = self._doc.begin()

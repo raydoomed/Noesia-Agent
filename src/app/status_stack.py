@@ -183,6 +183,12 @@ class StatusStack(QtWidgets.QFrame):
             session_id = str(row.get("session_id") or "")
             widget = self._bg_row(row)
             self._bg_box.addWidget(widget)
+            if not session_id:
+                continue
+            stale = self._bg_rows.get(session_id)
+            if stale is not None:
+                stale.hide()
+                stale.deleteLater()
             self._bg_rows[session_id] = widget
         for key in [key for key in self._bg_linger if key not in self._bg_rows]:
             self._bg_linger.pop(key).deleteLater()

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import re
 import subprocess
 import sys
@@ -22,6 +23,8 @@ import time
 import urllib.error
 import urllib.request
 from typing import Iterator
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -193,6 +196,8 @@ def _stream_edge(text: str, chosen: dict) -> Iterator[bytes]:
 
         try:
             asyncio.run(run())
+        except Exception:
+            logger.exception("[朗读] 合成流出错")
         finally:
             stop.set()
             try:

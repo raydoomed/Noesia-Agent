@@ -188,7 +188,8 @@ class StreamSpeaker(QtCore.QObject):
         if not self._announced:
             self._announced = True
             self.started.emit(self._text)
-        self._pending.append(pcm)
+        if self._play_local:
+            self._pending.append(pcm)
         self._total_bytes += len(pcm)
         if self._on_chunk is not None:
             self._forward(pcm)
