@@ -18,6 +18,7 @@ import time
 import math
 import sys
 from pathlib import Path
+from typing import cast
 
 from paths import project_root, repo_root
 
@@ -622,7 +623,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 elif dialog.saved_tab() == ModelDialog.TAB_SOUL:
                     self.chat_panel.show_notice("soul", "人设没有改动，还是原来那份。", ttl_ms=CONFIRM_TTL_MS)
             if "memory" in pages and self.chat_panel is not None and dialog.memory_changed():
-                self.chat_panel.show_notice("memory", "记忆已保存——新建会话才带进上下文。", ttl_ms=CONFIRM_TTL_MS)
+                self.chat_panel.show_notice("memory", dialog.memory_notice(), ttl_ms=CONFIRM_TTL_MS)
             if "workspace" in pages and self.client is not None:
                 target = dialog.saved_workspace()
                 if target.strip() and not same_workspace(getattr(self.client, "workspace", None), target):
@@ -2235,7 +2236,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     ok, note = False, f"接管出错：{exc}"
                 QtCore.QMetaObject.invokeMethod(
                     self,
-                    "_finish_takeover",
+                    # 运行时只收 str（传 bytes 直接 TypeError），PySide 自带的桩沿旧签名把 member
+                    # 写成了 bytes；cast 只是让检查器闭嘴，运行时零变化。
+                    cast(bytes, "_finish_takeover"),
                     QtCore.Qt.ConnectionType.QueuedConnection,
                     QtCore.Q_ARG(bool, ok),
                     QtCore.Q_ARG(str, note),

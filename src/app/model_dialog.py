@@ -2360,9 +2360,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._memory_hint.setText("；".join(parts) + tail)
 
     def _save_memory_only(self) -> str:
-        """只改记忆：上限写进引擎配置，两份记忆文件整份写回，别的页一个字节都不动。"""
+        """只改记忆：上限写进引擎配置，两份记忆文件只写真改了的那份，别的页一个字节都不动。"""
         from app.engine_config import set_engine_config
 
+        self._memory_labels: list[str] = []
         if self._memory_snapshot() == self._initial["memory"]:
             self._memory_changed = False
             self._mark_saved("memory")
@@ -2380,8 +2381,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             ("USER.md", self._user_edit.toPlainText(), user_limit, "用户画像"),
             ("MEMORY.md", self._note_edit.toPlainText(), memory_limit, "记忆"),
         )
-        prepared: list[tuple[str, str]] = []
-        for name, raw, limit, label in plan:
+        prepared: list[tuple[str, str, str, str]] = []
+        for (name, raw, limit, label), old in zip(plan, self._initial["memory"][:2]):
             text = _memory_text(_memory_entries(raw))
             if len(text) > limit:
                 self._memory_hint.setStyleSheet(self.FAIL_STYLE)
@@ -2390,10 +2391,12 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                     "删掉一些条目，或者把上限调大。"
                 )
                 return "fail"
-            prepared.append((name, text))
+            prepared.append((name, text, old, label))
 
         try:
-            for name, text in prepared:
+            for name, text, old, _label in prepared:
+                if text == old:
+                    continue
                 path = _memory_file(name)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 temp = path.with_name(path.name + ".tmp")
@@ -2410,9 +2413,15 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._memory_hint.setText(f"写不进去：{exc}")
             return "fail"
 
-        for (name, text), old in zip(prepared, self._initial["memory"][:2]):
+        for name, text, old, _label in prepared:
             if old and not text:
                 self._save_notices.append(f"{name} 已经清空——她这方面现在一条都不记得了。")
+        labels = [label for _name, text, old, label in prepared if text != old]
+        if user_limit != self._limits_at_open[0]:
+            labels.append("用户画像上限")
+        if memory_limit != self._limits_at_open[1]:
+            labels.append("记忆上限")
+        self._memory_labels = labels
         self._memory_changed = True
         self._limits_at_open = (user_limit, memory_limit)
         self._mark_saved("memory")
@@ -2423,6 +2432,18 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def memory_changed(self) -> bool:
         """刚才保存的记忆是真的改了，还是原样保存（`main.py` 据此用不同措辞）。"""
         return bool(getattr(self, "_memory_changed", False))
+
+    def memory_notice(self) -> str:
+        """按这次实际动了哪几样组句，没动的不提：只改画像不该弹「记忆已保存」。"""
+        labels = list(getattr(self, "_memory_labels", []) or [])
+        if not labels:
+            return ""
+        tail = (
+            "已改——新建会话生效。"
+            if any(x.endswith("上限") for x in labels)
+            else "已保存——新建会话才带进上下文。"
+        )
+        return f"{'、'.join(labels)}{tail}"
 
     def saved_tab(self) -> int:
         """刚才是从哪个页签点保存的（`TAB_*` 那几个常量）。"""
