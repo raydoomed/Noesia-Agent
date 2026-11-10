@@ -62,8 +62,7 @@ def diff_rows(text: str) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     seen_hunk = False
     for line in text.splitlines():
-        stripped = line.rstrip("\
-")
+        stripped = line.rstrip("\r")
         if stripped.startswith("@@"):
             seen_hunk = True
             rows.append((HUNK, stripped))

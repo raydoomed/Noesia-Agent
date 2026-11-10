@@ -256,8 +256,7 @@ class GlobalHotkey(QtCore.QObject):
                 _user32().PostThreadMessageW(ident, 0, 0, 0)
             thread.join(timeout=1.5)
             if thread.is_alive():
-                logger.warning("[热键] 钩子线程 1.5 秒没退出，保留引用，稍后重试")
-                return
+                logger.warning("[热键] 钩子线程 1.5 秒没退出，弃掉引用让它自灭")
         self._thread = None
         self._hook = None
         self._held_mods = 0
