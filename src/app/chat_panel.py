@@ -1588,6 +1588,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._last_error_key = ""
         self._review_count = 0
         self._review_folded = False
+        self._review_pending: list[str] = []
         self._reasoning_pending = ""
         self._md_block: list[str] = []
         self._para_break = False
@@ -2113,6 +2114,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._fence_cache.clear()
         self._review_count = 0
         self._review_folded = False
+        self._review_pending = []
         self._bubble_has_text = False
         self._last_error_key = ""
         self._follow = True
@@ -2171,6 +2173,7 @@ class ChatPanel(QtWidgets.QWidget):
             old_height = layout.documentSize().height()
             old_value = self.view.verticalScrollBar().value()
             self.clear_conversation("历史补页")
+            self._follow = False
             self._history_older = older
             self._history_rendered = rendered
             self._paint_history(rendered)
@@ -2464,10 +2467,14 @@ class ChatPanel(QtWidgets.QWidget):
         self._pump_assistant(final=True)
         self._flush_md()
         self._drop_trailing_blank_line()
-        self._mount_msg_bar(self._msgs[-1])
+        if self._msgs:
+            self._mount_msg_bar(self._msgs[-1])
         self._assistant_pending = ""
         self._streaming = False
         self._stream_msg = None
+        pending, self._review_pending = self._review_pending, []
+        for text in pending:
+            self.append_review_summary(text)
 
     def set_media_roots(self, roots) -> None:
         """相对路径（模型常写 `MEDIA:data/workspace/x.png`）从哪些目录开始找。"""
@@ -4680,7 +4687,9 @@ class ChatPanel(QtWidgets.QWidget):
                 self.clear_status_notice("avatar")
             self.clear_status_notice("speech")
         except Exception as exc:
+            self._paint_voice_state(_voice_mode())
             self.show_error(f"语音档位没存住：{exc}")
+            return
         self.voice_mode_changed.emit(mode)
 
     def refresh_voice_state(self) -> None:
@@ -4797,7 +4806,8 @@ class ChatPanel(QtWidgets.QWidget):
                 )
             return
         if self._streaming:
-            self.end_assistant()
+            self._review_pending.append(text)
+            return
         self._insert_html(
             "<div style='color:rgba(255,255,255,135); font-size:11px; margin-top:6px;'>"
             f"💾 {html.escape(text)}</div>"

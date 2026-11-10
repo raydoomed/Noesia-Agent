@@ -499,6 +499,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         再建新会话 → 回包后一次清屏（清屏顺带清空队列）。反过来做会留下一轮
         「看不见、停不了、还在计费」的影子轮次，排队的那几句也会无声消失。
         """
+        if self._new_session_pending:
+            return
         if self.client is None:
             say("[会话] 还没连上引擎，换不了新会话")
             if self.chat_panel is not None:
@@ -1407,8 +1409,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return
         if self._greeted and not force:
             return
-        self._greeted = True
-        self.client.greet()
+        self._greeted = bool(self.client.greet())
 
     def _ask_approval(self, ask) -> None:  # noqa: ANN001 (ApprovalPayload)
         """她停下来等人点头：弹一张卡片，选完把结果交回引擎。
@@ -1450,8 +1451,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             if panel.answer_clarify_text(message):
                 return
         if self.client is None or not self.client.is_running():
+            items, self._sending_attachments = self._sending_attachments, []
             if self.chat_panel is not None:
-                self.chat_panel.show_error("引擎没起来，这句话没发出去")
+                note = "引擎没起来，这句话没发出去"
+                if items:
+                    note += f"（{len(items)} 个附件也没发出去，已清掉）"
+                self.chat_panel.show_error(note)
             return
         if self.chat_panel is None or not self.chat_panel.is_busy():
             self._reply_text = ""
@@ -2704,6 +2709,7 @@ def main() -> int:
         wire.config_get("approval_mode")
         wire.config_get("reasoning")
         wire.request_display()
+        window._greet_if_needed()
         window.finish_boot()
 
     def _after_recent(result: dict) -> None:

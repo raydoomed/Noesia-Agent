@@ -2625,10 +2625,11 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._save_button.setText("正在保存…")
         self._warn.setStyleSheet("")
         self._warn.setText("正在写进 .env 并切换，等引擎回话…")
-        self._save_timer = QtCore.QTimer(self)
-        self._save_timer.setSingleShot(True)
-        self._save_timer.timeout.connect(self._engine_save_timed_out)
-        self._save_timer.start(8000)
+        timer = QtCore.QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._engine_save_timed_out)
+        timer.start(9000)
+        self._save_timer = timer
         try:
             if self._engine_save is not None:
                 self._engine_save(self.selection(), self.engine_save_done)
@@ -2656,7 +2657,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def _engine_save_timed_out(self) -> None:
         self.engine_save_done(
             False,
-            ["引擎 8 秒没回话：不确定成没成。重开一次设置，看副标题那行「引擎现在在跑」对不对。"],
+            ["引擎 9 秒没回话：不确定成没成。重开一次设置，看副标题那行「引擎现在在跑」对不对。"],
         )
 
     def _on_avatar_checked(self, ok: bool, message: str, token: str = "") -> None:

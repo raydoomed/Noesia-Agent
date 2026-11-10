@@ -109,6 +109,10 @@ class _StreamPlayback(QtCore.QObject):
 
     def mark_done(self) -> None:
         self._synth_done = True
+        if self._sink is None:
+            self.stop()
+            self.finished.emit()
+            return
         self._pump()
 
     def stop(self) -> None:

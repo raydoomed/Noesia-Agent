@@ -290,12 +290,13 @@ def learn() -> dict | None:
     newest = str(previous.get("newest") or "")
     _trim_corpus()
     texts = _read_corpus()
-    if not texts or texts[-1] == newest:
+    fingerprint = f"{len(texts)}\n{texts[-1] if texts else ''}"
+    if not texts or fingerprint == newest:
         return None
     if time.time() - float(built_at) < _REBUILD_EVERY_S:
         return None
     payload = build(texts)
-    payload["newest"] = texts[-1]
+    payload["newest"] = fingerprint
     try:
         save(payload, target)
     except OSError:

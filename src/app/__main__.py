@@ -54,7 +54,14 @@ def main() -> int:
         last = detail.strip().splitlines()[-1] if detail.strip() else "未知错误"
         _tell_user(f"Noesia 没能启动：{last}", log)
         return 1
-    return run()
+    try:
+        return run()
+    except Exception:  # noqa: BLE001
+        detail = traceback.format_exc()
+        log = _log_startup_error(detail)
+        last = detail.strip().splitlines()[-1] if detail.strip() else "未知错误"
+        _tell_user(f"Noesia 运行中出了错：{last}", log)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover

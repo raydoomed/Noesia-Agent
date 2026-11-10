@@ -219,7 +219,9 @@ class WasapiCapture:
             if not frames.value:
                 break
             size = frames.value * self._format.nBlockAlign
-            if data:
+            if flags.value & 0x2:
+                chunks.append(b"\x00" * size)
+            elif data:
                 chunks.append(ctypes.string_at(data, size))
             else:
                 chunks.append(b"\x00" * size)

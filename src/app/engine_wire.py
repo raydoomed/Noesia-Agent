@@ -748,7 +748,7 @@ class EngineWire(QtCore.QObject):
         self._write_failed = False
         self._recover_rounds = 0
         self._pending_text = ""
-        self._pending_turns: list[tuple[str, list]] = []
+        self._pending_turns: list[tuple[str, list, bool]] = []
         self._turn: dict | None = None
         self._turn_seq = 0
         self._attach_names: dict[int, tuple[str, bool]] = {}
@@ -875,6 +875,8 @@ class EngineWire(QtCore.QObject):
         self._workspace = Path(text)
 
     def create_session(self, cwd: str | None = None) -> None:
+        if self._attaching:
+            return
         self._attaching = True
         self._attach_since = time.monotonic()
         params = {"cwd": cwd or str(self._workspace), "cwd_explicit": True}
@@ -887,6 +889,8 @@ class EngineWire(QtCore.QObject):
         self.reasoning_pending.emit(False)
 
     def resume_session(self, session_id: str) -> None:
+        if self._attaching:
+            return
         self._stored_id = session_id or self._stored_id
         self._attaching = True
         self._attach_since = time.monotonic()
@@ -960,12 +964,12 @@ class EngineWire(QtCore.QObject):
             self.submit(text, queued=queued)
             return
         if self._needs_attach() or self._turn is not None:
-            self._pending_turns.append((text, items))
+            self._pending_turns.append((text, items, queued))
             self._ensure_session()
             return
-        self._dispatch_turn(text, items)
+        self._dispatch_turn(text, items, queued)
 
-    def _dispatch_turn(self, text: str, items: list) -> None:
+    def _dispatch_turn(self, text: str, items: list, queued: bool = True) -> None:
         self._turn_seq += 1
         tag = f"attach:turn:{self._turn_seq}"
         self._turn = {
@@ -975,6 +979,7 @@ class EngineWire(QtCore.QObject):
             "left": len(items),
             "images": sum(1 for item in items if item.get("kind") == "image"),
             "tag": tag,
+            "queued": queued,
         }
         for item in items:
             method, params, name = self._attach_frame(item)
@@ -1013,7 +1018,10 @@ class EngineWire(QtCore.QObject):
             self._pending_text = f"{self._pending_text}\n\n{text}" if self._pending_text else text
             self._ensure_session()
             return
-        self._call("prompt.submit", {"session_id": self._session_id, "text": text}, tag="prompt.submit")
+        params: dict = {"session_id": self._session_id, "text": text}
+        if turn.get("queued"):
+            params["queued"] = True
+        self._call("prompt.submit", params, tag="prompt.submit")
         self._flush_after_attach()
 
     def interrupt(self) -> None:
@@ -1136,7 +1144,7 @@ class EngineWire(QtCore.QObject):
             params["refresh"] = True
         self._settings_rid = self._call("model.options", params, tag="model.options:settings")
 
-    def greet(self) -> None:
+    def greet(self) -> bool:
         """第一次见面：先问引擎「这台机器该不该跑引导」，该跑且有模型能撑起第一轮，才让它开场。
 
         为什么不是直接 `onboarding.start`：引导要一个可用的供应商才能起（引擎回 5080），
@@ -1144,7 +1152,8 @@ class EngineWire(QtCore.QObject):
         所以每次猜「可能要跑」都先问 `onboarding.state`，由引擎按
         `run`（配置/从没用过）和 `eligible`（有 provider）自己判断；已经做过就什么都不发。
         """
-        self._call("onboarding.state", {}, tag="onboarding.state")
+        rid = self._call("onboarding.state", {}, tag="onboarding.state")
+        return rid in self._sent
 
     def restart_onboarding(self) -> None:
         """用户主动重跑引导：先把引擎的 `run` 打开，再走正常流程。
@@ -1169,7 +1178,7 @@ class EngineWire(QtCore.QObject):
             "facts_source": "local",
             "app_ui": False,
             "first_task": False,
-        }, tag="onboarding.start")
+        }, tag="onboarding.start", long_lived=True)
         self._onboarding_started = True
 
     def save_key(self, slug: str, api_key: str, then_model: str = "", token: str = "") -> None:
@@ -1187,9 +1196,11 @@ class EngineWire(QtCore.QObject):
         self._call("model.save_key", params, tag=f"model.save_key:{slug}")
 
 
-    def _call(self, method: str, params: dict, *, tag: str = "") -> int:
+    def _call(self, method: str, params: dict, *, tag: str = "", long_lived: bool = False) -> int:
         cutoff = time.monotonic() - self._SENT_TTL_S
         for old, frame in list(self._sent.items()):
+            if frame.get("long_lived"):
+                continue
             if float(frame.get("at") or 0) < cutoff:
                 self._sent.pop(old, None)
                 self._pending.pop(old, None)
@@ -1198,11 +1209,11 @@ class EngineWire(QtCore.QObject):
         if tag:
             self._pending[rid] = tag
         self._sent[rid] = {
-            "method": method, "params": dict(params), "tag": tag, "at": time.monotonic()
+            "method": method, "params": dict(params), "tag": tag, "at": time.monotonic(),
+            "long_lived": long_lived,
         }
         if not self._write({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}):
-            self._pending.pop(rid, None)
-            self._sent.pop(rid, None)
+            self._on_response({"id": rid, "error": {"code": -32000, "message": "引擎没接住指令，这一步没送出去"}})
         return rid
 
     def _needs_attach(self) -> bool:
@@ -1263,8 +1274,8 @@ class EngineWire(QtCore.QObject):
         if not self._session_id or self._attaching:
             return
         if self._pending_turns:
-            text, items = self._pending_turns.pop(0)
-            self._dispatch_turn(text, items)
+            text, items, queued = self._pending_turns.pop(0)
+            self._dispatch_turn(text, items, queued)
             return
         if self._pending_text:
             text, self._pending_text = self._pending_text, ""
@@ -1348,7 +1359,7 @@ class EngineWire(QtCore.QObject):
 
     def download_voice_model(self) -> None:
         """下识别模型（两百多兆）。引擎那边同步跑，所以登记在长活清单里。"""
-        self._call("voice.transcribe.download", {}, tag="voice.transcribe.download")
+        self._call("voice.transcribe.download", {}, tag="voice.transcribe.download", long_lived=True)
 
     def transcribe_audio(self, path: str) -> None:
         """把一段录音交给引擎识别。tag 里只放编号不放路径——路径带反斜杠和冒号，
@@ -1394,6 +1405,16 @@ class EngineWire(QtCore.QObject):
             return False
         return True
 
+    def _abort_writes(self, message: str) -> None:
+        self._outbox.clear()
+        self._write_failed = True
+        self._fail_inflight(message)
+        self.failed.emit(message)
+
+    def _fail_inflight(self, message: str) -> None:
+        for rid in list(self._sent):
+            self._on_response({"id": rid, "error": {"code": -32000, "message": message}})
+
     def _pump_writes(self) -> None:
         """分块把待发字节推进管道，块与块之间让出一次事件循环。
 
@@ -1403,26 +1424,21 @@ class EngineWire(QtCore.QObject):
         """
         while self._outbox:
             if not self.is_running():
-                self._outbox.clear()
-                self._write_failed = True
-                self.failed.emit("引擎未运行，指令没发出去")
+                self._abort_writes("引擎未运行，指令没发出去")
                 return
             chunk = self._outbox[0]
             if len(chunk) > self.WRITE_CHUNK:
                 self._outbox[0] = chunk[self.WRITE_CHUNK:]
                 written = self._proc.write(chunk[:self.WRITE_CHUNK])
                 if written is not None and written < 0:
-                    self._outbox.clear()
-                    self._write_failed = True
-                    self.failed.emit("引擎没接住指令，这一步没送出去")
+                    self._abort_writes("引擎没接住指令，这一步没送出去")
                     return
                 QtCore.QTimer.singleShot(0, self._pump_writes)
                 return
             self._outbox.popleft()
             written = self._proc.write(chunk)
             if written is not None and written < 0:
-                self._write_failed = True
-                self.failed.emit("引擎没接住指令，这一步没送出去")
+                self._abort_writes("引擎没接住指令，这一步没送出去")
                 return
 
 
@@ -1808,12 +1824,12 @@ class EngineWire(QtCore.QObject):
         self._started = False
         stderr_tail = list(self._stderr_tail)
         typed_but_unsent = bool(self._pending_text)
+        had_turn = self._turn is not None
+        had_pending = bool(self._pending_turns)
         self._reset_transport_state()
-        if self._turn is not None:
-            self._turn = None
+        if had_turn:
             self.attachment_failed.emit("整条消息", "引擎断开，这句话没发出去")
-        if self._pending_turns:
-            self._pending_turns.clear()
+        if had_pending:
             self.attachment_failed.emit("整条消息", "引擎断开，这条消息没发出去")
         if typed_but_unsent:
             self.attachment_failed.emit("整条消息", "引擎断开，你刚打的这句还没发出去")
