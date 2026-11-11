@@ -483,7 +483,7 @@ SNAP_DISTANCE = 24
 
 STYLE = """
 #frame {
-    background-color: rgba(25, 21, 32, 210);
+    background-color: transparent;
     border: 1px solid rgba(255, 255, 255, 22);
     border-radius: 16px;
 }
@@ -1471,6 +1471,23 @@ def _dimmed(pixmap: QtGui.QPixmap, factor: float) -> QtGui.QPixmap:
     return out
 
 
+class _OpacityFrame(QtWidgets.QFrame):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._alpha = 210
+
+    def set_alpha(self, value: int) -> None:
+        self._alpha = max(1, value)
+        self.update()
+
+    def paintEvent(self, ev) -> None:
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QtGui.QColor(25, 21, 32, self._alpha))
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1), 16, 16)
+
+
 class ChatPanel(QtWidgets.QWidget):
     """打字对话窗。"""
 
@@ -1518,8 +1535,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._resize_start_size: QtCore.QSize | None = None
         self._resize_start_global: QtCore.QPoint | None = None
 
-        frame = QtWidgets.QFrame(self)
+        frame = _OpacityFrame(self)
         frame.setObjectName("frame")
+        self._opacity_frame = frame
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(frame)
@@ -1904,12 +1922,12 @@ class ChatPanel(QtWidgets.QWidget):
         self._opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, frame)
         self._opacity_slider.setObjectName("opacity")
         self._opacity_slider.setFixedWidth(96)
-        self._opacity_slider.setRange(30, 100)
+        self._opacity_slider.setRange(0, 100)
         self._opacity_slider.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
         self._opacity_slider.setToolTip("窗口透明度")
-        self._opacity_slider.setValue(max(30, min(100, cast(int, self._settings.value("chat_opacity", 100, type=int)))))
-        self.window().setWindowOpacity(self._opacity_slider.value() / 100.0)
+        self._opacity_slider.setValue(max(0, min(100, cast(int, self._settings.value("chat_opacity", 100, type=int)))))
         self._opacity_slider.valueChanged.connect(self._set_opacity)
+        self._set_opacity(self._opacity_slider.value())
         meta_row.addWidget(self._opacity_slider)
         layout.addLayout(meta_row)
 
@@ -1923,7 +1941,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._sync_send_button()
 
     def _set_opacity(self, value: int) -> None:
-        self.window().setWindowOpacity(value / 100.0)
+        self._opacity_frame.set_alpha(round(255 * value / 100))
         self._settings.setValue("chat_opacity", value)
 
     def _init_background(self, frame) -> None:
