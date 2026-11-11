@@ -1,5 +1,5 @@
-Noesia Agent 0.4.9
-生成 2026-11-11 01:03 (+08:00)
+Noesia Agent 0.4.10
+生成 2026-11-11 15:47 (+08:00)
 
 运行时（随包，文件清单与校验值见 vendor/MANIFEST.txt）
   Python   3.14.6                                  vendor/python314/
