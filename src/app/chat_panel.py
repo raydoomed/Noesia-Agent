@@ -1876,6 +1876,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._mic_button.customContextMenuRequested.connect(self._show_mic_menu)
         box_row.addWidget(self._mic_button)
         self._init_voice_input()
+        cast(QtWidgets.QApplication, QtWidgets.QApplication.instance()).focusChanged.connect(
+            self._keep_input_focus
+        )
 
         self._send_button = send = QtWidgets.QPushButton(frame)
         send.setFixedSize(32, 32)
@@ -5339,7 +5342,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._rehook_watch.timeout.connect(self._global_ptt.rearm)
         self._global_ptt.pressed.connect(self._hold_begin)
         self._global_ptt.released.connect(self._hold_end)
-        self._voice_draft_focus = False
         self._voice_focus_backup: dict = {}
         self._audio_released = False
         self._ptt_button = QtWidgets.QToolButton(self._inputbox)
@@ -5378,7 +5380,6 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self._voice_mode_on = on
         if on:
-            self._voice_draft_focus = self.input.hasFocus()
             self._voice_orb.set_state(STATE_IDLE)
             self.input.hide()
             for button in (self._attach_button, self._approval_button,
@@ -5438,8 +5439,7 @@ class ChatPanel(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(0, self._fit_input_height)
             self._mic_button.setIcon(_glyph_icon("mic"))
             self._mic_button.setToolTip("语音输入（右键选麦克风）")
-            if self._voice_draft_focus or self.input.toPlainText():
-                self.input.setFocus()
+            self.input.setFocus()
 
     def _float_mode_button(self, floating: bool) -> None:
         """语音模式下把「切回打字」那颗按钮从布局里摘出来，浮到输入框右上角。
@@ -6943,6 +6943,20 @@ class ChatPanel(QtWidgets.QWidget):
         window.show()
         window.raise_()
         window.activateWindow()
+
+    def _keep_input_focus(self, _old, new) -> None:
+        if (
+            new is not None
+            and new is not self.input
+            and self.isAncestorOf(new)
+            and not self._voice_mode_on
+        ):
+            self.input.setFocus()
+
+    def event(self, ev) -> bool:
+        if ev.type() == QtCore.QEvent.Type.WindowActivate and not self._voice_mode_on:
+            self.input.setFocus()
+        return super().event(ev)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         """frame 铺满整个窗口，边缘那圈空白上的鼠标事件在这儿接住。"""
