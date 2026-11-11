@@ -1483,8 +1483,8 @@ class _OpacityFrame(QtWidgets.QFrame):
     def paintEvent(self, ev) -> None:
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 22), 1))
         painter.setBrush(QtGui.QColor(25, 21, 32, self._alpha))
-        painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.drawRoundedRect(QtCore.QRectF(self.rect()).adjusted(1, 1, -1, -1), 16, 16)
 
 
@@ -6083,16 +6083,25 @@ class ChatPanel(QtWidgets.QWidget):
     def _open_body_zone(self, block: QtGui.QTextBlock, key: int) -> None:
         """工具输出正文：能复制就给复制，另外有 diff 才给「看完整 diff」。"""
         first, last = self._marked_run(block, key)
+        rect = self._body_scroll_rect(key)
         payload = self._tool_payloads.get(key)
         if payload is None and key in self._diff_texts:
             payload = (tool_tr("assistant.tool.copyContent"), self._diff_texts[key][1])
         if payload and payload[1].strip():
             self._show_hover_copy(
                 payload[1], payload[0], first, last, key=("body", key),
-                margin=self.BODY_BUTTON_MARGIN,
+                margin=self.BODY_BUTTON_MARGIN, rect=rect,
             )
         if key in self._diff_texts:
-            self._show_hover_expand(key, first, last, margin=self.BODY_BUTTON_MARGIN)
+            self._show_hover_expand(key, first, last, margin=self.BODY_BUTTON_MARGIN, rect=rect)
+
+    def _body_scroll_rect(self, key: int) -> QtCore.QRect | None:
+        fold = self._folds.get(key)
+        scroll = getattr(fold, "scroll", None) if fold is not None else None
+        if scroll is None:
+            return None
+        top_left = scroll.mapTo(self.view.viewport(), QtCore.QPoint(0, 0))
+        return QtCore.QRect(top_left, scroll.size())
 
     def _hook_tool_scrolls(self) -> None:
         """工具正文那几块是独立控件，盖在正文上：鼠标事件得从它们那儿转进来，否则悬停不亮。"""
@@ -6305,7 +6314,8 @@ class ChatPanel(QtWidgets.QWidget):
         return rect
 
     def _show_hover_copy(self, text: str, tooltip: str, first, last, edge: bool = False,
-                         key: tuple | None = None, margin: int = 4) -> None:
+                         key: tuple | None = None, margin: int = 4,
+                         rect: QtCore.QRect | None = None) -> None:
         """复制按钮：点完写剪贴板、换 ✓、1.5 秒还原。"""
         button = self._element_button(
             key or ("copy", first.position()),
@@ -6315,9 +6325,10 @@ class ChatPanel(QtWidgets.QWidget):
             done_tooltip=tool_tr("common.copied"),
         )
         self._show_element(button)
-        self._place_hover(button, first, last, edge=edge, margin=margin)
+        self._place_hover(button, first, last, edge=edge, margin=margin, rect=rect)
 
-    def _show_hover_expand(self, key: int, first, last, margin: int = 4) -> None:
+    def _show_hover_expand(self, key: int, first, last, margin: int = 4,
+                           rect: QtCore.QRect | None = None) -> None:
         """放大按钮：只开预览窗，不换 ✓（那不是一次复制）。放在复制按钮左边。"""
         button = self._element_button(
             ("expand", key),
@@ -6328,7 +6339,7 @@ class ChatPanel(QtWidgets.QWidget):
         )
         self._show_element(button)
         self._place_hover(button, first, last,
-                          offset_x=-(HoverActionButton.BUTTON_PX + 2), margin=margin)
+                          offset_x=-(HoverActionButton.BUTTON_PX + 2), margin=margin, rect=rect)
 
 
     def _begin_message(self, role: str, start: int, text: str, row_id, frame=None) -> None:
@@ -6597,8 +6608,9 @@ class ChatPanel(QtWidgets.QWidget):
     def _place_hover(self, button: HoverActionButton, first, last, offset_x: int = 0,
                      below: bool = False, bottom_align: bool = False,
                      anchor_right: bool = False, edge: bool = False,
-                     margin: int = 4) -> None:
-        rect = self._block_rect(first, last)
+                     margin: int = 4, rect: QtCore.QRect | None = None) -> None:
+        if rect is None:
+            rect = self._block_rect(first, last)
         if rect.height() <= 0:
             button.hide()
             return
@@ -6960,6 +6972,15 @@ class ChatPanel(QtWidgets.QWidget):
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         """frame 铺满整个窗口，边缘那圈空白上的鼠标事件在这儿接住。"""
+        if (
+            obj is self.input
+            and event.type() == QtCore.QEvent.Type.KeyPress
+            and event.matches(QtGui.QKeySequence.StandardKey.Copy)
+            and not self.input.textCursor().hasSelection()
+            and self.view.textCursor().hasSelection()
+        ):
+            self.view.copy()
+            return True
         scroll_owner = obj if isinstance(obj, ToolScroll) else None
         if scroll_owner is None and isinstance(obj.parent(), ToolScroll):
             scroll_owner = obj.parent()
