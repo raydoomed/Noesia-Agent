@@ -191,7 +191,7 @@ QToolButton {
         elif bottom_align:
             y = max(rect.top(), rect.bottom() - self.BUTTON_PX - margin)
         else:
-            y = max(0, rect.top() + 6)
+            y = max(0, min(rect.top() + 6, rect.bottom() - self.BUTTON_PX))
         self.move(x, y)
 
     def enterEvent(self, event: QtGui.QEnterEvent) -> None:  # noqa: N802

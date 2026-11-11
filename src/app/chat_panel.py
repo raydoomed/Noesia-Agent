@@ -99,6 +99,11 @@ class _Input(QtWidgets.QPlainTextEdit):
 class _CodeMark(QtGui.QTextBlockUserData):
     """「这一块是代码块」——复制按钮靠它命中，不再靠底色猜（底色的 HTML 行为不稳）。"""
 
+    def __init__(self, fence_id: int, is_pad: bool = False) -> None:
+        super().__init__()
+        self.fence_id = fence_id
+        self.is_pad = is_pad
+
 
 class _MsgMark(QtGui.QTextBlockUserData):
     """「这一块是一条消息的开头」——悬停时靠它从光标所在块往上找回整条消息。
@@ -4254,6 +4259,14 @@ class ChatPanel(QtWidgets.QWidget):
         block_format.setBottomMargin(0)
         head_format = QtGui.QTextBlockFormat(block_format)
         head_format.setTopMargin(4)
+        lines = code.split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        if not lines:
+            lines = [""]
+        render_pad = len(lines) == 1
+        if render_pad:
+            lines.append(" ")
         base = QtGui.QTextCharFormat()
         base.setFontFamilies(["Consolas", "Cascadia Mono", "Courier New"])
         base.setFontPointSize(9)
@@ -4265,14 +4278,15 @@ class ChatPanel(QtWidgets.QWidget):
         if not self.view.document().isEmpty():
             cursor.insertBlock()
         cursor.setCharFormat(base)
+        prev_block = cursor.block().previous()
+        if prev_block.isValid() and isinstance(prev_block.userData(), _CodeMark):
+            prev_fmt = prev_block.blockFormat()
+            prev_fmt.setBottomMargin(0)
+            QtGui.QTextCursor(prev_block).setBlockFormat(prev_fmt)
+            head_format.setTopMargin(0)
         cursor.setBlockFormat(head_format)
         anchor = cursor.position()
 
-        lines = code.split("\n")
-        if lines and lines[-1] == "":
-            lines.pop()
-        if not lines:
-            lines = [""]
         colored = code_highlight(code if len(lines) > 1 else lines[0], language)
         for index in range(len(lines)):
             if index:
@@ -4296,8 +4310,9 @@ class ChatPanel(QtWidgets.QWidget):
         cursor.setBlockFormat(tail_format)
 
         block = cursor.block()
+        pad_pos = block.position() if render_pad else -1
         while block.isValid() and block.position() >= anchor:
-            block.setUserData(_CodeMark())
+            block.setUserData(_CodeMark(anchor, is_pad=block.position() == pad_pos))
             block = block.previous()
 
         self._settle_insert()
@@ -6201,11 +6216,13 @@ class ChatPanel(QtWidgets.QWidget):
             lines: list[str] = []
             current = first
             while True:
-                lines.append(current.text())
+                mark = current.userData()
+                if not (isinstance(mark, _CodeMark) and mark.is_pad):
+                    lines.append(current.text())
                 if current == last or not current.next().isValid():
                     break
                 current = current.next()
-            text = markdown_render.code_text("\n".join(lines)).strip("\n")
+            text = markdown_render.code_text("\n".join(lines)).rstrip()
             if len(self._fence_cache) > 64:
                 self._fence_cache.clear()
             self._fence_cache[cache_key] = text
@@ -6499,7 +6516,7 @@ class ChatPanel(QtWidgets.QWidget):
             else:
                 fresh = _PhotoMark(owner)
         elif isinstance(prev_mark, _CodeMark):
-            fresh = _CodeMark()
+            fresh = _CodeMark(prev_mark.fence_id, prev_mark.is_pad)
         # 传 None 就是摘掉用户数据（Qt 文档：data 为 0 即移除）；PySide 的桩没把参数写成可空。
         slot.setUserData(cast(QtGui.QTextBlockUserData, fresh))
 
