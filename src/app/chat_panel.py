@@ -526,6 +526,10 @@ STYLE = """
     padding: 0 4px;
 }
 #statusrow QToolButton:hover { color: #ffd7e6; }
+#opacity { background: transparent; max-height: 12px; }
+#opacity::groove:horizontal { height: 3px; background: rgba(255, 255, 255, 40); border-radius: 1px; }
+#opacity::handle:horizontal { width: 10px; height: 10px; margin: -4px 0; border-radius: 5px; background: rgba(240, 178, 210, 220); }
+#opacity::handle:horizontal:hover { background: #ffd7e6; }
 #modelrow { color: rgba(255, 255, 255, 120); font-size: 11px; }
 #model, #model::menu-indicator { background: transparent; }
 #model {
@@ -1897,6 +1901,16 @@ class ChatPanel(QtWidgets.QWidget):
         meta_row.setSpacing(6)
         meta_row.addWidget(hint_label)
         meta_row.addStretch(1)
+        self._opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, frame)
+        self._opacity_slider.setObjectName("opacity")
+        self._opacity_slider.setFixedWidth(96)
+        self._opacity_slider.setRange(30, 100)
+        self._opacity_slider.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._opacity_slider.setToolTip("窗口透明度")
+        self._opacity_slider.setValue(max(30, min(100, cast(int, self._settings.value("chat_opacity", 100, type=int)))))
+        self.window().setWindowOpacity(self._opacity_slider.value() / 100.0)
+        self._opacity_slider.valueChanged.connect(self._set_opacity)
+        meta_row.addWidget(self._opacity_slider)
         layout.addLayout(meta_row)
 
         send.clicked.connect(self._emit)
@@ -1907,6 +1921,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._init_background(frame)
         self._restore_geometry()
         self._sync_send_button()
+
+    def _set_opacity(self, value: int) -> None:
+        self.window().setWindowOpacity(value / 100.0)
+        self._settings.setValue("chat_opacity", value)
 
     def _init_background(self, frame) -> None:
         """右下角一张她的立绘当底纹：压在所有内容下面，淡到只当作画面。
