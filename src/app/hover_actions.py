@@ -170,28 +170,15 @@ QToolButton {
         """要不要垫一层底。摆进气泡里的那颗要——它压在最后一行字上，得把字尾盖住。"""
         self.setStyleSheet(self.BACKDROP_QSS if on else "")
 
-    def place_at(self, rect: QtCore.QRect, offset_x: int = 0, below: bool = False,
-                 bottom_align: bool = False, anchor_right: bool = False,
-                 margin: int = 4) -> None:
-        """贴在这块内容的右上角；`offset_x` 往左让位。
-
-        `below` 挂到这一块下沿外（另起一行）；`anchor_right` 让这条另起的行贴右边
-        （用户那条用），不给就贴左边起（回答用）。
-        """
+    def place_at(self, rect: QtCore.QRect, offset_x: int = 0, margin: int = 4) -> None:
+        """贴在这块内容的右上角；`offset_x` 往左让位。"""
         parent = self.parentWidget()
         if parent is None:
             return
         edge = self.BUTTON_PX + margin
         right = rect.right() - edge + offset_x
         x = max(0, min(right, parent.width() - self.BUTTON_PX))
-        if below:
-            x = (max(0, min(rect.right() - edge + offset_x, parent.width() - self.BUTTON_PX)) if anchor_right
-                 else max(0, min(rect.left() + 2 + offset_x, parent.width() - self.BUTTON_PX)))
-            y = min(rect.bottom() + 6, parent.height() - self.BUTTON_PX - 4)
-        elif bottom_align:
-            y = max(rect.top(), rect.bottom() - self.BUTTON_PX - margin)
-        else:
-            y = max(0, min(rect.top() + 6, rect.bottom() - self.BUTTON_PX))
+        y = max(0, min(rect.top() + 6, rect.bottom() - self.BUTTON_PX))
         self.move(x, y)
 
     def enterEvent(self, event: QtGui.QEnterEvent) -> None:  # noqa: N802

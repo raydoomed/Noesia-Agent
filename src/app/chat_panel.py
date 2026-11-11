@@ -5433,8 +5433,6 @@ class ChatPanel(QtWidgets.QWidget):
                 except RuntimeError:
                     pass
             self._voice_focus_backup = {}
-            self._mic_button.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-            self.view.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
             self.input.show()
             QtCore.QTimer.singleShot(0, self._fit_input_height)
             self._mic_button.setIcon(_glyph_icon("mic"))
@@ -6100,8 +6098,9 @@ class ChatPanel(QtWidgets.QWidget):
         scroll = getattr(fold, "scroll", None) if fold is not None else None
         if scroll is None:
             return None
-        top_left = scroll.mapTo(self.view.viewport(), QtCore.QPoint(0, 0))
-        return QtCore.QRect(top_left, scroll.size())
+        viewport = scroll.viewport()
+        top_left = viewport.mapTo(self.view.viewport(), QtCore.QPoint(0, 0))
+        return QtCore.QRect(top_left, viewport.size())
 
     def _hook_tool_scrolls(self) -> None:
         """工具正文那几块是独立控件，盖在正文上：鼠标事件得从它们那儿转进来，否则悬停不亮。"""
@@ -6313,7 +6312,7 @@ class ChatPanel(QtWidgets.QWidget):
         rect.translate(-self.view.horizontalScrollBar().value(), -self.view.verticalScrollBar().value())
         return rect
 
-    def _show_hover_copy(self, text: str, tooltip: str, first, last, edge: bool = False,
+    def _show_hover_copy(self, text: str, tooltip: str, first, last,
                          key: tuple | None = None, margin: int = 4,
                          rect: QtCore.QRect | None = None) -> None:
         """复制按钮：点完写剪贴板、换 ✓、1.5 秒还原。"""
@@ -6325,7 +6324,7 @@ class ChatPanel(QtWidgets.QWidget):
             done_tooltip=tool_tr("common.copied"),
         )
         self._show_element(button)
-        self._place_hover(button, first, last, edge=edge, margin=margin, rect=rect)
+        self._place_hover(button, first, last, margin=margin, rect=rect)
 
     def _show_hover_expand(self, key: int, first, last, margin: int = 4,
                            rect: QtCore.QRect | None = None) -> None:
@@ -6606,24 +6605,17 @@ class ChatPanel(QtWidgets.QWidget):
         return len(self._queued)
 
     def _place_hover(self, button: HoverActionButton, first, last, offset_x: int = 0,
-                     below: bool = False, bottom_align: bool = False,
-                     anchor_right: bool = False, edge: bool = False,
                      margin: int = 4, rect: QtCore.QRect | None = None) -> None:
-        if rect is None:
-            rect = self._block_rect(first, last)
-        if rect.height() <= 0:
+        target = rect if rect is not None else self._block_rect(first, last)
+        if target.height() <= 0:
             button.hide()
             return
-        if not below and rect.top() < 0:
+        if target.top() < 0:
             button.hide()
             return
         usable = self._usable_width()
-        if edge:
-            rect.setRight(usable)
-        else:
-            rect.setRight(min(rect.right(), usable))
-        button.place_at(rect, offset_x=offset_x, below=below, bottom_align=bottom_align,
-                        anchor_right=anchor_right, margin=margin)
+        target.setRight(min(target.right(), usable))
+        button.place_at(target, offset_x=offset_x, margin=margin)
         button.show()
         button.raise_()
 
