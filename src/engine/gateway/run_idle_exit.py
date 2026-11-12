@@ -8,7 +8,7 @@ it has served nobody and has nothing to do for ``gateway.unmanaged_idle_exit_sec
 
 - no attached client (live ticketed WebSocket, outstanding ticket, or recent HTTP/WS activity);
 - no messaging adapter configured, connected or reconnecting (any profile);
-- no runnable cron job and no kanban task the dispatcher must act on;
+- no cron job about to fire and no kanban task the dispatcher must act on;
 - no queued/started admission, live managed worker, in-flight agent/cron/API run, background
   process or async delegation, active heartbeat/loop, pending handoff or hosted-room task.
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from datetime import datetime
 import logging
 import sqlite3
 import time
@@ -31,6 +32,7 @@ logger = logging.getLogger("gateway.run")
 
 DEFAULT_IDLE_EXIT_SECONDS = 600.0
 IDLE_EXIT_REASON = "idle_exit"
+_CRON_DUE_LEAD_SECONDS = 60.0
 # Head of the ``exit_reason`` persisted with ``stopped``: a reconnecting client's ``--recover``
 # (ui-tui/scripts/gateway_bootstrap.py) tells this self-ended exit from an operator stop by it.
 IDLE_EXIT_STOP_PREFIX = "auto-started gateway idle"
@@ -93,18 +95,32 @@ def _served_homes(runner) -> list[Path]:
     return sorted(homes)
 
 
+def _cron_due_soon(job: dict, horizon: float) -> bool:
+    """Whether this job's next occurrence is now or before ``horizon`` (epoch seconds)."""
+    raw = str(job.get("next_run_at") or "").strip()
+    if not raw:
+        return True
+    try:
+        due = datetime.fromisoformat(raw)
+    except ValueError:
+        return True
+    return due.timestamp() <= horizon
+
+
 def _cron_busy(homes) -> str | None:
     from cron.jobs import is_job_runnable, is_terminal_job, load_jobs, use_cron_store
     from cron.scheduler import get_running_job_ids
     if get_running_job_ids():
         return "cron job running"
+    horizon = time.time() + _CRON_DUE_LEAD_SECONDS
     for home in homes:
         if not (home / "cron" / "jobs.json").exists():
             continue
         with use_cron_store(home):
             jobs = load_jobs()
-        if any(is_job_runnable(job) and not is_terminal_job(job) for job in jobs):
-            return f"cron jobs scheduled in {home}"
+        if any(is_job_runnable(job) and not is_terminal_job(job) and _cron_due_soon(job, horizon)
+               for job in jobs):
+            return f"cron jobs due in {home}"
     return None
 
 
