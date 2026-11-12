@@ -1306,7 +1306,11 @@ class EngineWire(QtCore.QObject):
             self._on_attach_done(rid, tag, result)
         elif tag.startswith("cron."):
             payload = dict(result) if isinstance(result, dict) else {}
-            payload["ok"] = True
+            # 引擎有些回包是「成功帧里带失败」：`ok: true` 配 `success: false` + `error`（新建走的
+            # cronjob 工具就这样）。照单全收会当成保存成功、把编辑页关掉再报错，所以两者都要看。
+            payload["ok"] = bool(payload.get("ok", True)) and payload.get("success") is not False
+            if not payload["ok"] and not payload.get("message"):
+                payload["message"] = str(payload.get("error") or "操作失败")
             self.cron_result.emit(tag, payload)
         elif tag.startswith("config.get:"):
             key = tag.split(":", 1)[1]

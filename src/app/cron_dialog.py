@@ -638,6 +638,8 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 self._rebuild_list()
             return
         if tag in {"cron.add", "cron.update"}:
+            self._save_button.setEnabled(True)
+            self._save_button.setText("保存更改" if self._editing else "创建定时任务")
             if not ok:
                 message = str(payload.get("message") or "保存失败")
                 self._editor_note.setText(f"保存失败：{message}")
@@ -912,6 +914,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._editing = ""
         self._editor_title.setText("新建定时任务")
         self._save_button.setText("创建定时任务")
+        self._save_button.setEnabled(True)
         self._name_edit.clear()
         self._prompt_edit.clear()
         self._repeat_edit.clear()
@@ -934,6 +937,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._editing = job_id
         self._editor_title.setText("编辑定时任务")
         self._save_button.setText("保存更改")
+        self._save_button.setEnabled(True)
         self._name_edit.setText(str(record.get("name") or ""))
         self._prompt_edit.setPlainText(str(record.get("prompt") or ""))
         repeat = _repeat_left(record.get("repeat"))
@@ -946,6 +950,8 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
     def _cancel_edit(self) -> None:
         self._editing = ""
+        self._save_button.setEnabled(True)
+        self._save_button.setText("创建定时任务")
         self._pages.setCurrentIndex(0)
 
     def _fill_schedule(self, record: dict) -> None:
@@ -1023,8 +1029,10 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 self._editor_note.setStyleSheet(self.NOTE_ERROR)
                 return
             fields["repeat"] = int(repeat_text)
-        self._editor_note.setText("正在保存…")
-        self._editor_note.setStyleSheet("")
+        if not self._editor_note.text().strip():
+            self._editor_note.setText("正在保存…")
+        self._save_button.setEnabled(False)
+        self._save_button.setText("保存中…")
         self._engine.cron_save(self._editing, fields)
 
     # ── 窗口 ────────────────────────────────────────────────────────────────
