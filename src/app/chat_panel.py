@@ -2231,7 +2231,13 @@ class ChatPanel(QtWidgets.QWidget):
         """
         if self.has_transcript():
             return
-        items = [item for item in (messages or ()) if str(item.get("text") or "").strip()]
+        items = [
+            item
+            for item in (messages or ())
+            if str(item.get("text") or "").strip()
+            or str(item.get("name") or "").strip()
+            or str(item.get("reasoning") or "").strip()
+        ]
         tail = items[-self.HISTORY_PAGE:]
         self._history_loading = True
         try:
@@ -2255,7 +2261,9 @@ class ChatPanel(QtWidgets.QWidget):
         """
         if not self._history_older or self._restoring or self._history_loading:
             return
-        if self._stream_msg is not None:
+        if self._stream_msg is not None or self._clarify is not None:
+            # 流式回答还没落地、或者有个问题卡等你点：这拍不重画。重画会把半截回答画成成品、
+            # 把问题卡抹掉（引擎还等着那个回答，卡没了就再也答不了）。
             self._history_page_pending = True
             return
         self._history_loading = True
@@ -2267,6 +2275,7 @@ class ChatPanel(QtWidgets.QWidget):
             layout = self.view.document().documentLayout()
             old_height = layout.documentSize().height()
             old_value = self.view.verticalScrollBar().value()
+            self._snapshot_fold_state()
             self.clear_conversation("历史补页")
             self._follow = False
             self._history_older = older
@@ -2328,6 +2337,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._restoring = True
         # 旧卡都随清屏作废了：`id()` 会被后建的卡复用，登记表跟着清，免得记到别人名下。
         self._fold_entries = {}
+        # 重铺期间画出来的东西一律不记单子：它们本来就是历史行，下次重铺会从历史再画一遍，
+        # 记进去就成了重影。
+        was_replaying = self._replaying_fold
+        self._replaying_fold = True
         try:
             pending = sorted((dict(entry) for entry in folds), key=lambda e: int(e.get("at") or 0))
             for item in items:
@@ -2340,6 +2353,7 @@ class ChatPanel(QtWidgets.QWidget):
             while pending:
                 self._replay_fold(pending.pop(0))
         finally:
+            self._replaying_fold = was_replaying
             self._restoring = False
 
     def _note_fold(self, fold, kind: str, **fields) -> None:
@@ -2356,6 +2370,15 @@ class ChatPanel(QtWidgets.QWidget):
             self._fold_entries[id(fold)] = entry
         entry.update({key: value for key, value in fields.items() if value is not None})
 
+    def _note_line(self, markup: str) -> None:
+        """记一行不进历史的灰字（状态/回顾/已停止/报错）：补页重铺时照原位补回来。
+
+        这类行是当场插进文档的，`_msgs` 里没有记录；不记就活不过一次翻页。
+        """
+        if self._replaying_fold:
+            return
+        self._fold_log.append({"at": len(self._msgs), "kind": "line", "html": markup})
+
     def _note_fold_body(self, fold, chunk: str) -> None:
         """记一段正文：只有纯文本的卡（`show_tool` / 思考段）走这里。"""
         if self._replaying_fold or fold is None:
@@ -2365,12 +2388,17 @@ class ChatPanel(QtWidgets.QWidget):
             entry["body"].append(chunk)
 
     def _replay_fold(self, entry: dict) -> None:
-        """重铺时把一张折叠卡原样摆回来（工具行 / 思考段）。
+        """重铺时把一张折叠卡原样摆回来（工具行 / 思考段 / 一行灰字）。
 
         工具卡存的是原件（`view`），重画直接走当初那条路，正文、diff、图片、搜索命中一并回来；
-        点开状态这类当场交互留下的东西不还原。
+        清屏前还记了「点开了没」，展开的照样展开，不会自己合上。
         """
+        if entry.get("kind") == "line":
+            self._insert_html(str(entry.get("html") or ""))
+            return
         if entry.get("kind") == "tool_view" and entry.get("view") is not None:
+            before = len(self._folds.all())
+            was_replaying = self._replaying_fold
             self._replaying_fold = True
             try:
                 self.show_tool_view(
@@ -2381,29 +2409,65 @@ class ChatPanel(QtWidgets.QWidget):
                     delegate_event=entry.get("delegate"),
                 )
             finally:
-                self._replaying_fold = False
-            return
-        if entry.get("kind") == "reasoning":
+                self._replaying_fold = was_replaying
+            created = self._folds.all()[before:]
+            fold = created[0] if created else None
+        elif entry.get("kind") == "reasoning":
             fold = self._folds.new("reasoning", _THOUGHT_DONE, open_=False)
             for chunk in entry.get("body") or ():
                 self._folds.append(fold, chunk)
+        else:
+            fold = self._folds.new(
+                "tool",
+                str(entry.get("label") or entry.get("name") or "工具"),
+                open_=False,
+                glyph=entry.get("glyph"),
+            )
+            for chunk in entry.get("body") or ():
+                self._folds.append(fold, chunk, body_format=self._tool_body_format)
+        if fold is None:
             return
-        fold = self._folds.new(
-            "tool",
-            str(entry.get("label") or entry.get("name") or "工具"),
-            open_=False,
-            glyph=entry.get("glyph"),
-        )
-        for chunk in entry.get("body") or ():
-            self._folds.append(fold, chunk, body_format=self._tool_body_format)
+        # 重画出来的卡重新挂回单子：下一次清屏前才知道它现在是什么状态。
+        self._fold_entries[id(fold)] = entry
+        if entry.get("open") or entry.get("pinned"):
+            self._folds.set_open(fold, True)
+
+    def _snapshot_fold_state(self) -> None:
+        """清屏前把这批卡「点开了没」记进单子：重画后照原样展开。
+
+        不记的话，刚点开看的工具输出一翻页就自动合上——内容还在，但得再点一次。
+        """
+        for fold in self._folds.all():
+            entry = self._fold_entries.get(id(fold))
+            if entry is not None:
+                entry["open"] = bool(fold.open)
+                entry["pinned"] = bool(fold.pinned)
 
     def _paint_history_item(self, item) -> None:
-        """铺一条：引擎回灌的机器消息走说明行，其余按你我分两路。"""
+        """铺一条：工具行照名字+预览画成折叠行，思考段先落，其余按你我分两路。"""
         text = str(item.get("text") or "")
-        if not text.strip():
-            return
         stamp = item.get("timestamp")
         self._next_at = stamp if stamp is not None else None
+        if str(item.get("role") or "") == "tool":
+            # 引擎回灌的工具行没有正文，只有名字和 80 字预览——那一行本来就是照这两个画的。
+            name = str(item.get("name") or "").strip()
+            if name:
+                context = str(item.get("context") or "").strip()
+                self.show_tool(name, context or name, ok=True)
+            return
+        reasoning = str(item.get("reasoning") or "").strip()
+        # 有的供应商把整轮回答当思考存回来（见 `show_reasoning_block` 的实测记录）：
+        # 与正文重复的就不画，否则回答底下会多出一段一样的内容。
+        if (
+            reasoning
+            and self._show_reasoning
+            and reasoning != text.strip()
+            and (not text.strip() or text.strip() not in reasoning)
+        ):
+            fold = self._folds.new("reasoning", _THOUGHT_DONE, open_=False)
+            self._folds.append(fold, reasoning)
+        if not text.strip():
+            return
         kind = str(item.get("display_kind") or "")
         if kind == _DELEGATION_DISPLAY_KIND:
             self.append_notice_lines(delegate_view.completion_lines(text))
@@ -4117,6 +4181,7 @@ class ChatPanel(QtWidgets.QWidget):
                 fold.glyph = settled
             label = base[2:] if base.startswith("正在") else base
             self._folds.retitle(fold, f"{label} · {word}")
+            self._note_fold(fold, "tool", label=f"{label} · {word}")
         self._tool_started.clear()
         self._tool_clock.stop()
         self._spin_timer.stop()
@@ -4399,9 +4464,9 @@ class ChatPanel(QtWidgets.QWidget):
         桌面端把这类东西放通知，只有请求失败才是错误行——这里照同一条规矩分开，
         不然「已保存 deepseek」也会顶着 [错误] 出现在对话里。
         """
-        self._insert_html(
-            f"<span style='color:#8f9bb0;font-size:9pt;'>· {html.escape(message)}</span>"
-        )
+        markup = f"<span style='color:#8f9bb0;font-size:9pt;'>· {html.escape(message)}</span>"
+        self._insert_html(markup)
+        self._note_line(markup)
 
     def set_show_reasoning(self, show: bool) -> None:
         """`display.show_reasoning`：关掉就不画思考段（桌面端用的是同一把开关）。"""
@@ -4478,9 +4543,9 @@ class ChatPanel(QtWidgets.QWidget):
         if key == self._last_error_key:
             return
         self._last_error_key = key
-        self._insert_html(
-            f"<span style='color:#ff9a9a;'>[错误] {html.escape(message)}</span>"
-        )
+        markup = f"<span style='color:#ff9a9a;'>[错误] {html.escape(message)}</span>"
+        self._insert_html(markup)
+        self._note_line(markup)
 
     def set_state(self, value: str) -> None:
         """引擎报的状态只改那行字，**不碰忙态**。
@@ -5188,9 +5253,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._settle_running_tools("已停止")
         if already_stopped:
             return
-        self._insert_html(
-            "<span style='color:rgba(255,255,255,120); font-size:11px;'>已停止</span>"
-        )
+        markup = "<span style='color:rgba(255,255,255,120); font-size:11px;'>已停止</span>"
+        self._insert_html(markup)
+        self._note_line(markup)
 
     def append_review_summary(self, text: str) -> None:
         """后台自我回顾（记忆/技能被改了）的总结：一条常驻灰字，落在对话里。
@@ -5205,18 +5270,22 @@ class ChatPanel(QtWidgets.QWidget):
         if self._review_count > MAX_REVIEW_SUMMARIES:
             if not self._review_folded:
                 self._review_folded = True
-                self._insert_html(
+                markup = (
                     "<div style='color:rgba(255,255,255,110); font-size:11px; margin-top:6px;'>"
                     f"💾 回顾总结已经贴满 {MAX_REVIEW_SUMMARIES} 条，后面的不再逐条贴在这里</div>"
                 )
+                self._insert_html(markup)
+                self._note_line(markup)
             return
         if self._streaming:
             self._review_pending.append(text)
             return
-        self._insert_html(
+        markup = (
             "<div style='color:rgba(255,255,255,135); font-size:11px; margin-top:6px;'>"
             f"💾 {html.escape(text)}</div>"
         )
+        self._insert_html(markup)
+        self._note_line(markup)
 
     def abandon_turn(self, reason: str = "引擎断开") -> None:
         """引擎没了：还在计时的工具行当场停表、标成没跑完，末尾留一行灰字。
@@ -5235,9 +5304,9 @@ class ChatPanel(QtWidgets.QWidget):
         if self._streaming:
             self.end_assistant()
         self.set_provider_wait("")
-        self._insert_html(
-            f"<span style='color:rgba(255,255,255,120); font-size:11px;'>{html.escape(reason)} · 这一轮没跑完</span>"
-        )
+        markup = f"<span style='color:rgba(255,255,255,120); font-size:11px;'>{html.escape(reason)} · 这一轮没跑完</span>"
+        self._insert_html(markup)
+        self._note_line(markup)
 
     def set_busy(self, busy: bool) -> None:
         """一轮在跑：发送键换成「停止」（框里有字就换成「排队」）；停的是引擎那一轮，说过的话仍在上下文里。

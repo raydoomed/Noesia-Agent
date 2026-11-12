@@ -1207,6 +1207,14 @@ class EngineWire(QtCore.QObject):
                         "display_kind": str(row.get("display_kind") or ""),
                         "row_id": row.get("row_id"),
                         "timestamp": row.get("timestamp"),
+                        # 工具行没有正文：引擎给的是名字 + 80 字预览（`context`），
+                        # 界面上那一行就是照它画的，别在半路丢掉。
+                        "name": str(row.get("name") or ""),
+                        "context": str(row.get("context") or ""),
+                        "tool_call_id": row.get("tool_call_id"),
+                        "labels": row.get("labels"),
+                        # 回答的思考段：与正文同一行回来，重铺时一并画。
+                        "reasoning": str(row.get("reasoning") or row.get("reasoning_content") or ""),
                     }
                     for row in (result.get("display_messages") or result.get("messages") or [])
                     if isinstance(row, dict) and str(row.get("display_kind") or "") != "hidden"
