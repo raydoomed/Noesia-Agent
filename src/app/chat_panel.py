@@ -785,6 +785,10 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
                 QtCore.QPointF(9.0 + dx * 5.0, 9.0 + dy * 5.0),
                 QtCore.QPointF(9.0 + dx * 6.4, 9.0 + dy * 6.4),
             )
+    elif kind == "clock":
+        painter.drawEllipse(QtCore.QPointF(9.0, 9.0), 6.3, 6.3)
+        painter.drawLine(QtCore.QPointF(9.0, 5.2), QtCore.QPointF(9.0, 9.3))
+        painter.drawLine(QtCore.QPointF(9.0, 9.3), QtCore.QPointF(12.0, 10.9))
     elif kind == "file":
         page = QtGui.QPainterPath()
         page.moveTo(5.2, 2.6)
@@ -1505,6 +1509,7 @@ class ChatPanel(QtWidgets.QWidget):
     model_chosen = QtCore.Signal(str)
     models_refresh_requested = QtCore.Signal()
     model_settings_requested = QtCore.Signal()
+    cron_requested = QtCore.Signal()
     new_session_requested = QtCore.Signal()
     approval_requested = QtCore.Signal(str)
     stop_requested = QtCore.Signal()
@@ -1595,6 +1600,16 @@ class ChatPanel(QtWidgets.QWidget):
         combo.setMenu(menu)
         header.addWidget(combo)
         header.addWidget(new_session)
+        cron = QtWidgets.QPushButton(frame)
+        cron.setObjectName("mini")
+        cron.setIcon(_glyph_icon("clock"))
+        cron.setIconSize(QtCore.QSize(14, 14))
+        cron.setFixedSize(26, 20)
+        cron.setToolTip("定时任务：按排程自动跑提示词，能暂停、立即触发、看运行记录")
+        cron.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        cron.clicked.connect(self.cron_requested.emit)
+        header.addWidget(cron)
+        self._cron_button = cron
         set_model = QtWidgets.QPushButton(frame)
         set_model.setObjectName("mini")
         set_model.setIcon(_glyph_icon("gear"))

@@ -642,6 +642,26 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._sync_voice_button()
         self._model_dialog = None
 
+    def open_cron(self) -> None:
+        """打开定时任务面板：引擎那边是 cron 库，窗口只画。"""
+        panel = self.chat_panel
+        if panel is None or self.client is None:
+            return
+        from app.cron_dialog import CronDialog
+
+        try:
+            dialog = CronDialog(self.client, parent=None)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("打不开定时任务：%s", exc)
+            panel.show_error(f"定时任务窗口打不开：{exc}")
+            return
+        screen = QtGui.QGuiApplication.screenAt(QtGui.QCursor.pos()) or QtGui.QGuiApplication.primaryScreen()
+        if screen is not None:
+            geometry = dialog.frameGeometry()
+            geometry.moveCenter(screen.availableGeometry().center())
+            dialog.move(geometry.topLeft())
+        dialog.exec()
+
     def _end_avatar_session(self) -> None:
         """闲置挂断：会话不再计费。引擎留着（预加载过就不必再载 dll）。"""
         if self._avatar is None:
@@ -1160,6 +1180,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.new_session_requested.connect(self.request_new_session)
             self.chat_panel.resubmit_requested.connect(self._resubmit_turn)
             self.chat_panel.model_settings_requested.connect(self.open_model_settings)
+            self.chat_panel.cron_requested.connect(self.open_cron)
             self.chat_panel.approval_requested.connect(self.request_approval_mode)
             self.chat_panel.stop_requested.connect(self.stop_turn)
             self.chat_panel.attachment_picked.connect(self._attach_picked)

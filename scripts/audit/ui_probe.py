@@ -89,6 +89,21 @@ class Cfg:
     transparent = True
 
 
+class _FakeCronEngine(QtCore.QObject):
+    """定时任务面板要是真引擎；探针只建控件，所以这里给同名信号和空方法。"""
+
+    cron_result = QtCore.Signal(str, dict)
+    cron_changed = QtCore.Signal()
+
+    def cron_list(self, **kw) -> None: ...
+    def cron_detail(self, job_id: str) -> None: ...
+    def cron_runs(self, job_id: str, limit: int = 20) -> None: ...
+    def cron_save(self, job_id: str, fields: dict) -> None: ...
+    def cron_set_paused(self, job_id: str, paused: bool) -> None: ...
+    def cron_trigger(self, job_id: str) -> None: ...
+    def cron_delete(self, job_id: str) -> None: ...
+
+
 def _idle():
     from app.idle_video import IdleVideoPlayer
     return IdleVideoPlayer(REPO / "assets" / "idle_video.mp4"), True
@@ -116,6 +131,7 @@ CASES = {
     "avatar_status": lambda: (__import__("app.model_dialog", fromlist=["x"])._AvatarStatus(), True),
     "model_dialog": lambda: (__import__("app.model_dialog", fromlist=["x"]).ModelDialog(
         [{"provider": "deepseek", "label": "DeepSeek", "models": [{"id": "deepseek-flash", "name": "flash"}], "available": True}]), True),
+    "cron_dialog": lambda: (__import__("app.cron_dialog", fromlist=["x"]).CronDialog(_FakeCronEngine()), True),
     "floating_avatar": lambda: (__import__("app.main", fromlist=["x"]).FloatingAvatar(
         REPO / "assets" / "transparent" / "noesia_transparent.png", Cfg()), True),
 }

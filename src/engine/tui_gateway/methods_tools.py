@@ -1323,6 +1323,37 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, json.loads(raw))
     if action in {"remove", "pause", "resume"}:
         return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
+    if action in {"detail", "runs", "trigger", "update"}:
+        # These read/mutate through the panel's own sync chain (same one the dashboard and the
+        # chat UI's job form use): it knows the paused flag, the run-session history and the
+        # manual-fire claim; the cronjob tool path above only knows name → action.
+        job_id = _str_arg(params, "job_id") or jid
+        if not job_id:
+            return _err(rid, 4016, "缺少 job_id")
+        try:
+            limit = int(params.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        panels = _tools_mod("noesia_cli.web_routers.cron")
+        try:
+            if action == "detail":
+                payload = {"record": panels._get_cron_job_sync(job_id)}
+            elif action == "runs":
+                payload = panels._list_cron_job_runs_sync(job_id, None, limit)
+            elif action == "trigger":
+                payload = {"record": panels._trigger_cron_job_sync(job_id)}
+            else:
+                updates = params.get("updates")
+                if not isinstance(updates, dict) or not updates:
+                    return _err(rid, 4016, "update 需要 updates")
+                body = _tools_mod("noesia_cli.web_models").CronJobUpdate(updates=updates)
+                payload = {"record": panels._update_cron_job_sync(job_id, body)}
+        except Exception as exc:  # noqa: BLE001 - HTTPException/ValueError both flatten to one error
+            return _err(rid, 5023, str(getattr(exc, "detail", None) or exc or exc.__class__.__name__))
+        if not isinstance(payload, dict):
+            payload = {"record": payload}
+        payload["success"] = True
+        return _ok(rid, payload)
     return _err(rid, 4016, f"unknown cron action: {action}")
 
 

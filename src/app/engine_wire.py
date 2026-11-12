@@ -280,6 +280,8 @@ class EngineWire(QtCore.QObject):
     voice_text = QtCore.Signal(str, str)
     voice_failed = QtCore.Signal(str, str)
     voice_model = QtCore.Signal(dict)
+    cron_result = QtCore.Signal(str, dict)
+    cron_changed = QtCore.Signal()
     setup_needed = QtCore.Signal(str)
     error = QtCore.Signal(str)
     failed = QtCore.Signal(str)
@@ -760,6 +762,34 @@ class EngineWire(QtCore.QObject):
         self._call("model.save_key", params, tag=f"model.save_key:{slug}")
 
 
+    def cron_list(self, *, include_disabled: bool = True) -> None:
+        """面板那份清单：`include_disabled` 要开着——暂停的任务也得留在列表里（否则看起来像被删了）。"""
+        self._call("cron.manage", {"action": "list", "include_disabled": include_disabled}, tag="cron.list")
+
+    def cron_detail(self, job_id: str) -> None:
+        self._call("cron.manage", {"action": "detail", "job_id": job_id}, tag="cron.detail")
+
+    def cron_runs(self, job_id: str, limit: int = 20) -> None:
+        self._call("cron.manage", {"action": "runs", "job_id": job_id, "limit": limit}, tag="cron.runs")
+
+    def cron_save(self, job_id: str, fields: dict) -> None:
+        """新建走 `add`（原样转发给 cronjob 工具），改走面板的 `update`（原样写回记录字段）。"""
+        if job_id:
+            self._call("cron.manage", {"action": "update", "job_id": job_id, "updates": dict(fields)},
+                       tag="cron.update")
+            return
+        self._call("cron.manage", {"action": "add", **fields}, tag="cron.add")
+
+    def cron_set_paused(self, job_id: str, paused: bool) -> None:
+        action = "resume" if not paused else "pause"
+        self._call("cron.manage", {"action": action, "name": job_id}, tag=f"cron.{action}")
+
+    def cron_trigger(self, job_id: str) -> None:
+        self._call("cron.manage", {"action": "trigger", "job_id": job_id}, tag="cron.trigger")
+
+    def cron_delete(self, job_id: str) -> None:
+        self._call("cron.manage", {"action": "remove", "name": job_id}, tag="cron.remove")
+
     def _call(self, method: str, params: dict, *, tag: str = "", long_lived: bool = False) -> int:
         cutoff = time.monotonic() - self._SENT_TTL_S
         for old, frame in list(self._sent.items()):
@@ -1100,6 +1130,9 @@ class EngineWire(QtCore.QObject):
                     self._pending_switch_token = ""
                 self.save_result.emit(tag, {"ok": False, "message": str(message)})
                 return
+            if tag.startswith("cron."):
+                self.cron_result.emit(tag, {"ok": False, "message": str(message)})
+                return
             if code == 5080 or looks_unconfigured(message, code):
                 self.setup_needed.emit(NO_PROVIDER_HINT)
                 return
@@ -1252,6 +1285,10 @@ class EngineWire(QtCore.QObject):
             self.display_config.emit(dict((result.get("config") or {}).get("display") or {}))
         elif tag.startswith("attach:"):
             self._on_attach_done(rid, tag, result)
+        elif tag.startswith("cron."):
+            payload = dict(result) if isinstance(result, dict) else {}
+            payload["ok"] = True
+            self.cron_result.emit(tag, payload)
         elif tag.startswith("config.get:"):
             key = tag.split(":", 1)[1]
             if key == "reasoning":
@@ -1348,6 +1385,8 @@ class EngineWire(QtCore.QObject):
             effort = payload.get("reasoning_effort")
             if effort is not None:
                 self.reasoning_reported.emit(str(effort), str(payload.get("reasoning_effort_wire") or ""))
+        elif kind == "cron.changed":
+            self.cron_changed.emit()
         elif kind == "approval.cancelled":
             ids = payload.get("request_ids")
             self.approvals_cancelled.emit([str(item) for item in ids] if isinstance(ids, list) else [])

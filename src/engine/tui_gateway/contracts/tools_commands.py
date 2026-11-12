@@ -441,6 +441,10 @@ class CronAction(WireEnum):
     remove = "remove"
     pause = "pause"
     resume = "resume"
+    detail = "detail"
+    runs = "runs"
+    trigger = "trigger"
+    update = "update"
 
 
 class CronManageParams(Params):
@@ -453,6 +457,10 @@ class CronManageParams(Params):
     continuity: bool | str | None = None
     deliver: str | None = None
     profile: str | None = None
+    # detail/runs/trigger/update: 走的是面板那条同步链（与 dashboard 同一套），按 job_id 定位。
+    job_id: str | None = None
+    limit: int | str | None = None
+    updates: JsonValue | None = None
 
 
 class CronJobRow(_Open):
@@ -523,10 +531,14 @@ class CronManageResult(_Open):
     message: str | None = None
     guidance: JsonValue | None = None
     removed_job: CronRemovedJob | None = None
+    # detail/trigger/runs: 面板那条链的原始 job 记录（原始字段，编辑表单按它回填）与运行记录。
+    record: JsonValue | None = None
+    runs: list[JsonValue] | None = None
 
 
 method("cron.manage", params=CronManageParams, result=CronManageResult,
-       doc="List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store.")
+       doc="List/add/remove/pause/resume cron jobs in the (optionally profile-scoped) cron store; "
+           "detail/runs/trigger/update go through the panel sync chain (one record, run history, fire now, edit).")
 
 
 # ── browser.manage ────────────────────────────────────────────────────────────────────────────
