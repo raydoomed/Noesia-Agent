@@ -14,6 +14,11 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from app.model_dialog import STYLE, _apply_dark_palette
 
+FIRE_POLL_MS = 1000
+RUNS_POLL_MS = 8000
+QUEUE_SETTLE_TIMEOUT_S = 90.0
+QUEUE_START_SLACK_S = 2.0
+
 EXTRA_STYLE = """
 #cron-search, #cron-custom {
     background-color: rgba(255, 255, 255, 8);
@@ -40,7 +45,7 @@ EXTRA_STYLE = """
 #cron-detail-line { color: rgba(246, 223, 234, 200); font-size: 12px; }
 #cron-section { color: rgba(246, 223, 234, 150); font-size: 11px; letter-spacing: 0.4px; }
 #cron-empty { color: rgba(255, 255, 255, 105); font-size: 12px; }
-#cron-note { font-size: 11.5px; }
+#cron-note { color: rgba(246, 223, 234, 205); font-size: 11.5px; }
 #danger { background: transparent; border: 1px solid rgba(255, 120, 120, 60); color: #ff9a9a; font-weight: 400; }
 #danger:hover { background: rgba(255, 120, 120, 26); border-color: rgba(255, 120, 120, 130); color: #ffbdbd; }
 #cron-actions QPushButton { padding: 5px 12px; font-size: 12px; }
@@ -71,13 +76,32 @@ FREQUENCIES = (
     ("custom", "自定义"),
 )
 WEEKDAYS = (("1", "周一"), ("2", "周二"), ("3", "周三"), ("4", "周四"), ("5", "周五"), ("6", "周六"), ("0", "周日"))
+STATE_LABELS = {
+    "enabled": "已启用",
+    "scheduled": "已排程",
+    "running": "运行中",
+    "paused": "已暂停",
+    "disabled": "已禁用",
+    "error": "错误",
+    "completed": "已完成",
+}
+
 STATE_TINT = {
+    "enabled": "#8fd8a8",
+    "scheduled": "#8fd8a8",
+    "running": "#8ab4ff",
+    "error": "#ff8a8a",
     "run": "#8ab4ff",
     "wait": "#8fd8a8",
     "paused": "rgba(255, 255, 255, 110)",
+    "disabled": "rgba(255, 255, 255, 90)",
+    "completed": "rgba(255, 255, 255, 90)",
     "done": "rgba(255, 255, 255, 90)",
     "fail": "#ff8a8a",
 }
+
+# 桌面的 NEXT_RUN_OVERDUE_GRACE_MS：忙碌的一轮 tick 允许迟到几分钟，超过这个宽限就是调度器没跑。
+OVERDUE_GRACE_S = 15 * 60
 
 
 def _parse_iso(value) -> datetime | None:
@@ -128,43 +152,111 @@ def _when(value) -> str:
     return f"{stamp}（{rel}）"
 
 
-def _row_state(job: dict) -> tuple[str, str]:
-    """(状态词, 颜色键)：暂停/失败/运行中/已完成/待运行，顺序照桌面那份判定。"""
-    if job.get("last_status") in {"error", "failed"} or job.get("last_error"):
-        enabled = job.get("enabled", True)
-        if not enabled or job.get("state") == "paused":
-            return "已暂停", "paused"
-        return "上次失败", "fail"
-    if job.get("state") == "paused" or job.get("enabled") is False:
-        if job.get("state") == "completed":
-            return "已完成", "done"
-        return "已暂停", "paused"
-    if job.get("last_status") in {"running", "started"}:
-        return "运行中", "run"
-    return "待运行", "wait"
-
-
 def _preview(text, limit: int = 120) -> str:
     flat = " ".join(str(text or "").split())
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
+_WEEKDAY_NAMES = {
+    "monday": "周一",
+    "tuesday": "周二",
+    "wednesday": "周三",
+    "thursday": "周四",
+    "friday": "周五",
+    "saturday": "周六",
+    "sunday": "周日",
+}
+_CRON_DOW = {**{str(n): name for n, name in enumerate(("周日", "周一", "周二", "周三", "周四", "周五", "周六"))}, "7": "周日"}
+
+
+def _clock_text(raw: str) -> str:
+    """引擎排程里的钟点（9am / 9:30pm / 09:00）统一成 24 小时的 HH:MM，认不出来就原样给。"""
+    text = raw.strip().lower().replace(" ", "")
+    match = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?(am|pm)?", text)
+    if not match:
+        return raw.strip()
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    suffix = match.group(3)
+    if suffix == "pm" and hour < 12:
+        hour += 12
+    elif suffix == "am" and hour == 12:
+        hour = 0
+    return f"{hour:02d}:{minute:02d}"
+
+
 def _schedule_label(text) -> str:
-    """把引擎自己的英文排程描述翻成中文：详情行只读，不用回头去喂引擎。"""
+    """把引擎自己的英文排程描述翻成中文：只翻认得出来的几种，其余原样给。"""
     raw = str(text or "").strip()
+    if not raw:
+        return ""
     match = re.fullmatch(r"every\s+(\d+)\s*m", raw)
     if match:
         return f"每 {match.group(1)} 分钟"
     match = re.fullmatch(r"every\s+(\d+)\s*h", raw)
     if match:
         return f"每 {match.group(1)} 小时"
-    match = re.fullmatch(r"in\s+(\d+)\s*m", raw)
+    match = re.fullmatch(r"(?:once\s+)?in\s+(\d+)\s*(m|h)", raw)
     if match:
-        return f"{match.group(1)} 分钟后一次性"
-    match = re.fullmatch(r"in\s+(\d+)\s*h", raw)
+        unit = "分钟" if match.group(2) == "m" else "小时"
+        return f"{match.group(1)} {unit}后一次性"
+    match = re.fullmatch(r"once\s+at\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})", raw)
     if match:
-        return f"{match.group(1)} 小时后一次性"
+        return f"一次性 {match.group(1)} {match.group(2)}"
+    match = re.fullmatch(r"every\s+day\s+(?:at\s+)?(.+)", raw)
+    if match:
+        return f"每天 {_clock_text(match.group(1))}"
+    match = re.fullmatch(r"(?:every\s+)?weekdays?\s+(?:at\s+)?(.+)", raw)
+    if match:
+        return f"工作日 {_clock_text(match.group(1))}"
+    match = re.fullmatch(r"every\s+([a-z]+)\s+(?:at\s+)?(.+)", raw)
+    if match and match.group(1) in _WEEKDAY_NAMES:
+        return f"每{_WEEKDAY_NAMES[match.group(1)]} {_clock_text(match.group(2))}"
+    parts = raw.split()
+    if len(parts) == 5 and all(re.fullmatch(r"[\d*/,-]+", part) for part in parts):
+        minute, hour, day, month, weekday = parts
+        if minute.isdigit() and hour.isdigit() and day == "*" and month == "*":
+            clock = f"{int(hour):02d}:{int(minute):02d}"
+            if weekday == "*":
+                return f"每天 {clock}"
+            if weekday in _CRON_DOW:
+                return f"每{_CRON_DOW[weekday]} {clock}"
     return raw
+
+
+def _schedule_text(job: dict) -> str:
+    """清单/详情都从这里取排程那一句：先要引擎写好的，其次排程里的 display/expr/run_at。"""
+    raw = job.get("schedule_display")
+    if not raw:
+        schedule = job.get("schedule")
+        if isinstance(schedule, dict):
+            raw = schedule.get("display") or schedule.get("expr") or schedule.get("run_at")
+        else:
+            raw = schedule
+    return _schedule_label(raw) or "—"
+
+
+def _overdue(job: dict) -> bool:
+    """下次运行停在过去超过宽限：调度器没跑起来，界面上得看得见（桌面同一条判定）。"""
+    moment = _parse_iso(job.get("next_run_at"))
+    if moment is None:
+        return False
+    now = datetime.now(moment.tzinfo) if moment.tzinfo else datetime.now()
+    return (now - moment).total_seconds() > OVERDUE_GRACE_S
+
+
+def _row_state(job: dict) -> tuple[str, str]:
+    """(状态词, 颜色键)：状态就是引擎的 job.state（照桌面 jobState），没给才按 enabled 推。
+
+    上次成功/失败不进状态词——那是「上次运行」的事，桌面上分两栏放。
+    """
+    state = str(job.get("state") or "").strip()
+    if not state:
+        state = "disabled" if job.get("enabled") is False else "scheduled"
+    if state == "scheduled" and _overdue(job):
+        return "已逾期", "error"
+    return STATE_LABELS.get(state, state), state
+
 
 
 def _repeat_left(value) -> int | None:
@@ -182,9 +274,11 @@ def _repeat_left(value) -> int | None:
 class _JobRow(QtWidgets.QWidget):
     """清单里的一行：名字一行、排程和状态一行，左边一颗状态点。"""
 
-    def __init__(self, job: dict, parent: QtWidgets.QWidget | None = None) -> None:
+    def __init__(self, job: dict, parent: QtWidgets.QWidget | None = None, firing: bool = False) -> None:
         super().__init__(parent)
         state_text, tint_key = _row_state(job)
+        if firing:
+            state_text, tint_key = "运行中", "run"
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(2)
@@ -197,7 +291,7 @@ class _JobRow(QtWidgets.QWidget):
         top.addWidget(dot)
         top.addWidget(name, 1)
         meta = QtWidgets.QLabel(
-            f"{job.get('schedule') or '—'} · {state_text}", self
+            f"{_schedule_text(job)} · {state_text}", self
         )
         meta.setObjectName("cron-meta")
         layout.addLayout(top)
@@ -232,7 +326,16 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._records: dict[str, dict] = {}
         self._current = ""
         self._editing = ""
+        self._firing = ""
+        self._active_job = ""
         self._note_serial = 0
+        self._firing_at = 0.0
+        self._firing_wall = 0.0
+        self._queued_expired = False
+        self._poll = QtCore.QTimer(self)
+        self._poll.setInterval(RUNS_POLL_MS)
+        self._poll.timeout.connect(self._poll_tick)
+        self._poll.start()
 
         frame = QtWidgets.QFrame(self)
         frame.setObjectName("dialog-card")
@@ -522,7 +625,17 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
                     self._paint_detail(record)
             return
         if tag == "cron.runs":
-            self._paint_runs((payload.get("runs") or []) if ok else [])
+            rows = (payload.get("runs") or []) if ok else []
+            self._paint_runs(rows)
+            # 有活着的运行（比如别处刚点过触发、或这条正在跑）就把这条当「运行中」；
+            # 关窗再开时看不到在途的回包，只能靠运行记录里这面旗。
+            active = self._current if any(isinstance(row, dict) and row.get("is_active") for row in rows) else ""
+            if active != self._active_job:
+                self._active_job = active
+                record = self._records.get(self._current)
+                if record:
+                    self._paint_detail(record)
+                self._rebuild_list()
             return
         if tag in {"cron.add", "cron.update"}:
             if not ok:
@@ -542,6 +655,23 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._engine.cron_list()
             self._refresh_detail()
             return
+        if tag == "cron.trigger":
+            # 触发那一刻的 busy 到这里才算数：清掉、恢复按钮，再重读这条和它的运行记录。
+            self._poll.stop()
+            self._poll.setInterval(RUNS_POLL_MS)
+            self._poll.start()
+            self._firing = ""
+            self._queued_expired = False
+            self._apply_busy()
+            if not ok:
+                self._status.setText(f"触发失败：{payload.get('message') or ''}")
+                self._status.setStyleSheet(self.NOTE_ERROR)
+            else:
+                self._status.setText("定时任务已触发")
+                self._status.setStyleSheet(self.NOTE_OK)
+            self._engine.cron_list()
+            self._refresh_detail()
+            return
         if not ok:
             self._status.setText(str(payload.get("message") or "操作失败"))
             self._status.setStyleSheet(self.NOTE_ERROR)
@@ -554,9 +684,6 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._clear_detail()
         elif tag in {"cron.pause", "cron.resume"}:
             self._status.setText("定时任务已暂停" if tag == "cron.pause" else "定时任务已恢复")
-            self._status.setStyleSheet(self.NOTE_OK)
-        elif tag == "cron.trigger":
-            self._status.setText("定时任务已触发")
             self._status.setStyleSheet(self.NOTE_OK)
         self._engine.cron_list()
         self._refresh_detail()
@@ -588,7 +715,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
             job_id = str(job.get("job_id") or job.get("id") or "")
             item.setData(QtCore.Qt.ItemDataRole.UserRole, job_id)
             item.setSizeHint(QtCore.QSize(10, 50))
-            self._list.setItemWidget(item, _JobRow(job, self._list))
+            self._list.setItemWidget(item, _JobRow(job, self._list, firing=job_id in {self._firing, self._active_job}))
             shown += 1
             if job_id == self._current:
                 item.setSelected(True)
@@ -645,12 +772,14 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def _paint_detail(self, record: dict) -> None:
         self._detail_name.setText(str(record.get("name") or record.get("id") or ""))
         state_text, _ = _row_state({**record, "enabled": record.get("enabled", True)})
+        if self._current and (self._firing == self._current or self._active_job == self._current):
+            state_text = "运行中"
         bits = [f"状态：{state_text}"]
         bits.append(f"下次：{_when(record.get('next_run_at'))}")
         if record.get("last_run_at"):
             bits.append(f"上次：{_when(record.get('last_run_at'))}")
         self._detail_state.setText("　·　".join(bits))
-        schedule = _schedule_label(record.get("schedule_display"))
+        schedule = _schedule_text(record)
         left = _repeat_left(record.get("repeat"))
         if left:
             schedule = f"{schedule}（还会跑 {left} 次）" if schedule else f"还会跑 {left} 次"
@@ -658,9 +787,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._detail_prompt.setPlainText(str(record.get("prompt") or ""))
         paused = record.get("state") == "paused" or record.get("enabled") is False
         self._pause_button.setText("恢复" if paused else "暂停")
-        self._trigger_button.setEnabled(True)
-        self._edit_button.setEnabled(True)
-        self._delete_button.setEnabled(True)
+        self._apply_busy()
         if record.get("last_error"):
             self._status.setText(f"上次失败：{record.get('last_error')}")
             self._status.setStyleSheet(self.NOTE_ERROR)
@@ -668,7 +795,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def _paint_runs(self, runs: list) -> None:
         self._runs.clear()
         rows = [row for row in runs if isinstance(row, dict)]
-        if not rows:
+        if not rows and not (self._firing and self._firing == self._current):
             item = QtWidgets.QListWidgetItem("尚无运行")
             item.setForeground(QtGui.QColor(255, 255, 255, 105))
             self._runs.addItem(item)
@@ -689,6 +816,19 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
             item.setForeground(QtGui.QColor(246, 223, 234, 218))
             item.setToolTip(str(run.get("preview") or title))
             self._runs.addItem(item)
+        # 刚点下「立即触发」那一趟还没落地成运行记录：先替它占一行（照桌面的「排队中的运行」）。
+        # 运行记录里出现不早于点击时刻的那一行就算落地，排队行撤掉；一直不落地到 90 秒也撤掉。
+        if self._firing and self._firing == self._current and not self._queued_expired:
+            if any(
+                isinstance(row, dict)
+                and float(row.get("started_at") or 0) >= self._firing_wall - QUEUE_START_SLACK_S
+                for row in rows
+            ):
+                self._queued_expired = True
+            elif not any(row.get("is_active") for row in rows):
+                pending = QtWidgets.QListWidgetItem(f"{time.strftime('%m-%d %H:%M')}　排队中的运行")
+                pending.setForeground(QtGui.QColor(246, 223, 234, 170))
+                self._runs.insertItem(0, pending)
 
     # ── 操作 ────────────────────────────────────────────────────────────────
     def _toggle_paused(self) -> None:
@@ -700,8 +840,58 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._engine.cron_set_paused(job_id, paused=not paused)
 
     def _trigger_now(self) -> None:
-        if self._current:
-            self._engine.cron_trigger(self._current)
+        """立即触发：引擎那边要等这一趟跑完才回包，所以点下去先把「运行中 / 排队中的运行」画上。"""
+        job_id = self._current
+        if not job_id or self._firing:
+            return
+        self._firing = job_id
+        self._firing_at = time.monotonic()
+        self._firing_wall = time.time()
+        self._queued_expired = False
+        self._status.setText("正在触发定时任务…")
+        self._status.setStyleSheet("")
+        self._rebuild_list()
+        record = self._records.get(job_id)
+        if record:
+            self._paint_detail(record)
+        self._apply_busy()
+        for index in range(self._runs.count() - 1, -1, -1):
+            existing = self._runs.item(index)
+            if existing is not None and existing.text() == "尚无运行":
+                self._runs.takeItem(index)
+        if not self._runs_has_active():
+            pending = QtWidgets.QListWidgetItem(f"{time.strftime('%m-%d %H:%M')}　排队中的运行")
+            pending.setForeground(QtGui.QColor(246, 223, 234, 170))
+            self._runs.insertItem(0, pending)
+        self._poll.setInterval(FIRE_POLL_MS)
+        self._poll.start()
+        self._engine.cron_trigger(job_id)
+
+    def _poll_tick(self) -> None:
+        """平时 8 秒、等触发回包时 1 秒重读一次：排程跑和手动触发都能及时落到界面上。"""
+        if self._firing and time.monotonic() - self._firing_at > QUEUE_SETTLE_TIMEOUT_S and not self._queued_expired:
+            self._queued_expired = True
+            for index in range(self._runs.count() - 1, -1, -1):
+                item = self._runs.item(index)
+                if item is not None and "排队中的运行" in item.text():
+                    self._runs.takeItem(index)
+        self._engine.cron_list()
+        self._refresh_detail()
+
+    def _runs_has_active(self) -> bool:
+        for index in range(self._runs.count()):
+            item = self._runs.item(index)
+            if item is not None and "运行中" in item.text():
+                return True
+        return False
+
+    def _apply_busy(self) -> None:
+        """等触发回包这段时间，四个动作都别让人再点第二下（照桌面的 busy）。"""
+        busy = bool(self._firing) and self._firing == self._current
+        has_job = bool(self._current)
+        for button in (self._pause_button, self._edit_button, self._delete_button, self._trigger_button):
+            button.setEnabled(has_job and not busy)
+        self._trigger_button.setText("触发中…" if busy else "立即触发")
 
     def _delete_current(self) -> None:
         job_id = self._current
@@ -862,6 +1052,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         super().keyPressEvent(event)
 
     def done(self, result: int) -> None:  # noqa: N802 - Qt
+        self._poll.stop()
         for signal, slot in (
             (self._engine.cron_result, self._on_result),
             (self._engine.cron_changed, self._on_changed),

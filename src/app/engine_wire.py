@@ -29,6 +29,21 @@ import PySide6.QtCore as QtCore
 
 logger = logging.getLogger(__name__)
 
+# 定时任务、子代理、工具、看板跑出来的会话不是「用户自己聊的那场」：冷启动和恢复挑会话时跳过。
+# 引擎的自动恢复名单只挡 kanban/tool/oneshot，cron 的会话在它眼里同样「像人」。
+NON_CHAT_SOURCES = frozenset({"cron", "kanban", "tool", "oneshot", "subagent", "bot"})
+
+
+def chat_session_id(rows) -> str:
+    """从会话清单里挑一场真正的对话（引擎给的是最新在前），挑不到就空串。"""
+    for row in rows or []:
+        if not isinstance(row, dict) or str(row.get("source") or "") in NON_CHAT_SOURCES:
+            continue
+        sid = str(row.get("session_id") or row.get("id") or "")
+        if sid:
+            return sid
+    return ""
+
 
 def _engine_home_path(root: "Path | str") -> Path:
     """数据根：跟 `start()` 写进环境变量的是同一个值（环境变量优先）。"""
@@ -240,7 +255,7 @@ class EngineWire(QtCore.QObject):
     session_ready = QtCore.Signal(dict)
     history = QtCore.Signal(list)
     user_row_stamped = QtCore.Signal(int)
-    most_recent = QtCore.Signal(dict)
+    sessions_listed = QtCore.Signal(list)
     config_value = QtCore.Signal(str, str)
     reasoning_reported = QtCore.Signal(str, str)
     reasoning_pending = QtCore.Signal(bool)
@@ -419,7 +434,7 @@ class EngineWire(QtCore.QObject):
         self._attach_since = time.monotonic()
         params = {"cwd": cwd or str(self._workspace), "cwd_explicit": True}
         if self._reasoning_effort:
-            params["reasoning_effort"] = self._reasoning_effort
+            params["reasoning"] = self._reasoning_effort
         rid = self._call("session.create", params, tag="session.create")
         if rid not in self._sent:
             self._attaching = False
@@ -439,8 +454,9 @@ class EngineWire(QtCore.QObject):
             self._attaching = False
             self._attach_since = 0.0
 
-    def request_most_recent(self) -> None:
-        self._call("session.most_recent", {}, tag="session.most_recent")
+    def list_sessions(self, limit: int = 50) -> None:
+        """库里存过的会话（含来源）：没有「上一场」存档时，靠它挑一场真正的对话。"""
+        self._call("session.list", {"scope": "stored", "limit": limit}, tag="session.list")
 
     def config_get(self, key: str) -> None:
         self._call("config.get", {"key": key, "session_id": self._session_id}, tag=f"config.get:{key}")
@@ -785,7 +801,10 @@ class EngineWire(QtCore.QObject):
         self._call("cron.manage", {"action": action, "name": job_id}, tag=f"cron.{action}")
 
     def cron_trigger(self, job_id: str) -> None:
-        self._call("cron.manage", {"action": "trigger", "job_id": job_id}, tag="cron.trigger")
+        # 面板上的「立即触发」要等这一趟真跑完才回包，可能好几分钟：标成 long_lived，
+        # 别让 120 秒的在途清理把它的 tag 摘掉（摘了回包就没人认领，界面一直停在「触发中」）。
+        self._call("cron.manage", {"action": "trigger", "job_id": job_id}, tag="cron.trigger",
+                   long_lived=True)
 
     def cron_delete(self, job_id: str) -> None:
         self._call("cron.manage", {"action": "remove", "name": job_id}, tag="cron.remove")
@@ -860,7 +879,7 @@ class EngineWire(QtCore.QObject):
         while self._replay:
             replay = self._replay.pop(0)
             params = dict(replay["params"])
-            if replay["method"] not in {"session.resume", "session.create", "session.most_recent"}:
+            if replay["method"] not in {"session.resume", "session.create"}:
                 params["session_id"] = self._session_id
             new_rid = self._call(replay["method"], params, tag=replay["tag"])
             if replay.get("attach") is not None:
@@ -896,7 +915,7 @@ class EngineWire(QtCore.QObject):
                 queued["attach"] = self._attach_names.pop(rid, ("", False))
             self._replay.append(queued)
         self._recover_rounds += 1
-        if method in {"session.create", "session.resume", "session.most_recent"}:
+        if method in {"session.create", "session.resume"}:
             self._recovering = False
             self._attaching = False
         if self._recover_rounds > 3:
@@ -916,7 +935,7 @@ class EngineWire(QtCore.QObject):
             return
         self._recovering = True
         if method in {"session.resume", "session.create"} or not self._stored_id:
-            self._call("session.most_recent", {}, tag="recover.recent")
+            self._call("session.list", {"scope": "stored", "limit": 50}, tag="recover.recent")
             return
         self._call("session.resume", {"session_id": self._stored_id}, tag="session.resume")
 
@@ -1202,15 +1221,15 @@ class EngineWire(QtCore.QObject):
                 self.set_reasoning(level)
             self._flush_after_attach()
         elif tag == "recover.recent":
-            sid = str(result.get("session_id") or "")
+            sid = chat_session_id(result.get("sessions")) or str(result.get("session_id") or "")
             if sid:
                 self.resume_session(sid)
             else:
                 self._recovering = False
                 self._attaching = True
                 self.create_session()
-        elif tag == "session.most_recent":
-            self.most_recent.emit(result)
+        elif tag == "session.list":
+            self.sessions_listed.emit(list(result.get("sessions") or []))
         elif tag == "onboarding.start":
             self._stored_id = str(result.get("stored_session_id") or self._stored_id)
             self._session_id = str(result.get("session_id") or "")

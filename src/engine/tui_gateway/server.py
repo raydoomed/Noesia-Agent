@@ -196,6 +196,7 @@ _LONG_HANDLERS = frozenset({
     "onboarding.start", "onboarding.state",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
     "shared_metrics.set",  # consent reconcile waits on the metrics store's write lock
+    "cron.manage",  # a trigger answers only after that run finishes; the reader must stay free
 })
 
 _rpc_pool_workers = max(2, env_int("NOESIA_TUI_RPC_POOL_WORKERS", 8))

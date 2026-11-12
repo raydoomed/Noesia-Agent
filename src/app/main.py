@@ -175,9 +175,9 @@ HEARTS = ((0.40, 13.0, 0.0), (0.57, 16.0, 0.12), (0.48, 11.0, 0.30), (0.66, 12.0
 from app.speech_speaker import Speaker
 from app.engine_config import sync_engine_config, workspace_from_config
 from settings import ensure_runtime
-from app.engine_wire import EngineWire
+from app.engine_wire import EngineWire, chat_session_id
 from app.idle_video import IdleVideoPlayer
-from app.user_state import window_settings
+from app.user_state import remember_session_id, remembered_session_id, window_settings
 
 from app.window_geometry import (
     DEFAULT_WIDTH,
@@ -1416,7 +1416,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self._history_asked or self.client is None or self.chat_panel is None:
             return
         self._history_asked = True
-        self.client.request_most_recent()
+        remembered = remembered_session_id()
+        if remembered:
+            self.client.resume_session(remembered)
+            return
+        self.client.list_sessions()
 
     def restart_onboarding(self) -> None:
         """用户主动「重新认识一次」：先让引擎把 run 打开，再按正常路径开场。
@@ -1895,6 +1899,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     def on_session_ready(self, result: dict) -> None:
         sid = str(result.get("session_id") or "")
         say(f"[会话] {sid}")
+        if sid:
+            remember_session_id(sid)
         self._start_process_watch()
         info = result.get("info") or {}
         if "reasoning_effort" in info:
@@ -2659,8 +2665,9 @@ def main() -> int:
         window._greet_if_needed()
         window.finish_boot()
 
-    def _after_recent(result: dict) -> None:
-        sid = str(result.get("session_id") or "")
+    def _after_sessions(rows: list) -> None:
+        """没有「上一场」存档：挑最新一场真正的对话（跳过定时任务/子代理跑出来的）。"""
+        sid = chat_session_id(rows)
         if sid:
             wire.resume_session(sid)
         else:
@@ -2668,7 +2675,7 @@ def main() -> int:
 
     wire.ready.connect(_after_ready)
     wire.attachment_failed.connect(window._attachment_problem)
-    wire.most_recent.connect(_after_recent)
+    wire.sessions_listed.connect(_after_sessions)
     wire.session_ready.connect(window.on_session_ready)
     wire.history.connect(window.on_history)
     wire.user_row_stamped.connect(window.on_user_row_stamped)

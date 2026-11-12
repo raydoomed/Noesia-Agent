@@ -51,3 +51,18 @@ def window_settings() -> QtCore.QSettings:
         logger.warning("窗口存档目录建不出来（%s），改落临时目录", target.parent, exc_info=True)
         target = Path(tempfile.gettempdir()) / "noesia-window.ini"
     return QtCore.QSettings(str(target), QtCore.QSettings.Format.IniFormat)
+
+
+SESSION_KEY = "session/last_id"
+
+
+def remembered_session_id() -> str:
+    """上一场开着的会话 id：冷启动回这一场，而不是库里最新那场（最新的可能是定时任务跑出来的）。"""
+    return str(window_settings().value(SESSION_KEY, "") or "").strip()
+
+
+def remember_session_id(session_id: str) -> None:
+    """记下界面这一场；空串表示忘掉（下次按「没有存档」走）。"""
+    settings = window_settings()
+    settings.setValue(SESSION_KEY, str(session_id or ""))
+    settings.sync()
