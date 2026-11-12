@@ -231,7 +231,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self.boot_splash: object | None = None
         self.instance_server: QtNetwork.QLocalServer | None = None
         self._engine_ready = False
-        self._takeover_offered = False
 
         self._pixmap = QtGui.QPixmap(str(image_path)) if image_path.is_file() else QtGui.QPixmap()
         if self._pixmap.isNull():
@@ -1055,8 +1054,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 ctx["lines"].append(f"{slug}：没存成——{data.get('message') or '引擎没说原因'}")
                 if slug == ctx["provider"]:
                     ctx["switch_pending"] = False
-        elif tag.startswith("config.set:model"):
-            token = tag.rsplit(":", 1)[-1] if tag.count(":") > 1 else ""
+        elif tag.startswith("model.set"):
+            token = tag.rsplit(":", 1)[-1] if ":" in tag else ""
             if token and token != str(ctx.get("round") or ""):
                 return
             ctx["switch_pending"] = False
@@ -1919,8 +1918,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self.chat_panel is not None:
             self.chat_panel.stamp_user_row(int(row_id))
 
-    def _resubmit_turn(self, msg, text: str, regenerate: bool, confirm_empty: bool = False,
-                       confirm_deep: bool = False) -> None:
+    def _resubmit_turn(self, msg, text: str, regenerate: bool) -> None:
         """重新生成 / 编辑重发：让引擎从这条用户消息起截断重来。
 
         窗口先不动手，等第一段新文字回来才收（见 `_apply_pending_rewind`）——请求被拒时
@@ -1940,7 +1938,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return
         panel.show_notice("resubmit", "正在重新生成…" if regenerate else "正在重发…")
         self._rewind_pending = (msg, text)
-        self.client.submit_rewind(text, row_id, confirm_empty, confirm_deep)
+        self.client.submit_rewind(text, row_id)
 
     def on_models(self, items: list, current: str) -> None:
         self.apply_models(items, current)
@@ -2197,100 +2195,14 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         return super().nativeEvent(event_type, message)
 
     def _follow_approval(self) -> None:
-        """贴身的卡片跟着人物走（审批、引擎起不来都是同一套位置规则）。"""
-        for attr in ("_approval_dialog", "_takeover_dialog"):
+        """贴身的卡片跟着人物走。"""
+        for attr in ("_approval_dialog",):
             dialog = getattr(self, attr, None)
             if dialog is not None and dialog.isVisible():
                 dialog.move_near(self.geometry())
         for dialog in list(getattr(self, "_approval_dialogs", ())):
             if dialog is not getattr(self, "_approval_dialog", None) and dialog.isVisible():
                 dialog.move_near(self.geometry())
-
-    def ask_takeover(self, message: str) -> None:
-        """数据根被命令行会话占着：贴人物下方问一句，同意后才动手。
-
-        同意后按「会话 Ctrl+C 退出 → 杀掉残留进程 → 启动」做：那台会话只要还开着，下一句话
-        就会再拉一条 gateway 把数据根占回去，所以先请它退出才有意义。全过程一个命令行工具都不起
-        （`app/winproc.py`），不会闪黑窗口；每一步都写日志，聊天窗里也留一行说明。
-        """
-        from app.engine_prompt import EngineProblemDialog
-        from app.engine_takeover import occupied_pid
-
-        action = "退出会话、结束后台进程并启动"
-
-        def tell(text: str, error: bool = False) -> None:
-            """写日志 + 写进聊天窗。聊天窗这会儿可能还没建起来（引擎没就绪时它是 None）——
-            2026-10-25 就是在这里抛了 AttributeError，点了确认什么都没发生。"""
-            say(f"[引擎] {text}")
-            panel = getattr(self, "chat_panel", None)
-            if panel is None:
-                return
-            if error:
-                panel.show_error(text)
-            else:
-                panel.show_info(text)
-
-        def answered(agree: bool) -> None:
-            self._takeover_dialog = None
-            if not agree:
-                tell("没有结束任何进程")
-                return
-            wire = getattr(self, "client", None)
-            if wire is None:
-                tell("引擎通道没建起来，没法接管", error=True)
-                return
-            pid = occupied_pid(message)
-            if pid is None:
-                tell("报错里没写进程号，没动任何进程", error=True)
-                return
-            tell(f"引擎被占：先让占着数据目录的 pid {pid} 退出，再启动")
-            from app.engine_takeover import release
-            import threading
-
-            panel = getattr(self, "chat_panel", None)
-            if panel is not None:
-                panel.show_notice("takeover", "正在请占着数据目录的进程退出…", level="busy")
-
-            def work() -> None:
-                try:
-                    ok, note = release(getattr(wire, "_root", None), pid)
-                except Exception as exc:  # noqa: BLE001
-                    logger.exception("接管时出错")
-                    ok, note = False, f"接管出错：{exc}"
-                QtCore.QMetaObject.invokeMethod(
-                    self,
-                    "_finish_takeover",
-                    QtCore.Qt.ConnectionType.QueuedConnection,
-                    QtCore.Q_ARG(bool, ok),
-                    QtCore.Q_ARG(str, note),
-                )
-
-            threading.Thread(target=work, name="noesia-takeover", daemon=True).start()
-
-        try:
-            self._takeover_dialog = EngineProblemDialog(message, action, answered, self)
-            self._takeover_dialog.show_near(self.geometry())
-            logger.info("接管：已弹卡片等用户确认")
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("接管的卡片没能弹出来")
-            tell(f"没能弹出接管卡片：{exc}", error=True)
-
-    @QtCore.Slot(bool, str)
-    def _finish_takeover(self, ok: bool, note: str) -> None:
-        """后台线程放行完进程，回到这里重启引擎并回话（QProcess 只能在主线程碰）。"""
-        panel = getattr(self, "chat_panel", None)
-        if panel is not None:
-            panel.clear_status_notice("takeover")
-        wire = getattr(self, "client", None)
-        if ok and wire is not None:
-            wire.start()
-            note = f"{note}；已重新启动引擎" if note else "已重新启动引擎"
-        say(f"[引擎] {note}")
-        if panel is not None:
-            if ok:
-                panel.show_info(note)
-            else:
-                panel.show_error(note)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() != QtCore.Qt.MouseButton.LeftButton:
@@ -2357,9 +2269,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             dialog.dismiss()
         self._approval_dialogs.clear()
         self._approval_dialog = None
-        takeover = getattr(self, "_takeover_dialog", None)
-        if takeover is not None and takeover.isVisible():
-            takeover.close()
         super().closeEvent(event)
 
     def hideEvent(self, event) -> None:  # noqa: N802
@@ -2789,8 +2698,6 @@ def main() -> int:
     wire.reasoning_wire.connect(window.on_reasoning_wire)
     wire.display_config.connect(window.on_display_config)
 
-    from app.engine_takeover import looks_like_occupied
-
     def _drop_rewind() -> None:
         """这次截断重发作废：清了它，陈旧截断点就不会落到之后任何一轮上。
 
@@ -2813,14 +2720,6 @@ def main() -> int:
         if panel is not None and getattr(window, "_boot_done", False):
             panel.abandon_turn(message)
             panel.set_busy(False)
-        try:
-            offer = looks_like_occupied(message)
-        except Exception:  # noqa: BLE001
-            logger.exception("判断要不要弹接管卡片时出错")
-            offer = False
-        if not getattr(window, "_takeover_offered", False) and offer:
-            window._takeover_offered = True
-            QtCore.QTimer.singleShot(600, lambda: window.ask_takeover(message))
 
     wire.failed.connect(_on_failed)
     wire.closed.connect(lambda: say("[引擎] 通道已关闭"))
@@ -2849,21 +2748,6 @@ def main() -> int:
         QtCore.QTimer.singleShot(delay, wire.start)
 
     wire.closed.connect(_reconnect_engine)
-
-    try:
-        from app.engine_wire import close_console_sessions, quit_process
-
-        notes = close_console_sessions(Path(resolver.root))
-        owner = wire.blocking_owner()
-        if owner is not None:
-            _ok, note = quit_process(owner)
-            notes.append(note)
-        for note in notes:
-            say(f"[引擎] {note}")
-            if window.chat_panel is not None:
-                window.chat_panel.show_info(note)
-    except Exception:  # noqa: BLE001
-        logger.exception("清理命令行会话时出错")
 
     wire.start()
     window.boot_step("正在启动引擎…")
@@ -2900,7 +2784,7 @@ def main() -> int:
         app.aboutToQuit.connect(avatar.shutdown)
     if window.idle_player is not None:
         app.aboutToQuit.connect(window.idle_player.stop)
-    say(f"[引擎] 通道：stdio JSON-RPC（根目录 {resolver.root}）")
+    say(f"[引擎] 通道：gateway /api/ws（根目录 {resolver.root}）")
 
     say(f"[{QT_BINDING}] 悬浮窗已启动：{front}")
     if not front.is_file():

@@ -28,7 +28,7 @@ export QT_QPA_PLATFORM=offscreen
 ```bash
 # 全部 UI 控件（每个 case 一个进程，卡住的那个只卡 45 秒）
 for c in boot_splash chat_view status_stack tool_scroll speech_bar voice_orb chat_input \
-         confirm approval engine_prompt name_dialog photo_view diff_preview avatar_status \
+         confirm approval name_dialog photo_view diff_preview avatar_status \
          token_checker model_dialog speaker stream_speaker recorder hotkey avatar_rtc \
          engine_process chat_panel floating_avatar; do
   printf "%s " "$c"; timeout 45 $P scripts/audit/ui_probe.py "$c" | grep -o 'PROBE_JSON.*'

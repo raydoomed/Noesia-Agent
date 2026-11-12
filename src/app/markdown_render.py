@@ -569,8 +569,8 @@ def _math_png(tex: str, display: bool) -> tuple[str, bytes, int, int]:
     for alias, target in _MATH_ALIAS:
         tex = tex.replace(alias, target)
     tex = _BIG_RE.sub("", tex)
+    buffer = io.BytesIO()
     for _attempt in range(6):
-        buffer = io.BytesIO()
         try:
             mathtext.math_to_image(
                 f"${tex}$",
@@ -585,6 +585,7 @@ def _math_png(tex: str, display: bool) -> tuple[str, bytes, int, int]:
             if not unknown:
                 raise
             tex = tex.replace(unknown.group(1), "")
+            buffer = io.BytesIO()
     data = _transparent_png(buffer.getvalue())
     width, height = struct.unpack(">II", data[16:24])
     src = MATH_SRC + hashlib.sha1(f"{display}|{tex}".encode("utf-8")).hexdigest()[:12]

@@ -44,7 +44,7 @@ view, part = view_for(
         "tool_call_id": "t1",
     }
 )
-panel.show_tool_view(view, tool_id=part.tool_call_id, tool_name=part.tool_name, pending=False)
+panel.show_tool_view(view, tool_id=part.tool_call_id or "", tool_name=part.tool_name, pending=False)
 panel.append_chunk(f"MEDIA:{REPO}/assets/noesia_transparent_x.png\n")
 panel.end_assistant()
 panel.show_notice("turn", "语音这次没合成成功：网络超时", level="warn")

@@ -25,9 +25,8 @@ class ClientSurface(WireEnum):
 
 class PromptSubmitParams(SessionParams):
     """``text`` is normally a string; the relay / hosted paths may hand a structured (parts list)
-    payload, and the busy path renders it. Truncation (rewind / edit / regenerate) needs explicit
-    consent: ``confirm_truncate`` plus one durable target (``truncate_before_row_id`` preferred,
-    ``truncate_before_message_id``, or the legacy ``truncate_before_user_ordinal``)."""
+    payload, and the busy path renders it. A rewind is a ``session.mutate`` operation — this
+    method never cuts history."""
 
     text: JsonValue = ""
     display_kind: str | None = None  # only "hidden" is honoured; anything else renders as a user row
@@ -38,13 +37,6 @@ class PromptSubmitParams(SessionParams):
     voice_turn: bool | None = None  # a spoken voice-conversation turn: runs on auxiliary.voice_chat
     # Desktop-generated large-paste preview (first ~1000 chars); TITLE input only, never the model turn.
     title_preview: str | None = None
-    truncate_before_user_ordinal: int | None = None
-    truncate_before_row_id: int | None = None
-    truncate_before_message_id: str | None = None
-    confirm_truncate: bool | None = None
-    confirm_empty_truncate: bool | None = None
-    confirm_deep_truncate: bool | None = None  # send when the cut archives >1 user turn (enforced next release)
-    rebind_survivor_row_ids: list[int] | None = None
     # In-process only: injected by the hosted-room / bot-relay handlers, never accepted from a
     # client (a client dict for ``_turn_author`` answers 4124). Excluded from the rendered wire.
     hosted_task: JsonValue | None = Field(default=None, exclude=True, alias="_hosted_task")
@@ -61,17 +53,14 @@ class PromptSubmitStatus(WireEnum):
 
 
 class PromptSubmitResult(Result):
-    """``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``). After a
-    truncation the survivor row ids let the client rebind its cached ``rowId``s (``None`` map
-    entries: drop the cached id). ``turn_isolation`` marks a compute-host dispatch."""
+    """``status`` is absent only on the typed-stop-phrase reply (``voice_stopped``).
+    ``turn_isolation`` marks a compute-host dispatch."""
 
     status: PromptSubmitStatus | None = None
     voice_stopped: bool | None = None
     # The row written for THIS accepted input, captured before the worker can consume it.
     # Absent on queued/steered/redirected inputs and whenever persistence is not yet proven.
     user_row_id: int | None = None
-    survivor_user_row_ids: list[int | None] | None = None
-    survivor_row_id_map: dict[str, int | None] | None = None
     turn_isolation: bool | None = None
     # RT-37: the gateway's durable ledger held work for this session, so the prompt was admitted into
     # the OWNER's FIFO (``status: queued``) and runs there after the current turn; nothing runs here.

@@ -241,21 +241,6 @@ def _skill_scaffold_projection(content_text: str) -> str:
     return describe_skill_invocation(content_text, separator=" ") or ""
 
 
-def _expand_skill_invocation_for_replay(text: str, task_id: str) -> str:
-    """Inverse of :func:`_skill_scaffold_projection`: rewind/regenerate hands back the projected invocation,
-    and re-running it verbatim would drop the skill. Unchanged when not resolvable."""
-    head, _, arg = (text or "").strip().partition(" ")
-    if not head.startswith("/"):
-        return text
-    try:
-        from agent.skill_commands import build_skill_invocation_message, resolve_skill_command_key
-        cmd_key = resolve_skill_command_key(head.lstrip("/"), interactive=True)
-        return text if cmd_key is None else (build_skill_invocation_message(cmd_key, arg.strip(), task_id=task_id) or text)
-    except Exception:  # a skill that no longer resolves must not break the rewind
-        logger.debug("skill re-expansion failed for replay", exc_info=True)
-        return text
-
-
 # Opening of the crash-recovery note synthesized by _auto_continue_note; matched (not just built) for
 # rows persisted before display typing existed and for the messaging gateway's twin note.
 _AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn was interrupted mid-run"

@@ -126,7 +126,8 @@ def geometry_probe():
     return {"edge_top_left": int(g.edges_at(QtCore.QPoint(1, 1), size).value),
             "cursor": int(g.cursor_for(g.edges_at(QtCore.QPoint(1, 1), size)).value),
             "fit": (g.fit_width(360, 1.33).width(), g.fit_width(360, 1.33).height()),
-            "resize": (g.rect_after_resize(QtCore.QRect(0, 0, 360, 480), 0, QtCore.QPoint(10, 10), 100, 200).size().toTuple())}
+            "resize": (g.rect_after_resize(QtCore.QRect(0, 0, 360, 480), QtCore.Qt.Edge.RightEdge,
+                                         QtCore.QSize(100, 200)).size().toTuple())}
 
 
 def vocab_probe():

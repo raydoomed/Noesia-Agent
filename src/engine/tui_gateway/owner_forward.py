@@ -91,13 +91,11 @@ async def connect_owner(home: Path, endpoint):
             yield client
 
 
-def forwardable(refusal: Any, session: dict, text: Any, params: dict) -> bool:
+def forwardable(refusal: Any, session: dict, text: Any) -> bool:
     """Whether a ledger refusal of this ``prompt.submit`` can go to the owner instead."""
     if getattr(refusal, "ledger_status", None) not in FORWARDABLE_LEDGER_STATES:
         return False
-    return (isinstance(text, str) and bool(text.strip()) and not session.get("attached_images")
-            and not any(params.get(key) is not None for key in (
-                "truncate_before_user_ordinal", "truncate_before_row_id", "truncate_before_message_id")))
+    return isinstance(text, str) and bool(text.strip()) and not session.get("attached_images")
 
 
 def _payload_for(event_type: str, payload: Any) -> dict | None:

@@ -72,16 +72,19 @@ for path in (REPO / "data" / "settings").glob("*"):
     if path.is_file() and before.get(path.name) is None:
         path.unlink()
     elif path.is_file():
-        path.write_text(before[path.name], encoding="utf-8")
+        saved = before[path.name]
+        if saved is not None:
+            path.write_text(saved, encoding="utf-8")
 
 from app import window_geometry as g  # noqa: E402
 
 rect = QtCore.QRect(100, 100, 360, 480)
-out["resize_right"] = g.rect_after_resize(rect, QtCore.Qt.RightEdge, QtCore.QSize(400, 480)).getRect()
-out["resize_left"] = g.rect_after_resize(rect, QtCore.Qt.LeftEdge, QtCore.QSize(400, 480)).getRect()
+out["resize_right"] = g.rect_after_resize(rect, QtCore.Qt.Edge.RightEdge, QtCore.QSize(400, 480)).getRect()
+out["resize_left"] = g.rect_after_resize(rect, QtCore.Qt.Edge.LeftEdge, QtCore.QSize(400, 480)).getRect()
 out["fit"] = g.fit_width(360, 1.33).toTuple()
 out["edges"] = int(g.edges_at(QtCore.QPoint(1, 1), QtCore.QSize(360, 480)).value)
-out["in_card"] = g.point_in_rect(QtCore.QPoint(5, 5), QtCore.QRect(0, 0, 10, 10)) if hasattr(g, "point_in_rect") else "n/a"
+_inside = getattr(g, "point_in_rect", None)
+out["in_card"] = _inside(QtCore.QPoint(5, 5), QtCore.QRect(0, 0, 10, 10)) if _inside else "n/a"
 
 from app.status_stack import StatusStack  # noqa: E402
 

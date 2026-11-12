@@ -14,12 +14,12 @@ os.environ["NOESIA_HOME"] = str(Path(tempfile.gettempdir()) / "noesia-audit" / "
 sys.path.insert(0, str(REPO / "src"))
 os.chdir(REPO)
 
-from PySide6 import QtGui, QtWidgets  # noqa: E402
+from PySide6 import QtWidgets  # noqa: E402
 
 app = QtWidgets.QApplication([])
 
 from app import (  # noqa: E402
-    boot_splash, chat_panel, chat_view, engine_prompt, model_dialog,
+    boot_splash, chat_panel, chat_view, model_dialog,
     name_dialog, photo_view, speech_bar, status_stack, tool_scroll, voice_orb,
 )
 
@@ -34,8 +34,7 @@ cases = {
     "ModelDialog": lambda: model_dialog.ModelDialog([]),
 
     "NameDialog": name_dialog.NameDialog,
-    "EngineProblemDialog": lambda: engine_prompt.EngineProblemDialog("boom", "retry", lambda ok: None),
-    "PhotoView": lambda: photo_view.PhotoView(QtGui.QPixmap(200, 300)),
+    "PhotoView": lambda: photo_view.PhotoView("探针图片"),
 }
 
 for name, factory in cases.items():

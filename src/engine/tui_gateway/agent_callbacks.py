@@ -323,10 +323,9 @@ def _apply_personality_to_session(
         "[System: The user has cleared the personality overlay. "
         "From this point forward, respond in your normal default style.]")
     # Like the model-switch marker: role=user so strict providers accept it mid-conversation,
-    # but `display_kind` keeps it out of the `truncate_before_user_ordinal` addressing space
-    # (untagged, every rewind would land one turn early and hard-delete the difference).
-    # Untagged, it counts as a real user turn on the gateway side while no client counts it, so every later
-    # rewind resolves one turn too early and `replace_messages` hard-deletes the difference (#82756).
+    # but `display_kind` keeps it out of the canonical user-turn addressing space every rewind
+    # resolves against (untagged, it counts as a real user turn on the gateway side while no
+    # client counts it, so every later rewind resolves one turn too early).
     with session["history_lock"]:
         session["history"].append({"role": "user", "content": marker, "display_kind": "personality_switch"})
         session["history_version"] = int(session.get("history_version", 0)) + 1

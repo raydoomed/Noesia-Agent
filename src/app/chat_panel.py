@@ -448,11 +448,18 @@ _USER_NAME_CACHE: dict[str, object] = {"stamp": None, "name": ""}
 
 
 def _name_from_profile(text: str) -> str:
-    """从 USER.md 正文里挑出名字：只认 `Name: X` / `名字：X` 这种键值行，最多 12 个字。"""
+    """从 USER.md 正文里挑出名字：只认 `Name: X` / `名字：X` 那一行，到第一个标点为止。
+
+    USER.md 由引擎侧的记忆工具自己整理，`Name:` 后面可能跟着整段档案，所以不能假定这行只有
+    名字：截到第一个标点，太长或带空格就退回空串（调用方会叫「你」），不准截半个句子当名字。
+    """
     found = re.search(
         r"^[ \t]*(?:name|名字)[ \t]*[:：][ \t]*(.+?)[ \t]*$", text, re.MULTILINE | re.IGNORECASE
     )
-    return " ".join(found.group(1).split())[:12] if found else ""
+    if not found:
+        return ""
+    head = re.split(r"[，。、；：！？,.;:!?\s（(\[【]", found.group(1).strip(), maxsplit=1)[0]
+    return head if 1 <= len(head) <= 8 else ""
 
 
 def _user_display_name() -> str:
@@ -1509,7 +1516,7 @@ class ChatPanel(QtWidgets.QWidget):
     clarify_answered = QtCore.Signal(str, str, str)
     clarify_skipped = QtCore.Signal(str)
     process_kill_requested = QtCore.Signal(str)
-    resubmit_requested = QtCore.Signal(object, str, bool, bool, bool)
+    resubmit_requested = QtCore.Signal(object, str, bool)
 
     def __init__(
         self,
@@ -5134,7 +5141,10 @@ class ChatPanel(QtWidgets.QWidget):
         return bool(paths)
 
     def _add_attachment(self, path: Path) -> None:
-        """按扩展名分两路：图片走 `image.attach`，其它走 `file.attach`（都只交路径）。"""
+        """按扩展名标一下类别：图片（`image.attach_bytes`）和其它文件（`file.attach`）分两条路走。
+
+        这里只交路径，读字节由 wire 那边做——图片那条接口在 `/api/ws` 上只认字节。
+        """
         if not path.is_file():
             self.show_error(f"找不到这个文件：{path.name}")
             return
@@ -6456,10 +6466,6 @@ class ChatPanel(QtWidgets.QWidget):
                 found = item
         return found
 
-    def _rewind_empties(self, msg: dict) -> bool:
-        """从这条截断会不会把整场对话都清掉（它就是第一句用户消息）。"""
-        return self._previous_user(msg) is None
-
     def _emit_rewind(self, msg: dict, text: str, regenerate: bool) -> None:
         """请引擎从这条截断重来：本地先记着「在等落地」，落地前不许再发一次。
 
@@ -6467,9 +6473,7 @@ class ChatPanel(QtWidgets.QWidget):
         """
         self._rewind_waiting = True
         self._sync_send_button()
-        self.resubmit_requested.emit(
-            msg, text, regenerate, self._rewind_empties(msg), self._rewind_later_users(msg) > 0
-        )
+        self.resubmit_requested.emit(msg, text, regenerate)
 
     def apply_rewind(self, msg: dict, text: str) -> None:
         """引擎已经按这条消息截断过历史了：窗口回到那一刻，再把正文重新贴一遍。

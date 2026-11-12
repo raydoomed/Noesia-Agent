@@ -30,17 +30,25 @@ from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 qt_app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
-QtWidgets.QDialog.exec = lambda self, *a, **k: 0
-if hasattr(QtWidgets.QDialog, "exec_"):
-    QtWidgets.QDialog.exec_ = lambda self, *a, **k: 0
-QtWidgets.QMenu.exec = lambda self, *a, **k: None
-QtWidgets.QMenu.exec_ = lambda self, *a, **k: None
-QtWidgets.QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: ("", ""))
-QtWidgets.QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: ("", ""))
-QtWidgets.QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: "")
+# 探测时不弹任何窗口：把会阻塞的模态入口换成人手写的空实现。
+# 用 setattr 而不是 `QtWidgets.QMenu.exec = ...`——直接给类属性赋值会被 Pylance 判成
+# 「把 lambda 赋给方法」（reportAttributeAccessIssue），满屏红。
+_STUBS = (
+    (QtWidgets.QDialog, "exec", lambda self, *a, **k: 0),
+    (QtWidgets.QDialog, "exec_", lambda self, *a, **k: 0),
+    (QtWidgets.QMenu, "exec", lambda self, *a, **k: None),
+    (QtWidgets.QMenu, "exec_", lambda self, *a, **k: None),
+    (QtWidgets.QFileDialog, "getOpenFileName", staticmethod(lambda *a, **k: ("", ""))),
+    (QtWidgets.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: ("", ""))),
+    (QtWidgets.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: "")),
+    (QtWidgets.QMessageBox, "exec", lambda self, *a, **k: 0),
+)
 for _n in ("information", "warning", "critical", "question", "about"):
-    setattr(QtWidgets.QMessageBox, _n, staticmethod(lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Ok))
-QtWidgets.QMessageBox.exec = lambda self, *a, **k: 0
+    _STUBS += ((QtWidgets.QMessageBox, _n,
+                staticmethod(lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Ok)),)
+for _cls, _name, _stub in _STUBS:
+    if hasattr(_cls, _name):
+        setattr(_cls, _name, _stub)
 
 
 _popup_killer = QtCore.QTimer()
@@ -51,7 +59,9 @@ def _close_popups():
     for w in QtWidgets.QApplication.topLevelWidgets():
         if isinstance(w, (QtWidgets.QMenu, QtWidgets.QDialog)) and w.isVisible() and w is not globals().get("_current"):
             with __import__("contextlib").suppress(Exception):
-                w.reject() if hasattr(w, "reject") else w.close()
+                closer = getattr(w, "reject", None)
+                if closer is not None:
+                    closer()
                 w.close()
 
 
@@ -62,7 +72,7 @@ _popup_killer.start()
 def count_pixels(img: QtGui.QImage):
     if img.isNull():
         return 0, 0
-    img = img.convertToFormat(QtGui.QImage.Format_ARGB32)
+    img = img.convertToFormat(QtGui.QImage.Format.Format_ARGB32)
     seen = set()
     painted = 0
     for y in range(0, img.height(), 3):
@@ -97,7 +107,6 @@ CASES = {
     "confirm": lambda: (__import__("app.approval_dialog", fromlist=["x"]).ConfirmDialog(None, "确认操作", "说明文字", "确定"), True),
     "approval": lambda: (__import__("app.approval_dialog", fromlist=["x"]).ApprovalDialog(
         {"title": "批准", "description": "运行命令", "command": "ls -la", "request_id": "r1"}, lambda *a: None), True),
-    "engine_prompt": lambda: (__import__("app.engine_prompt", fromlist=["x"]).EngineProblemDialog("引擎被占用", "takeover", lambda *a: None), True),
     "name_dialog": lambda: (__import__("app.name_dialog", fromlist=["x"]).NameDialog({"prompt": "叫你什么？"}, lambda *a: None), True),
     "photo_view": lambda: (__import__("app.photo_view", fromlist=["x"]).PhotoView("图片"), True),
     "diff_preview": lambda: (__import__("app.file_preview", fromlist=["x"]).DiffPreviewWindow(
@@ -117,7 +126,7 @@ CALL_ONLY = {
     "recorder": ("app.voice_input", "VoiceRecorder"),
     "hotkey": ("app.global_hotkey", "GlobalHotkey"),
     "avatar_rtc": ("app.avatar_rtc", "AvatarRtc"),
-    "engine_process": ("app.engine_wire", "_EngineProcess"),
+    "gateway_link": ("app.gateway_link", "GatewayLink"),
     "token_checker": ("app.model_dialog", "_TokenChecker"),
 
 }

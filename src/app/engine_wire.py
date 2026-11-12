@@ -1,36 +1,29 @@
-"""Qt 前端连引擎的薄客户端：直接说引擎自己的 newline JSON-RPC（tui_gateway）。
+"""Qt 前端连引擎的薄客户端：走这个 home 的 gateway 的 `/api/ws`，说引擎自己的 JSON-RPC。
 
 设计底线：这里只做运输和分发——把界面上的动作翻译成引擎的方法调用，把引擎的事件翻译成
 Qt 信号。会话、模型、工具、审批的判定全部留在引擎里，前端不复制一份逻辑。
 
-进程模型：QProcess 拉起 `python -m tui_gateway.entry`，stdin/stdout 就是 RPC 通道。
+进程模型：网关是引擎自己的常驻 owner（`gateway run`），外壳不拉进程、不挂父子关系，靠
+`GatewayLink`（后台线程里的 WebSocket）接进去；关掉界面只是断开连接，网关按空闲自己退。
 """
 
 from __future__ import annotations
 
 import base64
-from collections import deque
-
-STOP_TIMEOUT = 8
-
 import json
 import logging
 import os
 import re
-import subprocess
-import sys
-import threading
 import time
 import traceback
 import uuid
 from collections.abc import MutableMapping
 from pathlib import Path
 
-from app import winproc
+from app.gateway_link import GatewayLink
 from app.status_stack import CONFIRM_TTL_MS
 
-CREATE_NO_WINDOW = 0x08000000
-START_TIME_DRIFT = 200
+STOP_TIMEOUT = 8
 
 import PySide6.QtCore as QtCore
 
@@ -41,40 +34,6 @@ def _engine_home_path(root: "Path | str") -> Path:
     """数据根：跟 `start()` 写进环境变量的是同一个值（环境变量优先）。"""
     value = os.environ.get("NOESIA_HOME")
     return Path(value) if value else Path(root) / "data" / "NoesiaHome"
-
-
-def _lock_owner(home: "Path | str") -> dict:
-    """读 `<home>/gateway.lock`：谁正占着这个数据根（读不到 / 读不懂就空 dict）。"""
-    try:
-        data = json.loads((Path(home) / "gateway.lock").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _lock_owner_pid(home: "Path | str") -> int | None:
-    """从 `<home>/gateway.lock` 里读出占着这个数据目录的 pid；读不到就 None（锁是引擎的，只读）。"""
-    pid = _lock_owner(home).get("pid")
-    return pid if isinstance(pid, int) else None
-
-
-def engine_interpreter(root: "Path | str") -> Path:
-    """引擎用哪个解释器：Windows 上用**控制台**的 `python.exe`。
-
-    桌面端是 GUI 进程（自己没控制台），引擎是控制台程序。两种拉法：
-    - `pythonw.exe`（GUI 子系统）：引擎没有控制台，于是它下面每一个控制台子进程（git、gh、bash、
-      python、powershell…）都各自分配一个**可见**控制台——就是用户桌面上一闪一闪的黑窗，
-      而且子进程再往下开的进程同样会闪，靠给每个调用点加 `CREATE_NO_WINDOW` 是盖不住的。
-    - `python.exe` + `CREATE_NO_WINDOW`（见 `_EngineProcess`）：引擎自己拿到一个**隐藏**控制台，
-      所有后代进程都继承它，一个窗口都不闪。stdio 照样是管道，RPC 不受影响。
-    """
-    base = Path(root) / ".venv"
-    if sys.platform == "win32":
-        for name in ("python.exe", "pythonw.exe"):
-            candidate = base / "Scripts" / name
-            if candidate.is_file():
-                return candidate
-    return base / "bin" / "python"
 
 
 def bundled_bash(root: "Path | str") -> Path | None:
@@ -135,215 +94,6 @@ def prepend_bundled_paths(root: "Path | str") -> list[Path]:
     return bundled_tool_dirs(root)
 
 
-def project_processes(  # noqa: D401
-    project_root: "Path | str",
-    exclude: "set[int] | list[int] | tuple[int, ...]" = (),
-) -> list[int]:
-    """跑在本项目目录里的进程（按可执行文件路径判定），排除 `exclude` 里的 pid。
-
-    一个子进程都不起：pid 列表来自 toolhelp 快照、路径来自 QueryFullProcessImageName
-    （`app/winproc.py`——`tasklist`/`powershell` 在桌面端会各自闪一个黑窗口）。
-    """
-    root = os.path.normcase(str(Path(project_root).resolve()))
-    skip = set(exclude) | {os.getpid()}
-    found: list[int] = []
-    for pid in winproc.parent_map():
-        if pid in skip:
-            continue
-        image = winproc.image_path(pid)
-        if image and os.path.normcase(os.path.abspath(image)).startswith(root):
-            found.append(pid)
-    return sorted(found)
-
-
-def _process_commands() -> dict[int, str]:
-    """pid → 命令行（Windows 问一次 PowerShell，**窗口隐藏**；别处读 /proc）。
-
-    为什么非要知道命令行：认「是不是命令行里那台 noesia 会话」只有「入口名」这一条准信。
-    只看可执行文件路径不行——项目 venv 里的 pytest、脚本路径里同样带 `noesia`。
-    慢一点（1~2 秒）没关系，这条路只在「引擎被占着、要问用户怎么办」时才走。
-    """
-    if sys.platform != "win32":
-        out: dict[int, str] = {}
-        for entry in (Path("/proc").iterdir() if Path("/proc").exists() else []):
-            if not entry.name.isdigit():
-                continue
-            try:
-                raw = (entry / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", "replace")
-                out[int(entry.name)] = raw.strip()
-            except OSError:
-                continue
-        return out
-
-    script = (
-        "Get-CimInstance Win32_Process | "
-        "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
-    )
-    try:
-        done = winproc.run_hidden(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout=20
-        )
-        rows = json.loads(done.stdout or "[]")
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return {}
-    if isinstance(rows, dict):
-        rows = [rows]
-    return {
-        int(row["ProcessId"]): str(row.get("CommandLine") or "")
-        for row in rows
-        if isinstance(row, dict) and "ProcessId" in row
-    }
-
-
-def is_console_client(command: str, image: str) -> bool:
-    """这个进程是不是命令行里那台 `noesia` 会话？
-
-    只认入口：`noesia.exe`（`noesia` 命令本身），或 `-m noesia_entry` / `noesia_cli`。
-    我们自己的引擎（`tui_gateway`）永远不算会话。
-    """
-    lowered = command.lower()
-    if "tui_gateway" in lowered:
-        return False
-    if os.path.basename(image).lower() in {"noesia.exe", "noesia"}:
-        return True
-    return "noesia_entry" in lowered or "noesia_cli" in lowered
-
-
-def console_clients(
-    project_root: "Path | str",
-    exclude: "set[int] | list[int] | tuple[int, ...]" = (),
-) -> list[int]:
-    """命令行里还开着的 noesia 会话（= 要请它按 Ctrl+C 退出、然后才轮到启动的那台）。
-
-    判据两条同时成立：可执行文件在本项目目录里、入口是 noesia 自己（见 `is_console_client`）。
-    """
-    commands = _process_commands()
-    if not commands:
-        return []
-    images = {pid: winproc.image_path(pid) for pid in commands}
-    clients: list[int] = []
-    for pid in project_processes(project_root, exclude):
-        command = commands.get(pid, "")
-        if command and is_console_client(command, images.get(pid, "")):
-            clients.append(pid)
-    return clients
-
-
-
-def quit_process(pid: int) -> tuple[bool, str]:
-    """请一个进程退出：先替它按 Ctrl+C（让它自己收尾），等不到再硬结束。
-
-    不去调 `taskkill`：桌面端是 GUI 程序，`taskkill` 被它拉起时会闪一个黑窗口；而且中文系统上
-    它的提示是乱码，按文字判断「进程不存在」必然失手。全部走 `winproc`（ctypes）。
-    """
-    if pid == os.getpid():
-        return False, "不结束自己"
-    return winproc.quiet_exit(pid)
-
-
-def close_console_sessions(project_root) -> list[str]:
-    """把命令行里开着的 noesia 会话请走：先按 Ctrl+C 让它自己收尾，等不到才连子进程一起结束。
-
-    认谁：`winproc.console_sessions()` 只认映像路径（项目虚拟环境里的 `noesia.exe`），
-    不问命令行、不起子进程。启动界面之前做这一步，命令行那台就不会跟界面抢数据根。
-    """
-    notes: list[str] = []
-    for pid in winproc.console_sessions(project_root):
-        _, note = winproc.quiet_exit(pid)
-        logger.info("命令行会话 %s：%s", pid, note)
-        notes.append(note)
-    return notes
-
-
-def _same_incarnation(pid: int, recorded_start: object) -> bool:
-    """锁里写的 pid 现在还真的是当初那个进程吗？
-
-    锁文件是**自证的**：pid、kind、argv 都是它自己写的。硬杀、崩溃、断电之后锁会留在盘上，
-    Windows 再把那个 pid 复用给别的程序（浏览器、编辑器），只按「进程还活着 + argv 在项目里」
-    判就会把陌生人连同它的子进程一起结束。引擎写锁时留了进程创建时间，就拿它比；
-    锁里没有、或读数拿不到，就是「说不清」——说不清一律不动手，让用户点卡片确认。
-    """
-    if sys.platform != "win32":
-        return True
-    current = winproc.start_time(pid)
-    if not isinstance(recorded_start, int) or current is None:
-        logger.info("pid %s 的创建时间对不上账（锁里 %r，实际 %r），不认它", pid, recorded_start, current)
-        return False
-    return abs(current - recorded_start) <= START_TIME_DRIFT
-
-
-def blocking_owner(home: "Path | str", project_root: "Path | str") -> int | None:
-    """占着数据根、且确实是**本项目的**那个后台进程的 pid（不是就别动）。
-
-    只认五个条件同时成立：锁里写的是 `noesia-gateway`、锁说的 home 就是我们的 home、
-    argv 落在本项目目录里、**那个 pid 现在还活着**、**它的创建时间和锁里记的对得上**。
-    任一条不成立就返回 None——宁可不杀，也不去结束别人的进程；而且硬杀/自退之后锁文件会留在
-    原地（里面还是旧 pid），不判活、不比对创建时间，就会把复用了这个 pid 的陌生程序当成「还占着」。
-    """
-    data = _lock_owner(home)
-    pid = data.get("pid")
-    if not isinstance(pid, int) or pid == os.getpid():
-        return None
-    if not _process_alive(pid):
-        return None
-    if str(data.get("kind") or "") != "noesia-gateway":
-        return None
-    lock_home = str(data.get("noesia_home") or "")
-    if lock_home and Path(lock_home).resolve() != Path(home).resolve():
-        return None
-    argv = data.get("argv") or []
-    root = Path(project_root).resolve()
-    if not _same_incarnation(pid, data.get("start_time")):
-        logger.info("锁里的 pid %s 已经不是当初那个进程（pid 被复用了），不动它", pid)
-        return None
-    entry = str(argv[0]) if argv else f"{root}{os.sep}src{os.sep}engine{os.sep}tui_gateway{os.sep}entry.py"
-    try:
-        Path(entry).resolve().relative_to(root)
-    except (ValueError, OSError):
-        return None
-    return pid
-
-
-def _process_alive(pid: int) -> bool:
-    """这个 pid 还活着吗（`os.kill(pid, 0)` 在 Windows 上是 TerminateProcess，不能用）。"""
-    return winproc.process_alive(pid)
-
-
-def stop_blocking_owner(home: "Path | str", project_root: "Path | str") -> tuple[bool, str]:
-    """结束占着数据根的那个本项目后台进程。返回 (成功?, 给人看的一句话)。"""
-    pid = blocking_owner(home, project_root)
-    if pid is None:
-        return False, "看不到是谁占着（锁里没有可用信息），没有动任何进程"
-    ok, note = quit_process(pid)
-    return ok, note.replace("已结束", "已结束占着数据目录的后台进程", 1) if ok else note
-
-
-
-def describe_engine_exit(code: int, stderr_tail, home: "Path | str") -> str:
-    """引擎非正常退出时该给用户看的那句话。
-
-    引擎抢不到数据根时只在 stderr 留一行
-    `[gateway-exit] refused: <home> is owned by a running gateway; attach to it instead`
-    然后 exit 1——界面原来把 stderr 记在 DEBUG、并且照样报「已就绪」，用户只看到人物能出来、
-    说话没反应。这里把那一行翻译成「谁占着、怎么放开」。
-    """
-    lines = [str(line).strip() for line in (stderr_tail or []) if str(line).strip()]
-    if any("is owned by a running gateway" in line for line in lines):
-        pid = _lock_owner_pid(home)
-        if pid:
-            return (
-                f"引擎没起来：数据目录被另一个 Noesia 后台进程占着（pid {pid}）。"
-                "多半是命令行里聊过天、Ctrl+C 退出来的会话留下的。"
-                "界面会问你要不要关掉那个会话、结束它再重试。"
-            )
-        return (
-            f"引擎没起来：数据目录 {Path(home)} 被另一个 Noesia 后台进程占着。"
-            "先把它结束掉（`noesia gateway status` 能看进程号），再重开界面。"
-        )
-    if lines:
-        return f"引擎退出，退出码 {code}：{lines[-1]}"
-    return f"引擎退出，退出码 {code}"
-
 _PROVIDER_WAIT_RE = re.compile(
     r"^(?:⏳|⚠|↻|⚙)\s*(?:(?:still\s+)?waiting on|loading|processing prompt|"
     r"no (?:output|response)|model returned|rate limited|"
@@ -367,21 +117,16 @@ def ui_locale() -> str:
     return "zh-CN"
 
 
-def _model_value(option_id: str) -> str:
-    """界面内部的 `slug:model` → 引擎要的 `<模型> --provider <供应商> --global`。
+def _model_payload(option_id: str) -> dict:
+    """界面内部的 `slug:model` → `session.mutate operation="model"` 的 payload。
 
-    引擎用 CLI 的 `parse_model_switch_args` 解析 model 值（`methods_config_set.py::_set_model`）：
-    少了 `--provider`，它拿不到是哪一家，只能在当前那家的清单里找。
-
-    `--global` 不能省：不带持久化标志时 `resolve_persist_behavior` 判定为「探索性切换」
-    （回包 scope=session），只就地换掉当前会话的 agent，不写 config.yaml。界面上选模型
-    是改默认（桌面端 Settings → Models 也是写配置），所以新会话一开就退回磁盘里那个，
-    看着就是「切了没生效」。
+    canonical 换模型把供应商和模型名分开给（payload 只认 `model`/`provider`/`confirm`/`reasoning`
+    四个键），不拼 CLI 那种 `--provider` 字符串。
     """
     slug, sep, name = str(option_id or "").partition(":")
     if sep and slug and name:
-        return f"{name} --provider {slug} --global"
-    return str(option_id or "")
+        return {"provider": slug, "model": name}
+    return {"model": str(option_id or "")}
 
 
 def _provider_row(providers, provider: str, model: str = "") -> dict:
@@ -470,185 +215,6 @@ def _flatten_options(result: dict) -> tuple[list[dict], str]:
     return rows, current
 
 
-class _EnvView:
-    """`QProcess.processEnvironment()` 的最小替身：够取值、够排错就行。"""
-
-    def __init__(self, values: dict[str, str]) -> None:
-        self._values = values
-
-    def value(self, key: str, default: str = "") -> str:
-        return self._values.get(key, default)
-
-    def keys(self) -> list[str]:
-        return list(self._values)
-
-
-class _EngineProcess(QtCore.QObject):
-    """引擎子进程：`subprocess` + `CREATE_NO_WINDOW` 起的，不是 QProcess。
-
-    为什么要自己起进程：PySide6 没绑 `QProcess.setCreateProcessArgumentsModifier`，加不了
-    `CREATE_NO_WINDOW`；而 `pythonw.exe` 那种「没有控制台」的拉法会让引擎的每个控制台子进程各开一个
-    可见黑窗。用控制台解释器 + 这个 flag，引擎有一个隐藏控制台，所有后代都继承它，没有窗口可闪。
-
-    对外的名字和 Qt 的 QProcess 一一对应（`start`/`write`/`shutdown` 那些调用点不用改）。
-    """
-
-    readyReadStandardOutput = QtCore.Signal()
-    readyReadStandardError = QtCore.Signal()
-    finished = QtCore.Signal(int, int)
-    errorOccurred = QtCore.Signal(str)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._proc: "subprocess.Popen[bytes] | None" = None
-        self._out = b""
-        self._err = b""
-        self._lock = threading.Lock()
-        self._env: dict[str, str] | None = None
-        self._cwd: str | None = None
-        self._gen = 0
-        self._out_thread: threading.Thread | None = None
-        self._err_thread: threading.Thread | None = None
-
-    def reset_buffers(self) -> None:
-        """把管道上攒着没读的字节扔掉：换一趟引擎进程时，旧字节会和新的第一帧粘一起。"""
-        with self._lock:
-            self._out = b""
-            self._err = b""
-
-
-    def setProcessChannelMode(self, _mode) -> None:  # noqa: N802 —
-        """占位：subprocess 天生就是两个独立管道，没有别的模式可选。"""
-
-    def setProcessEnvironment(self, env: dict) -> None:  # noqa: N802
-        self._env = dict(env)
-
-    def setWorkingDirectory(self, path: str) -> None:  # noqa: N802
-        self._cwd = path
-
-    def workingDirectory(self) -> str:  # noqa: N802
-        return self._cwd or ""
-
-    def processEnvironment(self) -> "_EnvView":  # noqa: N802
-        return _EnvView(self._env or {})
-
-    def start(self, program: str, args: list[str]) -> None:  # noqa: N802
-        flags = CREATE_NO_WINDOW if sys.platform == "win32" else 0
-        try:
-            self._proc = subprocess.Popen(
-                [program, *args],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=self._env,
-                cwd=self._cwd,
-                bufsize=0,
-                creationflags=flags,
-            )
-        except OSError as exc:
-            self._proc = None
-            self.errorOccurred.emit(str(exc))
-            return
-        self._gen += 1
-        self._out_thread = threading.Thread(target=self._pump, args=(self._proc.stdout, True), daemon=True)
-        self._err_thread = threading.Thread(target=self._pump, args=(self._proc.stderr, False), daemon=True)
-        self._out_thread.start()
-        self._err_thread.start()
-        threading.Thread(target=self._watch, args=(self._gen,), daemon=True).start()
-
-    def _pump(self, stream, is_out: bool) -> None:
-        """把管道里的字节攒起来并发信号——读的动作在后台线程，界面线程只管取。"""
-        while True:
-            try:
-                chunk = os.read(stream.fileno(), 65536) if stream is not None else b""
-            except (OSError, ValueError):
-                return
-            if not chunk:
-                return
-            with self._lock:
-                if is_out:
-                    self._out += chunk
-                else:
-                    self._err += chunk
-            if is_out:
-                self.readyReadStandardOutput.emit()
-            else:
-                self.readyReadStandardError.emit()
-
-    def _watch(self, gen: int) -> None:
-        proc = self._proc
-        if proc is None:
-            return
-        code = proc.wait()
-        for thread in (self._out_thread, self._err_thread):
-            if thread is not None:
-                thread.join(timeout=2)
-        if gen != self._gen:
-            return
-        self.finished.emit(code, 0)
-
-
-    def write(self, data: bytes) -> int:
-        proc = self._proc
-        if proc is None or proc.stdin is None:
-            return -1
-        try:
-            proc.stdin.write(data)
-            proc.stdin.flush()
-        except (OSError, ValueError):
-            return -1
-        return len(data)
-
-    def readAllStandardOutput(self) -> bytes:  # noqa: N802
-        with self._lock:
-            data, self._out = self._out, b""
-        return data
-
-    def readAllStandardError(self) -> bytes:  # noqa: N802
-        with self._lock:
-            data, self._err = self._err, b""
-        return data
-
-
-    def state(self):
-        proc = self._proc
-        if proc is not None and proc.poll() is None:
-            return QtCore.QProcess.ProcessState.Running
-        return QtCore.QProcess.ProcessState.NotRunning
-
-    def processId(self) -> int:  # noqa: N802
-        proc = self._proc
-        return int(proc.pid) if proc is not None and proc.poll() is None else 0
-
-    def closeWriteChannel(self) -> None:  # noqa: N802
-        proc = self._proc
-        if proc is not None and proc.stdin is not None:
-            try:
-                proc.stdin.close()
-            except (OSError, ValueError):
-                pass
-
-    def terminate(self) -> None:
-        proc = self._proc
-        if proc is not None and proc.poll() is None:
-            proc.terminate()
-
-    def kill(self) -> None:
-        proc = self._proc
-        if proc is not None and proc.poll() is None:
-            proc.kill()
-
-    def waitForFinished(self, msecs: int = 30000) -> bool:  # noqa: N802
-        proc = self._proc
-        if proc is None:
-            return True
-        try:
-            proc.wait(timeout=max(msecs, 0) / 1000)
-        except subprocess.TimeoutExpired:
-            return False
-        return True
-
-
 NO_PROVIDER_HINT = (
     "还没有可用的模型。点右上角「设置」→「密钥设置」填上供应商的 API Key（比如 DeepSeek 就填 "
     "DEEPSEEK_API_KEY）并点确定，再到「模型设置」选一个模型点「保存并启用」，这条提示就会自己消失。"
@@ -726,19 +292,14 @@ class EngineWire(QtCore.QObject):
         if workspace is None:
             raise ValueError("引擎必须有工作区目录：workspace 不能为空")
         self._workspace = Path(workspace)
-        self._proc = _EngineProcess(self)
-        self._proc.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.SeparateChannels)
-        self._proc.readyReadStandardOutput.connect(self._read_stdout)
-        self._proc.readyReadStandardError.connect(self._read_stderr)
-        self._proc.finished.connect(self._on_finished)
-        self._proc.errorOccurred.connect(self._on_proc_error)
+        self._link = GatewayLink(self)
+        self._link.frame.connect(self._on_frame_text)
+        self._link.ready.connect(self._on_link_ready)
+        self._link.failed.connect(self._on_link_failure)
+        self._link.gone.connect(self._on_link_gone)
 
-        self._buffer = ""
-        self._stderr_tail: list[str] = []
         self._voice_seq = 0
         self._voice_jobs: dict[int, str] = {}
-        self._out_decoder = None
-        self._err_decoder = None
         self._next_id = 0
         self._pending: dict[int, str] = {}
         self._session_id = ""
@@ -749,14 +310,19 @@ class EngineWire(QtCore.QObject):
         self._reasoning_effort = ""
         self._onboarding_started = False
         self._stored_id = ""
+        self._revision = 0
+        self._generation = 0
+        self._rewind_text = ""
+        self._rewind_row = 0
+        self._switch_payload: dict = {}
+        self._switch_token = ""
+        self._reasoning_level = ""
         self._sent: dict[int, dict] = {}
         self._retried: set[int] = set()
         self._replay: list[dict] = []
         self._recovering = False
         self._attaching = False
         self._attach_since = 0.0
-        self._outbox: deque[bytes] = deque()
-        self._write_failed = False
         self._recover_rounds = 0
         self._pending_text = ""
         self._pending_turns: list[tuple[str, list, bool]] = []
@@ -767,27 +333,8 @@ class EngineWire(QtCore.QObject):
 
 
     def _engine_home(self) -> Path:
-        """数据根（和写进子进程环境变量的是同一个值）。"""
+        """数据根（和写进网关环境变量的是同一个值）。"""
         return _engine_home_path(self._root)
-
-    def blocking_owner(self) -> int | None:
-        """谁占着数据根（只认本项目的后台进程）；没占用就是 None。"""
-        return blocking_owner(self._engine_home(), self._root)
-
-    def stop_blocking_owner(self) -> tuple[bool, str]:
-        """结束占着数据根的本项目后台进程（只在确认是本项目的时候才动手）。"""
-        return stop_blocking_owner(self._engine_home(), self._root)
-
-    def _own_pids(self) -> set[int]:
-        """不该被当成「别人的进程」的那几个：本进程 + 我们拉起的引擎。"""
-        pids = {os.getpid()}
-        if self._proc is not None:
-            pids.add(int(self._proc.processId()))
-        return pids
-
-    def console_clients(self) -> list[int]:
-        """命令行里还开着的那台 noesia 会话（不含我们自己的进程）。"""
-        return console_clients(self._root, self._own_pids())
 
     def _reset_transport_state(self) -> None:
         """重新拉引擎之前，把上一趟的传输状态清干净（第一次启动时它们本来就是空的）。
@@ -796,13 +343,7 @@ class EngineWire(QtCore.QObject):
         `_recovering` 要是崩在救回途中卡住，会把后面的恢复永久关掉，必须一起复位。
         运行时 id 只属于刚退出的那个后端进程；存储 id（`_stored_id`）跨重启不变，留着。
         """
-        self._buffer = ""
-        self._stderr_tail.clear()
-        self._out_decoder = None
-        self._err_decoder = None
         self._pending.clear()
-        self._outbox.clear()
-        self._write_failed = False
         self._sent.clear()
         self._retried.clear()
         self._replay.clear()
@@ -819,54 +360,38 @@ class EngineWire(QtCore.QObject):
         self._models_after_settings = False
         self._pending_turns.clear()
         self._turn = None
-        self._proc.reset_buffers()
 
     def start(self) -> None:
         if self._started:
             return
         self._started = True
         self._reset_transport_state()
-        python = engine_interpreter(self._root)
         engine = self._root / "src" / "engine"
 
-        env = dict(os.environ)
-        env.pop("PYTHONPATH", None)
-        env["PYTHONPATH"] = str(engine)
-        env["NOESIA_HOME"] = str(self._engine_home())
-        env["NOESIA_DESKTOP"] = "1"
-        env["NOESIA_DASHBOARD_SESSION_TOKEN"] = uuid.uuid4().hex
-        env["NOESIA_PARENT_PID"] = str(os.getpid())
-        env["TERMINAL_CWD"] = str(self._workspace)
-        env["PYTHONUNBUFFERED"] = "1"
+        # 网关是引擎自己的常驻 owner：外壳只把「哪个数据根、哪个工作区」告诉它，不挂父子关系
+        # （不传 NOESIA_PARENT_PID），关掉界面网关还在，重开接回同一场。
+        os.environ["NOESIA_HOME"] = str(self._engine_home())
+        os.environ["NOESIA_DESKTOP"] = "1"
+        os.environ["TERMINAL_CWD"] = str(self._workspace)
         bash = bundled_bash(self._root)
         if bash is not None:
-            env["NOESIA_GIT_BASH_PATH"] = str(bash)
-        with_bundled_path(env, self._root)
-        self._proc.setProcessEnvironment(env)
+            os.environ["NOESIA_GIT_BASH_PATH"] = str(bash)
         self._workspace.mkdir(parents=True, exist_ok=True)
-        self._proc.setWorkingDirectory(str(self._workspace))
-        self._launch(str(python))
-        logger.info("引擎启动：%s -m tui_gateway.entry（工作区 %s）", python, self._workspace)
-
-    def _launch(self, python: str) -> None:
-        """真正把进程拉起来；测试里换成只记录参数的假实现，不用真起引擎。"""
-        self._proc.start(python, ["-m", "tui_gateway.entry"])
+        self._link.configure(
+            home=self._engine_home(), engine=engine, workspace=self._workspace
+        )
+        self._link.start()
+        logger.info("引擎连接：/api/ws（home %s，工作区 %s）", self._engine_home(), self._workspace)
 
     def shutdown(self) -> None:
-        """关掉引擎的输入让它自己收尾；不走就强杀——退出路径上不许留进程。"""
+        """断开连接；网关归引擎自己，按空闲自己退，这里不杀进程。"""
         logger.info("[引擎] 主动 shutdown（调用方：%s）", " <- ".join(
             frame.rsplit("\n", 1)[-1].strip() for frame in traceback.format_stack(limit=3)[:-1]
         ))
-        if self._proc.state() != QtCore.QProcess.ProcessState.NotRunning:
-            self._proc.closeWriteChannel()
-            if not self._proc.waitForFinished(STOP_TIMEOUT * 1000):
-                logger.warning("引擎 %s 秒内没退出，强杀", STOP_TIMEOUT)
-                self._proc.terminate()
-                if not self._proc.waitForFinished(2000):
-                    self._proc.kill()
+        self._link.stop(STOP_TIMEOUT)
 
     def is_running(self) -> bool:
-        return self._proc.state() == QtCore.QProcess.ProcessState.Running
+        return self._link.is_running()
 
     @property
     def session_id(self) -> str:
@@ -906,7 +431,8 @@ class EngineWire(QtCore.QObject):
         self._attaching = True
         self._attach_since = time.monotonic()
         self.reasoning_pending.emit(True)
-        rid = self._call("session.resume", {"session_id": session_id}, tag="session.resume")
+        rid = self._call("session.resume", {"session_id": session_id, "display_projection": True},
+                         tag="session.resume")
         if rid not in self._sent:
             self._attaching = False
             self._attach_since = 0.0
@@ -935,36 +461,43 @@ class EngineWire(QtCore.QObject):
             self._pending_text = f"{self._pending_text}\n\n{text}" if self._pending_text else text
             self._ensure_session()
             return
-        params: dict = {"session_id": self._session_id, "text": text}
+        params: dict = {"session_id": self._session_id, "text": text,
+                        "submission_id": uuid.uuid4().hex}
         if queued:
             params["queued"] = True
         self._call("prompt.submit", params, tag="prompt.submit")
 
-    def submit_rewind(self, text: str, row_id: int, confirm_empty: bool = False,
-                      confirm_deep: bool = False) -> None:
-        """截断后重发：引擎把这条用户消息（含它）之后的历史全删掉，正文当成新一轮再发。
+    def submit_rewind(self, text: str, row_id: int) -> None:
+        """截断后重发：先把这场对话截到这条用户消息之前，再把正文当成新一轮发出去。
 
-        截断点只认行号：持久会话上「只给第几条」的截断会被引擎直接拒（4004），
-        行号来自 `prompt.submit` 回包的 `user_row_id`，或 resume 历史行里的 `row_id`。
-
-        引擎另有两道闸，得客户端明确点头才放行（我们按窗口里实际有几步来判断）：
-        `confirm_empty_truncate` = 这一截会把整场对话清空（截的是第一句）；
-        `confirm_deep_truncate` = 这条后面还有别的问答，会被一起删掉。
+        网关只认两段：`session.mutate` 的 `rewind`（带 `target_message_id` = 行号）真正删行，
+        删完再发一条普通 `prompt.submit`。
         """
         if self._needs_attach():
             self.error.emit("会话还没准备好，等这条回复出来再重发")
             return
-        params = {
+        self._rewind_text = text
+        self._rewind_row = int(row_id)
+        self.resume_session(self._session_id)  # 先拿最新 revision，rewind 是按版本号 fence 的
+
+    def _mutate(self, operation: str, payload: dict, tag: str, request_id: str = "") -> None:
+        """`session.mutate` 一把梭：revision + execution_generation 都当并发栅栏带上。
+
+        canonical 的策略类操作（model / reasoning / rewind …）都走这一个方法；少了
+        `expected_generation` 引擎判 invalid_params，版本号对不上判 revision_conflict。
+        """
+        self._call("session.mutate", {
             "session_id": self._session_id,
-            "text": text,
-            "truncate_before_row_id": int(row_id),
-            "confirm_truncate": True,
-        }
-        if confirm_empty:
-            params["confirm_empty_truncate"] = True
-        if confirm_deep:
-            params["confirm_deep_truncate"] = True
-        self._call("prompt.submit", params, tag="prompt.submit")
+            "request_id": request_id or f"{operation}:{uuid.uuid4().hex}",
+            "expected_revision": int(self._revision or 0),
+            "expected_generation": int(self._generation or 0),
+            "operation": operation,
+            "payload": dict(payload),
+        }, tag=tag)
+
+    def _send_rewind(self) -> None:
+        self._mutate("rewind", {"target_message_id": int(self._rewind_row)}, tag="rewind",
+                     request_id=f"rewind:{uuid.uuid4().hex}")
 
     IMAGE_ONLY_CAPTION = "What do you see in this image?"
 
@@ -1001,14 +534,23 @@ class EngineWire(QtCore.QObject):
 
     @staticmethod
     def _attach_frame(item: dict) -> tuple[str, dict, str]:
-        """一条附件对应引擎的哪个接口：图给路径/字节，其它文件给路径。"""
+        """一条附件对应引擎的哪个接口：图一律给字节，其它文件给路径。
+
+        图不能走 `image.attach`（给路径那个）：它是 TUI 进程内的老接口，要的是同进程里那张
+        `sessions` 表，走 `/api/ws` 只有 canonical 的 `session_id`，它认不出来就回 request_failed。
+        `image.attach_bytes` 是给远程客户端的，字节到了就落盘挂上。
+        """
         name = str(item.get("name") or "附件")
-        if item.get("data"):
-            encoded = base64.b64encode(item["data"]).decode("ascii")
-            return "image.attach_bytes", {"content_base64": encoded, "filename": name}, name
+        data: bytes = item.get("data") or b""
         path = str(item.get("path") or "")
-        if item.get("kind") == "image":
-            return "image.attach", {"path": path}, name
+        if not data and item.get("kind") == "image" and path:
+            try:
+                data = Path(path).read_bytes()
+            except OSError:
+                data = b""
+        if data:
+            encoded = base64.b64encode(data).decode("ascii")
+            return "image.attach_bytes", {"content_base64": encoded, "filename": name}, name
         return "file.attach", {"path": path, "name": name}, name
 
     def _finish_turn(self) -> None:
@@ -1029,7 +571,8 @@ class EngineWire(QtCore.QObject):
             self._pending_text = f"{self._pending_text}\n\n{text}" if self._pending_text else text
             self._ensure_session()
             return
-        params: dict = {"session_id": self._session_id, "text": text}
+        params: dict = {"session_id": self._session_id, "text": text,
+                        "submission_id": uuid.uuid4().hex}
         if turn.get("queued"):
             params["queued"] = True
         self._call("prompt.submit", params, tag="prompt.submit")
@@ -1038,7 +581,9 @@ class EngineWire(QtCore.QObject):
     def interrupt(self) -> None:
         if not self._session_id:
             return
-        self._call("session.interrupt", {"session_id": self._session_id})
+        self._call("session.interrupt", {"session_id": self._session_id,
+                                         "execution_generation": int(self._generation or 0)},
+                   tag="session.interrupt")
 
     def answer_approval(self, reply_id, choice: str) -> None:
         """审批是引擎的「服务端请求」，用**帧 id** 回帧（`srq-...`），不走方法表。
@@ -1070,34 +615,37 @@ class EngineWire(QtCore.QObject):
     def _switch_model(self, model: str, token: str = "") -> None:
         """切换模型；先保证有会话。
 
-        引擎的 `config.set model` 只认带 `session_id` 的请求——没会话时它直接回 4001
-        （"requires a live session"），既不会写配置也不会切。所以没有会话就先建一个，
-        等 `session_ready` 回来再切：这才是「保存并启用」该走的顺序。
+        走 `/api/ws` 时 `config.set key=model` 会被直接拒（`use_session_mutation_model`）：
+        canonical 换模型是 `session.mutate operation="model"`，payload 里 provider 和模型名分开给。
 
-        value 是 CLI 的写法 `<模型> --provider <供应商>`（引擎用 `parse_model_switch_args`
-        解析，见 `tui_gateway/methods_config_set.py::_set_model`）。界面内部用 `slug:model`
-        当 id，传出去之前必须换成这个语法：直接发 `slug:model` 会被拆成
-        provider=空、model=":slug:model"，引擎回 5001「模型不在这一家的清单里」，
-        看起来就是「选了但没切过去」。
+        没会话时 mutate 没有 session_id 可挂，所以先建会话，等 `session_ready` 回来再切：
+        这才是「保存并启用」该走的顺序。
         """
         if not model:
             return
-        value = _model_value(model)
         self._pending_switch = model
         self._pending_switch_token = token
         if self._session_id:
             self._pending_switch = ""
             self._pending_switch_token = ""
-            self._call("config.set", {"key": "model", "value": value,
-                                      "session_id": self._session_id}, tag=self._switch_tag(token))
+            self._switch_payload = _model_payload(model)
+            self._switch_token = token
+            self._send_switch_model()
         else:
             self.create_session("")
+
+    def _send_switch_model(self) -> None:
+        """把待切的模型发出去。payload 要留着：撞版本号时拿新 revision 再发一次。"""
+        if not self._switch_payload:
+            return
+        self._mutate("model", self._switch_payload, tag=self._switch_tag(self._switch_token),
+                     request_id=f"model:{uuid.uuid4().hex}")
 
     @staticmethod
     def _switch_tag(token: str = "") -> str:
         """切换模型的 tag。带轮次编号：两轮「保存并启用」叠在一起时，上一轮的迟到回执
         才不会被当成这一轮的结果（否则窗口按旧结果关掉，引擎里跑的还是上一个模型）。"""
-        return f"config.set:model:{token}" if token else "config.set:model"
+        return f"model.set:{token}" if token else "model.set"
 
     def set_approval_mode(self, mode: str) -> None:
         """审批档位：键名照引擎的 getter/setter 表（`approvals.mode`），回包带回来的值才算数。"""
@@ -1113,15 +661,20 @@ class EngineWire(QtCore.QObject):
         self._reasoning_effort = str(level or "")
 
     def set_reasoning(self, level: str) -> None:
-        """推理强度：`config.set reasoning` 是会话级的（引擎 `_SESSION_SCOPED_KEYS` 里有它）。"""
+        """推理强度：canonical 是 `session.mutate operation="reasoning"`，payload `{"effort": ...}`。
+
+        `config.set reasoning` 在 `/api/ws` 上仍可用，但它只改当前会话的显示值；策略档位要走
+        mutate，而且这类操作必须带 `expected_generation`，少了它引擎直接判 invalid_params。
+        """
         if not level:
             return
         if not self._session_id:
             self._pending_reasoning = level
             self.create_session("")
             return
-        self._call("config.set", {"key": "reasoning", "value": level,
-                                  "session_id": self._session_id}, tag="config.set:reasoning")
+        self._reasoning_level = level
+        self._mutate("reasoning", {"effort": level}, tag="reasoning.set",
+                     request_id=f"reasoning:{uuid.uuid4().hex}")
 
     def request_models(self, *, refresh: bool = False) -> None:
         """要一份「聊天窗菜单」用的清单：**只列用户自己配过的家**（引擎的 `explicit_only`）。
@@ -1290,7 +843,8 @@ class EngineWire(QtCore.QObject):
             return
         if self._pending_text:
             text, self._pending_text = self._pending_text, ""
-            self._call("prompt.submit", {"session_id": self._session_id, "text": text}, tag="prompt.submit")
+            self._call("prompt.submit", {"session_id": self._session_id, "text": text,
+                                         "submission_id": uuid.uuid4().hex}, tag="prompt.submit")
 
     @staticmethod
     def _is_session_gone(code, message) -> bool:
@@ -1394,102 +948,32 @@ class EngineWire(QtCore.QObject):
             "error": {"code": -32601, "message": f"桌面端没有 {method} 这个 handler"},
         })
 
-    WRITE_CHUNK = 32 * 1024
     ATTACH_TIMEOUT_S = 15.0
     _SENT_TTL_S = 120.0
 
     def _write(self, frame: dict) -> bool:
-        """发一帧；返回是否真的进了管道（引擎没起、或管道当场拒收时 false）。"""
+        """发一帧；没连上时返回 False（调用方据此报「没送出去」）。"""
         if not self.is_running():
             self.failed.emit("引擎未运行，指令没发出去")
             return False
-        line = json.dumps(frame, ensure_ascii=False) + "\n"
-        data = line.encode("utf-8")
-        self._write_failed = False
-        self._outbox.append(data)
-        self._pump_writes()
-        if self._write_failed:
-            try:
-                self._outbox.remove(data)
-            except ValueError:
-                pass
-            return False
-        return True
-
-    def _abort_writes(self, message: str) -> None:
-        self._outbox.clear()
-        self._write_failed = True
-        self._fail_inflight(message)
-        self.failed.emit(message)
+        # 一个 WS 文本帧就是一整条 JSON：不加换行、不分块，服务端按帧解析。
+        if self._link.send(json.dumps(frame, ensure_ascii=False)):
+            return True
+        self.failed.emit("引擎没接住指令，这一步没送出去")
+        return False
 
     def _fail_inflight(self, message: str) -> None:
         for rid in list(self._sent):
             self._on_response({"id": rid, "error": {"code": -32000, "message": message}})
 
-    def _pump_writes(self) -> None:
-        """分块把待发字节推进管道，块与块之间让出一次事件循环。
-
-        `proc.stdin` 是 `bufsize=0` 的管道：一张图 base64 之后可能几 MB，一次性 `write`
-        在引擎来不及排空（管道缓冲满）时会**卡在 GUI 线程上**，界面就假死。分块后每次最多
-        32KB，即使某一小块要等引擎，界面也能在块之间喘口气。
-        """
-        while self._outbox:
-            if not self.is_running():
-                self._abort_writes("引擎未运行，指令没发出去")
-                return
-            chunk = self._outbox[0]
-            if len(chunk) > self.WRITE_CHUNK:
-                self._outbox[0] = chunk[self.WRITE_CHUNK:]
-                written = self._proc.write(chunk[:self.WRITE_CHUNK])
-                if written is not None and written < 0:
-                    self._abort_writes("引擎没接住指令，这一步没送出去")
-                    return
-                QtCore.QTimer.singleShot(0, self._pump_writes)
-                return
-            self._outbox.popleft()
-            written = self._proc.write(chunk)
-            if written is not None and written < 0:
-                self._abort_writes("引擎没接住指令，这一步没送出去")
-                return
-
-
-    def _read_stdout(self) -> None:
+    def _on_frame_text(self, text: str) -> None:
+        """连线上来的一段文本是一帧（服务端也可能一次带多行）。"""
         if not self._started:
-            return
-        decoder = self._out_decoder
-        if decoder is None:
-            import codecs
-
-            decoder = self._out_decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        chunk = decoder.decode(bytes(self._proc.readAllStandardOutput()))
-        self._buffer += chunk
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            line = line.strip()
-            if line:
-                self._dispatch(line)
-
-    def _read_stderr(self) -> None:
-        """引擎的 stderr：按 WARNING 落日志（原来写 DEBUG，出了事日志里一行都看不到），
-        并且留住最后几行——退出码非 0 时用它拼出人话原因。"""
-        decoder = self._err_decoder
-        if decoder is None:
-            import codecs
-
-            decoder = self._err_decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        text = decoder.decode(bytes(self._proc.readAllStandardError())).strip()
-        if not text:
             return
         for line in text.splitlines():
             line = line.strip()
             if line:
-                self._stderr_tail.append(line)
-        del self._stderr_tail[:-6]
-        logger.warning("引擎 stderr：%s", text[:400])
-
-    def _exit_reason(self, code: int, tail: list[str] | None = None) -> str:
-        """引擎非正常退出时说清到底怎么了（别只丢一句「退出码 1」）。"""
-        return describe_engine_exit(code, self._stderr_tail if tail is None else tail, self._engine_home())
+                self._dispatch(line)
 
     def _dispatch(self, line: str) -> None:
         try:
@@ -1571,7 +1055,46 @@ class EngineWire(QtCore.QObject):
             if tag == "prompt.submit" and code == 4009:
                 self.error.emit("这一轮还没停下，等它真结束再重发")
                 return
-            if tag.startswith("model.save_key") or tag.startswith("config.set:model"):
+            if tag == "rewind" or tag == "reasoning.set" or tag.startswith("model.set"):
+                data = err.get("data") if isinstance(err, dict) else None
+                fresh_rev = data.get("revision") if isinstance(data, dict) else None
+                fresh_gen = data.get("execution_generation") if isinstance(data, dict) else None
+                if isinstance(fresh_rev, int) and fresh_rev != self._revision:
+                    self._revision = fresh_rev
+                    if isinstance(fresh_gen, int):
+                        self._generation = fresh_gen
+                    if tag == "rewind" and self._rewind_text:
+                        self._send_rewind()
+                        return
+                    if tag == "reasoning.set" and self._reasoning_level:
+                        self.set_reasoning(self._reasoning_level)
+                        return
+                    if tag.startswith("model.set") and self._switch_payload:
+                        self._send_switch_model()
+                        return
+                if tag == "rewind":
+                    self._rewind_text = ""
+                    self.error.emit(str(message))
+                    return
+                if tag == "reasoning.set":
+                    self._reasoning_level = ""
+                    self.error.emit(str(message))
+                    return
+                self._switch_payload = {}
+                self.save_result.emit(tag, {"ok": False, "message": str(message)})
+                return
+            if tag == "session.interrupt":
+                data = err.get("data") if isinstance(err, dict) else None
+                fresh = data.get("execution_generation") if isinstance(data, dict) else None
+                if isinstance(fresh, int) and fresh != self._generation:
+                    self._generation = fresh
+                    self.interrupt()
+                    return
+                if isinstance(data, dict) and data.get("reason") == "stale_generation":
+                    return  # 那一轮已经不在跑了，停止按钮不该再弹错
+                self.error.emit(str(message))
+                return
+            if tag.startswith("model.save_key") or tag.startswith("model.set"):
                 if tag.startswith("model.save_key"):
                     self._pending_switch = ""
                     self._pending_switch_token = ""
@@ -1588,6 +1111,15 @@ class EngineWire(QtCore.QObject):
             self.error.emit(f"{message}")
             return
         result = frame.get("result") or {}
+        gen = result.get("execution_generation")
+        if isinstance(gen, int):
+            self._generation = gen
+        if tag == "rewind":
+            self._revision = int(result.get("revision") or self._revision or 0)
+            text, self._rewind_text = self._rewind_text, ""
+            if text:
+                self.submit(text)
+            return
         if tag == "prompt.submit":
             row_id = result.get("user_row_id")
             if isinstance(row_id, int):
@@ -1614,17 +1146,21 @@ class EngineWire(QtCore.QObject):
                 str(result.get("stored_session_id") or ""),
             )
             if tag == "session.resume":
+                self._revision = int(result.get("revision") or 0)
+                self._generation = int(result.get("execution_generation") or 0)
                 rows = [
                     {
                         "role": str(row.get("role", "")),
-                        "text": str(row.get("text", "")),
+                        "text": str(row.get("text") or row.get("content") or ""),
                         "display_kind": str(row.get("display_kind") or ""),
                         "row_id": row.get("row_id"),
                     }
-                    for row in (result.get("messages") or [])
+                    for row in (result.get("display_messages") or result.get("messages") or [])
                     if isinstance(row, dict) and str(row.get("display_kind") or "") != "hidden"
                 ]
                 self.history.emit(rows)
+                if self._rewind_text and self._rewind_row:
+                    self._send_rewind()
             self.session_ready.emit(result)
             if self._pending_switch:
                 self._switch_model(self._pending_switch, self._pending_switch_token)
@@ -1694,14 +1230,24 @@ class EngineWire(QtCore.QObject):
                                         "slug": tag.split(":", 1)[1] if ":" in tag else str(row.get("slug") or "")})
             if self._pending_switch:
                 self._switch_model(self._pending_switch, self._pending_switch_token)
-        elif tag.startswith("config.set:model"):
+        elif tag.startswith("model.set"):
+            self._revision = int(result.get("revision") or self._revision or 0)
+            gen = result.get("execution_generation")
+            if isinstance(gen, int):
+                self._generation = gen
+            self._switch_payload = {}
             self.request_models()
             self.save_result.emit(tag, {"ok": True})
         elif tag == "config.set:approval":
             self.config_value.emit("approval_mode", str(result.get("value") or ""))
-        elif tag == "config.set:reasoning":
-            self.reasoning_wire.emit(str(result.get("wire") or ""))
-            self.config_value.emit("reasoning", str(result.get("value") or ""))
+        elif tag == "reasoning.set":
+            self._revision = int(result.get("revision") or self._revision or 0)
+            gen = result.get("execution_generation")
+            if isinstance(gen, int):
+                self._generation = gen
+            self._reasoning_level = ""
+            self._call("config.get", {"key": "reasoning", "session_id": self._session_id},
+                       tag="config.get:reasoning")
         elif tag == "config.get:full":
             self.display_config.emit(dict((result.get("config") or {}).get("display") or {}))
         elif tag.startswith("attach:"):
@@ -1748,6 +1294,10 @@ class EngineWire(QtCore.QObject):
         if sid and self._session_id and sid != self._session_id:
             return
         payload = params.get("payload") or {}
+        for holder in (params, payload):
+            gen = holder.get("execution_generation") if isinstance(holder, dict) else None
+            if isinstance(gen, int):
+                self._generation = gen
         if kind == "gateway.ready":
             self.ready.emit(payload)
             self._next_id += 1
@@ -1821,19 +1371,18 @@ class EngineWire(QtCore.QObject):
             else:
                 self.notice.emit(text)
 
-    def _on_proc_error(self, message: str) -> None:
-        """进程级错误：多半是根本没起来（解释器找不到、权限不够）。
+    def _on_link_ready(self, pid: int) -> None:
+        logger.info("引擎连上了（owner pid %s）", pid or "?")
 
-        起不来就不会有 `finished`，`_started` 会一直挂在 True，之后每次 `start()` 直接 return，
-        引擎再也拉不起来。这里只在「确实没在跑」时复位，运行中的偶发错误交给 `finished` 收。
-        """
+    def _on_link_failure(self, message: str) -> None:
+        """连接级错误：连不上、协议对不上、半路断了。没连上就复位 `_started` 让上面能重来。"""
         if not self.is_running():
             self._started = False
         self.failed.emit(str(message))
 
-    def _on_finished(self, code: int, _status) -> None:
+    def _on_link_gone(self, _reason: str) -> None:
+        """连接没了：跟子进程退出一个意思——在途的、排队的、打了没发的都报「没发出去」。"""
         self._started = False
-        stderr_tail = list(self._stderr_tail)
         typed_but_unsent = bool(self._pending_text)
         had_turn = self._turn is not None
         had_pending = bool(self._pending_turns)
@@ -1845,5 +1394,3 @@ class EngineWire(QtCore.QObject):
         if typed_but_unsent:
             self.attachment_failed.emit("整条消息", "引擎断开，你刚打的这句还没发出去")
         self.closed.emit()
-        if code not in (0, 15):
-            self.failed.emit(self._exit_reason(code, stderr_tail))
