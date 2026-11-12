@@ -1206,6 +1206,7 @@ class EngineWire(QtCore.QObject):
                         "text": str(row.get("text") or row.get("content") or ""),
                         "display_kind": str(row.get("display_kind") or ""),
                         "row_id": row.get("row_id"),
+                        "timestamp": row.get("timestamp"),
                     }
                     for row in (result.get("display_messages") or result.get("messages") or [])
                     if isinstance(row, dict) and str(row.get("display_kind") or "") != "hidden"

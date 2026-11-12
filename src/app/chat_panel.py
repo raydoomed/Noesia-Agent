@@ -1633,6 +1633,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._history_older: list = []
         self._history_rendered: list = []
         self._history_loading = False
+        self._history_page_pending = False
         self._flush_timer = QtCore.QTimer(self)
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(self.FLUSH_SLICE_MS)
@@ -1642,6 +1643,11 @@ class ChatPanel(QtWidgets.QWidget):
         self._review_folded = False
         self._review_pending: list[str] = []
         self._reasoning_pending = ""
+        # 这一场里画过的折叠卡（工具行、思考段）：引擎的历史行里没有它们，只有正文。
+        # 补页要清屏重画，重画后按这张单子摆回原位——否则一滚工具和思考就整片消失。
+        self._fold_log: list[dict] = []
+        self._fold_entries: dict[int, dict] = {}
+        self._replaying_fold = False
         self._md_block: list[str] = []
         self._para_break = False
         self._md_fence = False
@@ -1700,6 +1706,8 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.scrolled.connect(self._maybe_load_older_history)
         self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.setViewportMargins(ChatView.RAIL_WIDTH, 0, 0, 0)
+        self.view.attach_rail(self._rail_rows)
         layout.addWidget(self.view, 1)
 
         head_format = QtGui.QTextCharFormat()
@@ -1732,6 +1740,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._rewind_waiting = False
         self._rewind_after_stop: tuple[dict, str, bool] | None = None
         self._row_stamp_pending: int | None = None
+        self._next_at: float | None = None
         self._jump: _JumpPill | None = None
         self._follow = True
         self._self_scroll = False
@@ -2227,6 +2236,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._history_loading = True
         try:
             self.clear_conversation("历史重铺")
+            # 新开窗：折叠卡单子跟着作废（这是上一段的痕迹，不是这一窗的）。
+            self._fold_log = []
+            self._fold_entries = {}
             self._history_older = items[: -self.HISTORY_PAGE]
             self._history_rendered = list(tail)
             self._paint_history(tail)
@@ -2236,15 +2248,22 @@ class ChatPanel(QtWidgets.QWidget):
         self._scroll_to_end()
 
     def load_older_history(self) -> None:
-        """翻到顶：往前补一页更早的消息，铺完把滚动位置按新增高度让回来。"""
+        """翻到顶：往前补一页更早的消息，铺完把滚动位置按新增高度让回来。
+
+        重铺的那份 = 这页更早的 + 开窗快照 + 屏上后加的。少了最后那截，你刚发的一问一答
+        会在补页这一拍里从屏上消失——引擎和库里都还在，只是没画回来。
+        """
         if not self._history_older or self._restoring or self._history_loading:
+            return
+        if self._stream_msg is not None:
+            self._history_page_pending = True
             return
         self._history_loading = True
         try:
             self._follow = False
             take = self._history_older[-self.HISTORY_PAGE:]
             older = self._history_older[: -self.HISTORY_PAGE]
-            rendered = take + self._history_rendered
+            rendered = take + self._history_rendered + self._live_rows()
             layout = self.view.document().documentLayout()
             old_height = layout.documentSize().height()
             old_value = self.view.verticalScrollBar().value()
@@ -2252,10 +2271,28 @@ class ChatPanel(QtWidgets.QWidget):
             self._follow = False
             self._history_older = older
             self._history_rendered = rendered
-            self._paint_history(rendered)
+            shifted = [
+                dict(entry, at=int(entry.get("at") or 0) + len(take)) for entry in self._fold_log
+            ]
+            self._paint_history(rendered, shifted)
+            for entry in self._fold_log:
+                entry["at"] = int(entry.get("at") or 0) + len(take)
             QtCore.QTimer.singleShot(0, lambda: self._restore_scroll(old_height, old_value))
         finally:
             self._history_loading = False
+
+    def _live_rows(self) -> list[dict]:
+        """屏上这些条里开窗快照没有的那部分：本场新发的，补页重铺时要连它一起带上。"""
+        return [
+            {
+                "role": msg.get("role"),
+                "text": msg.get("text"),
+                "timestamp": msg.get("at"),
+                "row_id": msg.get("row_id"),
+            }
+            for msg in self._msgs
+            if not msg.get("hist")
+        ]
 
     def _restore_scroll(self, old_height: float, old_value: int) -> None:
         """按新增高度把视野让回来：正在看的那行停在原位。
@@ -2279,33 +2316,143 @@ class ChatPanel(QtWidgets.QWidget):
         if self.view.verticalScrollBar().value() <= 0:
             self.load_older_history()
 
-    def _paint_history(self, items) -> None:
-        """把一批历史消息按顺序铺出来；只管画，清窗与分页状态由调用方处理。"""
+    def _paint_history(self, items, folds=()) -> None:
+        """把一批历史消息按顺序铺出来；只管画，清窗与分页状态由调用方处理。
+
+        铺下来的每条都记成「历史」：补页重铺时，历史那一截照快照来、后加的照屏幕来，
+        两边靠这个标记分，不会把同一场对话的尾巴丢掉或铺两遍。
+
+        `folds` 是这一场画过的折叠卡（工具行、思考段）和它们的位置（`at`＝当时已铺了几条）。
+        历史行里没有这些，重铺后必须按原位摆回去。
+        """
         self._restoring = True
+        # 旧卡都随清屏作废了：`id()` 会被后建的卡复用，登记表跟着清，免得记到别人名下。
+        self._fold_entries = {}
         try:
+            pending = sorted((dict(entry) for entry in folds), key=lambda e: int(e.get("at") or 0))
             for item in items:
-                text = str(item.get("text") or "")
-                if not text.strip():
-                    continue
-                kind = str(item.get("display_kind") or "")
-                if kind == _DELEGATION_DISPLAY_KIND:
-                    self.append_notice_lines(delegate_view.completion_lines(text))
-                    continue
-                if kind in _NOTICE_LABELS:
-                    label = _NOTICE_LABELS[kind]
-                    tail = ""
-                    if kind == "auto_continue" and _AUTO_CONTINUE_REQUEST in text:
-                        tail = " ".join(text.split(_AUTO_CONTINUE_REQUEST, 1)[1].split())
-                    self.append_notice_lines([f"{label}：{tail}" if tail else label])
-                    continue
-                if str(item.get("role") or "") == "user":
-                    row_id = item.get("row_id")
-                    self.append_user(text, row_id=row_id if isinstance(row_id, int) else None)
-                else:
-                    self.append_chunk(text)
-                    self.end_assistant()
+                while pending and int(pending[0].get("at") or 0) <= len(self._msgs):
+                    self._replay_fold(pending.pop(0))
+                before = len(self._msgs)
+                self._paint_history_item(item)
+                for msg in self._msgs[before:]:
+                    msg["hist"] = True
+            while pending:
+                self._replay_fold(pending.pop(0))
         finally:
             self._restoring = False
+
+    def _note_fold(self, fold, kind: str, **fields) -> None:
+        """把这张折叠卡记进单子：位置（现在铺了几条）、抬头，以及重画它要用的原件。
+
+        补页要清屏重画，而引擎的历史行里只有正文——工具行和思考段只存在这张单子里。
+        """
+        if self._replaying_fold or fold is None:
+            return
+        entry = self._fold_entries.get(id(fold))
+        if entry is None:
+            entry = {"at": len(self._msgs), "kind": kind, "body": []}
+            self._fold_log.append(entry)
+            self._fold_entries[id(fold)] = entry
+        entry.update({key: value for key, value in fields.items() if value is not None})
+
+    def _note_fold_body(self, fold, chunk: str) -> None:
+        """记一段正文：只有纯文本的卡（`show_tool` / 思考段）走这里。"""
+        if self._replaying_fold or fold is None:
+            return
+        entry = self._fold_entries.get(id(fold))
+        if entry is not None:
+            entry["body"].append(chunk)
+
+    def _replay_fold(self, entry: dict) -> None:
+        """重铺时把一张折叠卡原样摆回来（工具行 / 思考段）。
+
+        工具卡存的是原件（`view`），重画直接走当初那条路，正文、diff、图片、搜索命中一并回来；
+        点开状态这类当场交互留下的东西不还原。
+        """
+        if entry.get("kind") == "tool_view" and entry.get("view") is not None:
+            self._replaying_fold = True
+            try:
+                self.show_tool_view(
+                    entry["view"],
+                    tool_name=str(entry.get("tool_name") or ""),
+                    pending=False,
+                    copy_payload=entry.get("copy"),
+                    delegate_event=entry.get("delegate"),
+                )
+            finally:
+                self._replaying_fold = False
+            return
+        if entry.get("kind") == "reasoning":
+            fold = self._folds.new("reasoning", _THOUGHT_DONE, open_=False)
+            for chunk in entry.get("body") or ():
+                self._folds.append(fold, chunk)
+            return
+        fold = self._folds.new(
+            "tool",
+            str(entry.get("label") or entry.get("name") or "工具"),
+            open_=False,
+            glyph=entry.get("glyph"),
+        )
+        for chunk in entry.get("body") or ():
+            self._folds.append(fold, chunk, body_format=self._tool_body_format)
+
+    def _paint_history_item(self, item) -> None:
+        """铺一条：引擎回灌的机器消息走说明行，其余按你我分两路。"""
+        text = str(item.get("text") or "")
+        if not text.strip():
+            return
+        stamp = item.get("timestamp")
+        self._next_at = stamp if stamp is not None else None
+        kind = str(item.get("display_kind") or "")
+        if kind == _DELEGATION_DISPLAY_KIND:
+            self.append_notice_lines(delegate_view.completion_lines(text))
+            return
+        if kind in _NOTICE_LABELS:
+            label = _NOTICE_LABELS[kind]
+            tail = ""
+            if kind == "auto_continue" and _AUTO_CONTINUE_REQUEST in text:
+                tail = " ".join(text.split(_AUTO_CONTINUE_REQUEST, 1)[1].split())
+            self.append_notice_lines([f"{label}：{tail}" if tail else label])
+            return
+        if str(item.get("role") or "") == "user":
+            row_id = item.get("row_id")
+            self.append_user(text, row_id=row_id if isinstance(row_id, int) else None)
+        else:
+            self.append_chunk(text)
+            self.end_assistant()
+
+    def _take_stamp(self) -> float:
+        """这条消息的时刻：重铺历史用引擎给的那一拍，新消息用当下。"""
+        at, self._next_at = self._next_at, None
+        if isinstance(at, str):
+            try:
+                at = float(at)
+            except ValueError:
+                at = None
+        return float(at) if isinstance(at, (int, float)) else time.time()
+
+    def _rail_rows(self) -> list[tuple]:
+        """时间轴的刻度：每条消息的开头块、刻度字、谁的（最新那条算 now）。
+
+        同一分钟里的连续几条只留第一字的刻度：轴不参与排版，只在时间变了的地方留痕。
+        """
+        rows: list[tuple] = []
+        shown = ""
+        now_msg = self._msgs[-1] if self._msgs else None
+        for msg in self._msgs:
+            block = msg.get("head_block")
+            if block is None or not block.isValid():
+                continue
+            at = msg.get("at")
+            label = time.strftime("%H:%M", time.localtime(at)) if isinstance(at, (int, float)) else ""
+            if msg is now_msg:
+                kind = "now"
+            else:
+                kind = "you" if msg.get("role") == "user" else "her"
+            rows.append((block, label if label != shown else "", kind))
+            shown = label or shown
+        return rows
 
     def append_notice_lines(self, lines) -> None:
         """灰色说明行：引擎回灌给模型的机器消息（子代理完成之类），不把英文原文铺出来。"""
@@ -2549,6 +2696,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._assistant_pending = ""
         self._streaming = False
         self._stream_msg = None
+        if self._history_page_pending:
+            self._history_page_pending = False
+            self._maybe_load_older_history()
         pending, self._review_pending = self._review_pending, []
         for text in pending:
             self.append_review_summary(text)
@@ -3619,6 +3769,7 @@ class ChatPanel(QtWidgets.QWidget):
                 stuck = self._tool_folds.get(tool_id)
                 if stuck is not None:
                     self._folds.retitle(stuck, label)
+                    self._note_fold(stuck, "tool", label=label)
             return
 
         glyph = self._tool_glyph(view, pending=pending, file_edit=is_file_edit)
@@ -3630,6 +3781,16 @@ class ChatPanel(QtWidgets.QWidget):
         elif label != fold.label or self._glyph_url(glyph) != self._glyph_url(fold.glyph):
             fold.glyph = glyph
             self._folds.retitle(fold, label)
+        self._note_fold(
+            fold,
+            "tool_view",
+            view=view,
+            tool_name=tool_name,
+            label=label,
+            glyph=glyph,
+            copy=copy_payload,
+            delegate=delegate_event,
+        )
 
         if tool_id:
             if pending:
@@ -4226,8 +4387,10 @@ class ChatPanel(QtWidgets.QWidget):
         elif label != fold.label or self._glyph_url(glyph) != self._glyph_url(fold.glyph):
             fold.glyph = glyph
             self._folds.retitle(fold, label)
+        self._note_fold(fold, "tool", name=name, label=label, glyph=glyph)
         if body:
             self._folds.append(fold, body, body_format=self._tool_body_format)
+            self._note_fold_body(fold, body)
         self._settle_insert()
 
     def show_info(self, message: str) -> None:
@@ -4269,6 +4432,8 @@ class ChatPanel(QtWidgets.QWidget):
             self._reason_fold = self._folds.new("reasoning", _THINKING_LABEL, open_=True)
             self._fit_fold_gap(self._reason_fold)
         self._folds.append(self._reason_fold, text.strip())
+        self._note_fold(self._reason_fold, "reasoning")
+        self._note_fold_body(self._reason_fold, text.strip())
         self._settle_insert()
 
     def show_reasoning_block(self, text: str) -> None:
@@ -4634,10 +4799,18 @@ class ChatPanel(QtWidgets.QWidget):
 
         判跟不跟随看 `_follow` 这个状态位，不看此刻的滚动条位置：流式一快，位置永远落后于
         最大值，按位置判就一块都跟不上。
+
+        但「已经在真底」这一条压过状态位：滚动条贴着最大值、一格都不剩，屏上就是最新那行，
+        这时不管标志位怎么说都要钉回去——否则它会在一直到底的屏幕上继续显示「滚动到底部」，
+        而且再没有滚动事件来纠正（位置没变，`valueChanged` 不会发）。
         """
         if self._restoring:
             return
         if self._text_selected():
+            return
+        if self._at_true_end():
+            self._follow = True
+            self._hide_jump()
             return
         if self._follow:
             self._scroll_to_end_later()
@@ -4675,6 +4848,11 @@ class ChatPanel(QtWidgets.QWidget):
         if self.view.verticalScrollBar().maximum() <= 0:
             self._hide_jump()
             return
+        if self._at_true_end():
+            # 已经在真底：没有「下面还有」，不许亮——亮出来就再也收不回去了，位置已经到
+            # 最大值，不会再发 `valueChanged`。
+            self._hide_jump()
+            return
         pill = self._jump_pill()
         self._place_jump()
         if pill.isVisible():
@@ -4709,9 +4887,19 @@ class ChatPanel(QtWidgets.QWidget):
         self._resizing = False
 
     def _range_changed(self, _minimum: int, _maximum: int) -> None:
-        """滚动范围变了（排版长高、窗口拉伸）：按钮这些按新位置再摆一遍。"""
+        """滚动范围变了（排版长高、窗口拉伸、折叠块收放）：按钮这些按新位置再摆一遍。
+
+        范围缩到值上时（折叠块收回、黏顶带让位）位置不变、`valueChanged` 不会发，胶囊就没人
+        收——这里补一刀：已经在真底就算跟着，把它收起来。范围长高时若本来就跟着，继续贴底。
+        """
         QtCore.QTimer.singleShot(0, self._place_msg_bars)
         QtCore.QTimer.singleShot(0, self._place_sticky)
+        if self._at_true_end():
+            self._follow = True
+            self._hide_jump()
+            return
+        if self._follow and not self._restoring and not self._self_scroll:
+            self._scroll_to_end_later()
 
     def _set_band(self, height: int) -> None:
         """顶上给黏顶那条让位：只改视口上边距，滚动值同步加同样的量。
@@ -4730,7 +4918,9 @@ class ChatPanel(QtWidgets.QWidget):
         outer = self._self_scroll
         self._self_scroll = True
         try:
-            self.view.setViewportMargins(0, height, 0, 0)
+            self.view.setViewportMargins(
+                self.view.viewportMargins().left(), height, 0, 0
+            )
             if not self._band_freeze:
                 bar.setValue(value + height - was)
         finally:
@@ -4845,21 +5035,33 @@ class ChatPanel(QtWidgets.QWidget):
         self._sticky.raise_()
 
     def _on_scrolled(self, _value: int) -> None:
-        """滚动条动了：到底就锁回来，用户翻走才松手，排版自己挪的不算数。"""
+        """滚动条动了：到底就锁回来，用户翻走才松手，排版自己挪的不算数。
+
+        两个「这一拍不算」的闸门要在进门时先取快照：下面 `_place_sticky` 会顺手改视口上边距
+        （黏顶带让位），那段裹着 `_self_scroll` 并且要求重入，进门后再看就会被自己刚设的标志
+        挡回去——用户拖条、往上翻的那一判全被吞掉，胶囊该亮不亮、该收不收。
+        """
+        by_code = self._self_scroll
+        resizing = self._resizing
         self._hide_hover()
         self._place_sticky()
         self._place_jump()
-        if self._self_scroll:
+        if self._at_true_end():
+            # 真底、一格不剩：屏上就是最新那行，不管是用户拖条、自己回填还是带子在重排挪的，
+            # 都钉住并收起胶囊。这一条压过两个闸门——位置已到最大值，不会再有 valueChanged，
+            # 错过了就再也收不起来。
+            self._follow = True
+            self._hide_jump()
             return
-        if self._resizing:
+        if by_code:
             return
-        if self._at_end() and (not self._user_scroll or self._at_true_end()):
-            # 桌面端（use-stick-to-bottom）的语义是「滚回底部就重新钉住」，钉住就是钉到
-            # 真底：动作条那截要跟着露出来，不能钉在文字见底、按钮还压在折叠线下的位置。
+        if resizing:
+            return
+        if self._at_end() and not self._user_scroll:
+            # 桌面端（use-stick-to-bottom）的语义是「滚回底部就重新钉住」。
             #
             # 用户自己往上翻时不认这个「接近到底」：文末动作条那截（`_at_end` 留的余量）
             # 有几十像素高，在余量里每滚一格都会被拽回底部，看上去就是滚动上下跳。
-            # 用户这一路只有真滚到最后一格才重新钉住。
             self._follow = True
             self._scroll_to_end_later()
             self._hide_jump()
@@ -6503,7 +6705,7 @@ class ChatPanel(QtWidgets.QWidget):
             following = block.next()
             if following.isValid() and following.position() == start + 1:
                 block = following
-        msg = {"role": role, "text": text, "row_id": row_id}
+        msg = {"role": role, "text": text, "row_id": row_id, "at": self._take_stamp()}
         if frame is not None:
             msg["frame"] = frame
         msg["mark"] = _MsgMark(msg)
