@@ -285,11 +285,14 @@ class _StickyPrompt(QtWidgets.QWidget):
         painter.end()
 
 
-_SELF_BLOCK_TAGS = ("<ul", "<ol", "<table", "<hr")
+_SELF_BLOCK_TAGS = ("<ul", "<ol", "<table", "<hr", "<blockquote")
 _HEADING_RE = re.compile(r"^\s*<h([1-6])[^>]*>(.*)</h\1>\s*$", re.S | re.I)
 _HEADING_PX = {1: 20, 2: 18, 3: 16, 4: 15, 5: 14, 6: 14}
-_QUOTE_TAG = "<blockquote"
-_QUOTE_COLOR = "#b9c0cf"
+_DETAILS_LABEL = "详情"
+LINK_COLOR = "#8ab4ff"
+# 折叠块层数上限。桌面端（`lib/markdown-html-depth.ts`）的规矩是「只数没闭合的开标签、到顶就把后面的 `<`
+# 转成可见文字」——上界管的是递归，不是内容：超了照样画出来、看得见，只是不再往里套折叠段。
+_DETAILS_MAX_DEPTH = 32
 
 
 def _starts_own_block(markup: str) -> bool:
@@ -1628,6 +1631,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._para_break = False
         self._md_fence = False
         self._md_math = False
+        self._details_lines: list[str] = []
+        self._details_depth = 0
         self._media_roots: tuple = ()
         self._photos: dict[str, QtGui.QPixmap] = {}
         self._photo_keys: dict[str, str] = {}
@@ -2004,7 +2009,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._bg.resize(scaled.size())
         self._bg.move(frame.width() - scaled.width(), frame.height() - scaled.height())
 
-
     def set_models(self, items: list[dict], current: str, *, switching: bool = False) -> None:
         """填模型菜单：一级按供应商分组，二级是那家的模型；按钮上显示当前模型名。
 
@@ -2138,6 +2142,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._md_block = []
         self._md_fence = False
         self._md_math = False
+        self._details_lines = []
+        self._details_depth = 0
         self._para_break = False
         self._reason_fold = None
 
@@ -2521,6 +2527,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._end_reasoning_group()
         self._pump_assistant(final=True)
         self._flush_md()
+        self._flush_details()
         self._drop_trailing_blank_line()
         if self._msgs:
             self._mount_msg_bar(self._msgs[-1])
@@ -2564,6 +2571,8 @@ class ChatPanel(QtWidgets.QWidget):
             or _open_link(data)
             or markdown_render.math_incomplete(data)
             or markdown_render.is_structural_prefix(data)
+            or markdown_render.details_pending(data)
+            or self._details_depth
         )
         if (
             data
@@ -2576,6 +2585,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._assistant_pending = data
 
     def _emit_line(self, line: str) -> None:
+        if self._details_depth:
+            self._md_feed(line)
+            return
         rest, path = media_links.split_media_line(line)
         if path is None:
             self._md_feed(rest)
@@ -2592,6 +2604,19 @@ class ChatPanel(QtWidgets.QWidget):
         这样列表、表格、代码块才是一个整体（一行一行画会把一张表拆成几十段），
         而普通句子仍然是「来一行显示一行」，不损失流式手感。
         """
+        if self._details_depth:
+            self._details_lines.append(line)
+            self._details_depth += markdown_render.tag_balance(line)
+            if self._details_depth <= 0:
+                self._flush_details()
+            return
+        if markdown_render.opens_details(line):
+            self._flush_md()
+            self._details_lines = [line]
+            self._details_depth = markdown_render.tag_balance(line)
+            if self._details_depth <= 0:
+                self._flush_details()
+            return
         if markdown_render.is_fence(line):
             self._md_block.append(line)
             self._md_fence = not self._md_fence
@@ -2655,6 +2680,83 @@ class ChatPanel(QtWidgets.QWidget):
                 self._insert_code_block(body, language)
             else:
                 self._insert_html(markdown_render.block(body))
+
+    def _flush_details(self) -> None:
+        """攒够一整段 `<details>` 就画成折叠块。
+
+        `_details_depth` 只按层数配对：里层套的整段原样留下，由 `_draw_details` 自己再拆，
+        第一个收尾标签就把外层关掉的话，剩下的 `</details>` 会当正文露出来。
+        """
+        chunk = "\n".join(self._details_lines)
+        self._details_lines = []
+        self._details_depth = 0
+        if chunk.strip():
+            self._bubble_has_text = True
+            self._draw_details(chunk, None)
+
+    def _draw_details(
+        self, chunk: str, parent: disclosure.Fold | None, depth: int = 0
+    ) -> None:
+        """把一段 `<details>…</details>` 画成一层的折叠块，里面的正文按普通 markdown 画。
+
+        层数到顶（`_DETAILS_MAX_DEPTH`）就把剩下的一整段按普通正文画完：内容照样看得见，只是不再套折叠段。
+        """
+        summary, body = markdown_render.split_details(chunk)
+        label = markdown_render.plain(markdown_render.inline(summary)) or _DETAILS_LABEL
+        fold = self._folds.new("details", label, open_=markdown_render.details_default_open(chunk))
+        if parent is not None:
+            self._folds.adopt(fold, parent)
+        if not body.strip():
+            return
+        nested = "<details" in markdown_render.masked(body).lower()
+        if nested and depth < _DETAILS_MAX_DEPTH:
+            for kind, piece in markdown_render.split_details_stream(body):
+                if kind == "details":
+                    self._draw_details(piece, fold, depth + 1)
+                else:
+                    self._draw_folded_body(fold, piece)
+            return
+        self._draw_folded_body(fold, body)
+
+    def _draw_folded_body(self, fold: disclosure.Fold, text: str) -> None:
+        """折叠段里的正文：代码块按块给底色（跟正文里的代码块同一套），其余交 HTML。"""
+        for kind, language, piece in markdown_render.split_fences(text):
+            if kind == "code":
+                self._folds.append_runs(
+                    fold,
+                    self._code_rows(piece, language),
+                    panel=QtGui.QColor(markdown_render.CODE_BACKGROUND),
+                )
+            else:
+                self._folds.append_html(fold, self._adopt_images(markdown_render.block(piece)))
+
+    def _code_rows(
+        self, code: str, language: str
+    ) -> list[list[tuple[str, QtGui.QTextCharFormat]]]:
+        """一行一格的代码着色：每行若干 (文字, 字符格式)，底色由块格式给（`append_runs(panel=…)`）。"""
+        base = QtGui.QTextCharFormat()
+        base.setFontFamilies(["Consolas", "Cascadia Mono", "Courier New"])
+        base.setFontPointSize(9)
+        base.setForeground(QtGui.QColor("#d7dae5"))
+        lines = code.split("\n")
+        if len(lines) > 1 and not lines[-1]:
+            lines.pop()
+        colored = code_highlight(code, language)
+        rows: list[list[tuple[str, QtGui.QTextCharFormat]]] = []
+        for index in range(len(lines)):
+            tokens = colored[index] if index < len(colored) else []
+            cells: list[tuple[str, QtGui.QTextCharFormat]] = []
+            for text, color, bold in tokens:
+                if not text:
+                    continue
+                fmt = QtGui.QTextCharFormat(base)
+                if color:
+                    fmt.setForeground(QtGui.QColor(color))
+                if bold:
+                    fmt.setFontWeight(QtGui.QFont.Weight.Bold)
+                cells.append((text, fmt))
+            rows.append(cells or [(" ", base)])
+        return rows
 
 
     def _photo_placeholder(self, text: str) -> QtGui.QPixmap:
@@ -4374,7 +4476,6 @@ class ChatPanel(QtWidgets.QWidget):
             self._insert_heading(cursor, int(heading.group(1)), heading.group(2))
             return
         first_new = None
-        quote_format = None
         if not document.isEmpty():
             if _starts_own_block(markup):
                 self._drop_trailing_blank_line()
@@ -4385,27 +4486,40 @@ class ChatPanel(QtWidgets.QWidget):
             else:
                 cursor.insertBlock()
                 cursor.setCharFormat(QtGui.QTextCharFormat())
-                quote = markup.lstrip().lower().startswith(_QUOTE_TAG)
-                block_format = _plain_block_format()
-                if quote:
-                    block_format.setLeftMargin(12)
-                cursor.setBlockFormat(block_format)
-                if quote:
-                    quote_format = QtGui.QTextCharFormat()
-                    quote_format.setForeground(QtGui.QColor(_QUOTE_COLOR))
+                cursor.setBlockFormat(_plain_block_format())
         self._para_break = False
         start = cursor.position()
         cursor.insertHtml(self._adopt_images(markup))
-        if quote_format is not None:
-            _paint_range(cursor, start, cursor.position(), quote_format)
+        self._restore_leading_block(start, markup)
         if first_new is not None:
             block = document.findBlockByNumber(first_new)
             while block.isValid():
                 if block.textList() is None:
-                    QtGui.QTextCursor(block).setBlockFormat(_plain_block_format())
+                    styled = block.blockFormat()
+                    if styled.background().style() == QtCore.Qt.BrushStyle.NoBrush and not styled.leftMargin():
+                        QtGui.QTextCursor(block).setBlockFormat(_plain_block_format())
                     self._relax_image_line(block)
                 block = block.next()
         self._settle_insert()
+
+    def _restore_leading_block(self, start: int, markup: str) -> None:
+        """补回首段的段格式（引用那层缩进和底色）。
+
+        `insertHtml` 把光标所在的段并进开头 `<p>` 时，段格式不跟过去；这里按 markup 上的样式补一次。
+        """
+        leading = markdown_render.leading_block_style(markup)
+        if leading is None:
+            return
+        block = self.view.document().findBlock(start)
+        if not block.isValid() or block.textList() is not None:
+            return
+        left, background = leading
+        block_format = block.blockFormat()
+        block_format.setLeftMargin(left)
+        block_format.setTopMargin(0)
+        block_format.setBottomMargin(0)
+        block_format.setBackground(QtGui.QColor(background))
+        QtGui.QTextCursor(block).setBlockFormat(block_format)
 
     def _insert_heading(self, cursor: QtGui.QTextCursor, level: int, inner: str) -> None:
         """标题：自己开段、自己定字号。
@@ -4465,6 +4579,11 @@ class ChatPanel(QtWidgets.QWidget):
         """
         bar = self.view.verticalScrollBar()
         return bar.value() >= bar.maximum() - 4 - self._trailing_bar_px()
+
+    def _at_true_end(self) -> bool:
+        """真的滚到底了：一格都不剩，用户自己翻到这里才算数。"""
+        bar = self.view.verticalScrollBar()
+        return bar.value() >= bar.maximum()
 
     def _trailing_bar_px(self) -> int:
         """文末动作条占的那截高（没有就是 0）。见 `_at_end`。
@@ -4719,9 +4838,13 @@ class ChatPanel(QtWidgets.QWidget):
             return
         if self._resizing:
             return
-        if self._at_end():
+        if self._at_end() and (not self._user_scroll or self._at_true_end()):
             # 桌面端（use-stick-to-bottom）的语义是「滚回底部就重新钉住」，钉住就是钉到
             # 真底：动作条那截要跟着露出来，不能钉在文字见底、按钮还压在折叠线下的位置。
+            #
+            # 用户自己往上翻时不认这个「接近到底」：文末动作条那截（`_at_end` 留的余量）
+            # 有几十像素高，在余量里每滚一格都会被拽回底部，看上去就是滚动上下跳。
+            # 用户这一路只有真滚到最后一格才重新钉住。
             self._follow = True
             self._scroll_to_end_later()
             self._hide_jump()

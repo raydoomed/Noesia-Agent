@@ -19,6 +19,7 @@ import PySide6.QtCore as QtCore
 import PySide6.QtGui as QtGui
 import PySide6.QtWidgets as QtWidgets
 
+from app import markdown_render
 from app.tool_scroll import ToolScroll
 
 CARET_OPEN = "▾"
@@ -28,6 +29,10 @@ CARET_CLOSED = "▸"
 def head_text(label: str, open_: bool) -> str:
     """抬头那一行的原文：箭头 + 标签（箭头跟着开合翻）。"""
     return f"{CARET_OPEN if open_ else CARET_CLOSED} {label}"
+
+
+FOLD_INDENT = 12
+"""折叠块每往里套一层，头顶和正文再往右让这么多（跟引用的层级同一个刻度）。"""
 
 
 class _BodyMark(QtGui.QTextBlockUserData):
@@ -64,6 +69,8 @@ class Fold:
     kind: str
     label: str
     open: bool
+    parent: int = 0
+    indent: int = 0
     head_block: QtGui.QTextBlock | None = field(default=None, repr=False)
     has_body: bool = False
     pinned: bool = False
@@ -128,6 +135,51 @@ class Folds:
                 fold.scroll.setParent(None)
                 fold.scroll.deleteLater()
                 fold.scroll = None
+
+    def depth_of(self, fold: Fold) -> int:
+        """这一层套了几层：外层数决定往右缩几格。"""
+        depth = 0
+        parent = fold.parent
+        while parent and depth < 64:
+            upper = self._items.get(parent)
+            if upper is None:
+                break
+            depth += 1
+            parent = upper.parent
+        return depth
+
+    def indented_left(self, fold: Fold) -> int:
+        """这一层该有的左缩进：每多套一层加一格。"""
+        return self.depth_of(fold) * FOLD_INDENT
+
+    def _dress(self, fold: Fold, block: QtGui.QTextBlock) -> _BodyMark:
+        """新来的一块正文：登记归属、按「自己+外层都展开」显隐、再往里让出嵌套的缩进。"""
+        mark = block.userData()
+        if not isinstance(mark, _BodyMark) or mark.key != fold.key:
+            mark = self._mark(fold)
+            block.setUserData(mark)
+        block.setVisible(self._effective_open(fold))
+        if fold.indent:
+            fmt = block.blockFormat()
+            fmt.setLeftMargin(fmt.leftMargin() + fold.indent)
+            QtGui.QTextCursor(block).setBlockFormat(fmt)
+        return mark
+
+    def _reindent(self, fold: Fold) -> None:
+        """把这一层的抬头和正文挪到该有的缩进：只补差额，重复调用不会越缩越远。"""
+        want = self.indented_left(fold)
+        delta = want - fold.indent
+        if not delta:
+            return
+        fold.indent = want
+        targets = list(self.body_blocks(fold))
+        head = fold.head_block
+        if head is not None and head.isValid():
+            targets.insert(0, head)
+        for block in targets:
+            fmt = block.blockFormat()
+            fmt.setLeftMargin(fmt.leftMargin() + delta)
+            QtGui.QTextCursor(block).setBlockFormat(fmt)
 
     def owns(self, pos: int) -> bool:
         """这个位置是不是落在某个折叠段的正文里（抬头不算）。"""
@@ -206,11 +258,9 @@ class Folds:
         fold.has_body = True
         block = self._doc.findBlock(start)
         while block.isValid() and block.position() <= end:
-            mark = self._mark(fold)
-            block.setUserData(mark)
-            block.setVisible(fold.open)
+            self._dress(fold, block)
             block = block.next()
-        self._doc.markContentsDirty(0, self._doc.characterCount())
+        self._doc.markContentsDirty(start, end - start + 1)
 
     def append_marked(
         self,
@@ -245,7 +295,7 @@ class Folds:
         cursor.setPosition(block.position())
         cursor.setPosition(block.position() + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor)
         cursor.insertText(text, body_format or self._body_format)
-        self._doc.markContentsDirty(0, self._doc.characterCount())
+        self._doc.markContentsDirty(block.position(), block.length())
 
     def _append_scroll(self, fold: Fold, text: str) -> None:
         """长内容不进文档流：正文里留一块等高的空位，字交给独立控件自己滚。"""
@@ -282,7 +332,7 @@ class Folds:
         elif len(fold.chunks) > fold.drawn:
             scroll.add_rows(fold.chunks[fold.drawn :])
             fold.drawn = len(fold.chunks)
-        scroll.setVisible(fold.open)
+        scroll.setVisible(self._effective_open(fold))
         fold.has_body = True
         self._sync_slot(fold)
 
@@ -337,9 +387,7 @@ class Folds:
         fmt.setLineHeight(height, QtGui.QTextBlockFormat.LineHeightTypes.FixedHeight.value)
         cursor.setBlockFormat(fmt)
         block = self._doc.findBlock(cursor.block().position())
-        if not isinstance(block.userData(), _BodyMark):
-            block.setUserData(self._mark(fold))
-        block.setVisible(fold.open)
+        self._dress(fold, block)
         fold.slot = block
         self._doc.markContentsDirty(block.position(), block.length())
 
@@ -356,11 +404,34 @@ class Folds:
             block = block.next()
         return None
 
+    def _subtree_keys(self, fold: Fold) -> set[int]:
+        """这一层连同它下面所有层的 key。"""
+        keys = {fold.key}
+        pending = [fold.key]
+        while pending:
+            key = pending.pop()
+            for child in self._items.values():
+                if child.parent == key and child.key not in keys:
+                    keys.add(child.key)
+                    pending.append(child.key)
+        return keys
+
     def _tail_block(self, fold: Fold) -> QtGui.QTextBlock | None:
-        """这个折叠段现有正文的最后一块（还没有正文就是抬头）。"""
-        blocks = self.body_blocks(fold)
-        if blocks:
-            return blocks[-1]
+        """这一层现有正文的最后一块，里层套着的整段也算在后面。
+
+        外面那层接着写正文时不能插进里层抬头和它的正文中间——那会读成「里层的正文
+        变成了外面的」，收起里层时外面的字跟着一起消失。
+        """
+        keys = self._subtree_keys(fold)
+        tail: QtGui.QTextBlock | None = None
+        block = self._doc.begin()
+        while block.isValid():
+            mark = block.userData()
+            if isinstance(mark, _BodyMark) and mark.key in keys:
+                tail = block
+            block = block.next()
+        if tail is not None:
+            return tail
         head = fold.head_block
         return head if head is not None and head.isValid() else self._find_head(fold)
 
@@ -397,19 +468,24 @@ class Folds:
         first: _BodyMark | None = None
         block = self._doc.findBlock(start)
         while block.isValid() and block.position() <= end:
-            mark = self._mark(fold)
-            block.setUserData(mark)
-            block.setVisible(fold.open)
-            first = first or mark
+            first = first or self._dress(fold, block)
             block = block.next()
-        self._doc.markContentsDirty(0, self._doc.characterCount())
+        self._doc.markContentsDirty(start, end - start + 1)
         return first
 
-    def append_runs(self, fold: Fold, rows: list[list[tuple[str, QtGui.QTextCharFormat]]]) -> None:
+    def append_runs(
+        self,
+        fold: Fold,
+        rows: list[list[tuple[str, QtGui.QTextCharFormat]]],
+        *,
+        panel: QtGui.QColor | None = None,
+    ) -> None:
         """按行插一段「多彩正文」：每行是若干 (文字, 字符格式)。
 
         ANSI 输出和 diff 都是「一行里好几种颜色」，`append()` 只能整段一种格式，所以另开一条。
         折叠标记的规则与 `append()` 完全一样：文本里每一段都要打标记。
+        `panel` 给的是整块底色（代码块用）：按块格式铺满整行，不用字符底色——字符底色只盖住字宽，
+        再叠一层就成了一条深浅不一的「残影」。
         """
         if not rows:
             return
@@ -428,6 +504,14 @@ class Folds:
         for index, row in enumerate(rows):
             if index:
                 self._start_block(cursor, margin=0)
+            if panel is not None:
+                block_format = cursor.blockFormat()
+                block_format.setBackground(panel)
+                block_format.setLeftMargin(12)
+                block_format.setRightMargin(12)
+                block_format.setTopMargin(4 if index == 0 else 0)
+                block_format.setBottomMargin(4 if index == len(rows) - 1 else 0)
+                cursor.setBlockFormat(block_format)
             for text, fmt in row:
                 if isinstance(fmt, QtGui.QTextImageFormat):
                     cursor.insertImage(fmt)
@@ -437,11 +521,9 @@ class Folds:
         fold.has_body = True
         block = self._doc.findBlock(start)
         while block.isValid() and block.position() <= end:
-            mark = self._mark(fold)
-            block.setUserData(mark)
-            block.setVisible(fold.open)
+            self._dress(fold, block)
             block = block.next()
-        self._doc.markContentsDirty(0, self._doc.characterCount())
+        self._doc.markContentsDirty(start, end - start + 1)
 
 
     def toggle(self, key: int) -> bool | None:
@@ -454,13 +536,97 @@ class Folds:
 
     def set_open(self, fold: Fold, open_: bool) -> None:
         fold.open = bool(open_)
-        if not fold.has_body:
-            return
-        for block in self.body_blocks(fold):
-            block.setVisible(fold.open)
-        if fold.scroll is not None:
-            fold.scroll.setVisible(fold.open)
+        self.sync_visibility()
+
+    def _parents_open(self, fold: Fold) -> bool:
+        """外层每一层都展开着吗（自己的开合不算）。"""
+        seen: set[int] = set()
+        current = self._items.get(fold.parent) if fold.parent else None
+        while current is not None:
+            if not current.open:
+                return False
+            if current.key in seen:
+                return False
+            seen.add(current.key)
+            current = self._items.get(current.parent) if current.parent else None
+        return True
+
+    def _effective_open(self, fold: Fold) -> bool:
+        """自己展开、并且每一层外层都展开，里面的内容才看得见。"""
+        return fold.open and self._parents_open(fold)
+
+    def sync_visibility(self) -> None:
+        """按「自己 + 所有外层都展开」重算每个折叠段的可见性。
+
+        抬头的可见性只看外层：里层套着时，外层一收起，里层的抬头也得跟着消失。
+        """
+        show = {fold.key: self._effective_open(fold) for fold in self._items.values()}
+        for fold in self._items.values():
+            head = fold.head_block
+            if head is not None and head.isValid():
+                head.setVisible(self._parents_open(fold))
+            if fold.has_body:
+                for block in self.body_blocks(fold):
+                    block.setVisible(show[fold.key])
+            if fold.scroll is not None:
+                fold.scroll.setVisible(show[fold.key])
         self._doc.markContentsDirty(0, self._doc.characterCount())
+
+    def adopt(self, fold: Fold, parent: Fold | None) -> None:
+        """这层套在哪一层下面：外层一收起，里层整段跟着消失，抬头和正文也往里缩一层。"""
+        fold.parent = parent.key if parent is not None else 0
+        self.sync_visibility()
+        for key in self._subtree_keys(fold):
+            inner = self._items.get(key)
+            if inner is not None:
+                self._reindent(inner)
+
+    def append_html(
+        self,
+        fold: Fold,
+        markup: str,
+        *,
+        block_format: QtGui.QTextBlockFormat | None = None,
+        char_format: QtGui.QTextCharFormat | None = None,
+    ) -> None:
+        """往折叠段下面贴一段富文本（表格、公式图、引用都在里面）。"""
+        if not markup.strip():
+            return
+        after = self._tail_block(fold)
+        if after is None or not after.isValid():
+            cursor = self._end_cursor()
+            self._start_block(cursor, margin=0)
+        else:
+            cursor = QtGui.QTextCursor(self._doc)
+            cursor.setPosition(after.position() + after.length() - 1)
+            cursor.insertBlock()
+        fmt = _inherit_clean(cursor.blockFormat())
+        fmt.setTopMargin(0)
+        fmt.setBottomMargin(6)
+        if block_format is not None:
+            fmt.setLeftMargin(block_format.leftMargin())
+            fmt.setRightMargin(block_format.rightMargin())
+        cursor.setBlockFormat(fmt)
+        start = cursor.position()
+        cursor.insertHtml(markup)
+        leading = markdown_render.leading_block_style(markup)
+        if leading is not None:
+            first = self._doc.findBlock(start)
+            if first.isValid() and first.textList() is None:
+                left, background = leading
+                first_format = first.blockFormat()
+                first_format.setLeftMargin(left)
+                first_format.setTopMargin(0)
+                first_format.setBottomMargin(0)
+                first_format.setBackground(QtGui.QColor(background))
+                QtGui.QTextCursor(first).setBlockFormat(first_format)
+        end = cursor.position()
+        fold.has_body = True
+        block = self._doc.findBlock(start)
+        while block.isValid() and block.position() <= end:
+            self._dress(fold, block)
+            block = block.next()
+        self._doc.markContentsDirty(start, end - start + 1)
 
     def retitle(self, fold: Fold, label: str) -> None:
         """换抬头文字（「思考中」→「思考了 3s」）。

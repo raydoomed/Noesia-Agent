@@ -30,7 +30,6 @@ _CODE_STYLE = (
     f"background-color:{CODE_BACKGROUND};color:#d7dae5;font-family:Consolas,'Cascadia Mono',monospace;"
     "font-size:9pt;margin:0 0 0 6px;"
 )
-_CODE_LINE_SPAN = f"background-color:{CODE_BACKGROUND}"
 
 _TAG = re.compile(r"<[^>]+>")
 
@@ -74,7 +73,7 @@ def _code_lines(painted: str) -> str:
     if not lines:
         lines = [""]
     return "".join(
-        f"<p style='{_CODE_STYLE}'><span style='{_CODE_LINE_SPAN}'>{_nbsp(line) if line else '&nbsp;'}</span></p>"
+        f"<p style='{_CODE_STYLE}'>{_nbsp(line) if line else '&nbsp;'}</p>"
         for line in lines
     )
 
@@ -111,7 +110,7 @@ def inline(text: str) -> str:
         markup = _parser().renderInline(protected)
     except Exception:  # noqa: BLE001
         markup = html.escape(protected)
-    return _restore_math(markup, holders)
+    return _restore_math(_style_links(markup), holders)
 
 
 def _style_tables(markup: str) -> str:
@@ -124,6 +123,71 @@ def _style_tables(markup: str) -> str:
     return markup.replace(
         "<th>", "<th style='color:#cfd6e6;background-color:#242733;'>"
     )
+
+
+QUOTE_BG = "#2a2433"
+QUOTE_FG = "#b9c0cf"
+QUOTE_INDENT = 12
+LINK_COLOR = "#8ab4ff"
+
+
+def _style_links(markup: str) -> str:
+    """链接染成主题浅蓝。
+
+    Qt 富文本画锚点走系统链接色（默认 #0000ff），暗底上糊成一团；`color` 写在 `<a>` 上才会
+    落到字符格式里，所以在这一步补进去，两条插入路径（正文、折叠段正文）一次都覆盖到。
+    """
+    if "<a " not in markup:
+        return markup
+    return re.sub(r"<a (?![^>]*style=)", f"<a style='color:{LINK_COLOR};' ", markup)
+
+
+def _style_quotes(markup: str) -> str:
+    """引用块：按层缩进 + 淡底色 + 淡化字色。
+
+    桌面端是 CSS 的左边框 + 淡底（浏览器默认样式）；Qt 的富文本没有左边框这回事，
+    缩进一层层加深、底色铺在段上，是同一套观感里能落地的那种。缩进和底色都写在 `<p>` 的
+    样式上——Qt 的 `insertHtml` 认 `margin-left` 与 `background-color`，会转成段格式。
+    """
+    if "<blockquote" not in markup:
+        return markup
+    out: list[str] = []
+    depth = 0
+    for piece in re.split(r"(</?blockquote[^>]*>)", markup):
+        low = piece.lower()
+        if low.startswith("<blockquote"):
+            depth += 1
+            continue
+        if low.startswith("</blockquote"):
+            depth = max(0, depth - 1)
+            continue
+        if depth:
+            style = (
+                f"margin-top:0;margin-bottom:0;margin-left:{QUOTE_INDENT * depth}px;"
+                f"background-color:{QUOTE_BG};color:{QUOTE_FG};"
+            )
+            for plain_p in ("<p>", "<p style='margin:0;'>"):
+                piece = piece.replace(plain_p, f"<p style='{style}'>")
+        out.append(piece)
+    return "".join(out)
+
+
+def leading_block_style(markup: str) -> tuple[int, str] | None:
+    """抠出开头那段 `<p>` 的（左缩进, 底色），给调用方补一次。
+
+    `insertHtml` 有个脾气：光标所在的那一段会**并进**开头这个 `<p>`，可 `<p>` 上的
+    `margin-left`/`background-color` 却不跟过去——引用第一层就成了没缩进、没底色的普通段。
+    文字色是跟过去的，缺的只是段格式，所以插入之后照这份数据补一张段格式即可。
+    """
+    match = re.match(r"\s*<p style='([^']*)'>", markup)
+    if not match:
+        return None
+    style = match.group(1)
+    left = re.search(r"margin-left:(\d+)px", style)
+    bg = re.search(r"background-color:(#[0-9a-fA-F]{3,8})", style)
+    if not left or not bg:
+        return None
+    return int(left.group(1)), bg.group(1)
 
 
 def split_fences(text: str) -> list[tuple[str, str, str]]:
@@ -192,10 +256,135 @@ def block(text: str) -> str:
         return ""
     protected, holders = _protect_math(text)
     try:
-        markup = _zero_block_margins(_style_tables(_unwrap_pre(_parser().render(protected))))
+        markup = _zero_block_margins(
+            _style_links(_style_quotes(_style_tables(_unwrap_pre(_parser().render(protected)))))
+        )
     except Exception:  # noqa: BLE001
         markup = _code_lines(html.escape(protected))
     return _restore_math(markup, holders)
+
+
+# ---- <details> 折叠块 ----
+# Qt 的富文本没有 <details> 这种元素，原样喂进去只会被转义成一行字。
+# 真折叠落在文档的折叠段上（`disclosure.Folds`）；这里只认边界，把摘要和正文分开。
+_OPEN = re.compile(r"^\s*<details\b[^>]*>", re.I)
+_ATTRS = re.compile(r"<details\b([^>]*)>", re.I)
+_CLOSE = re.compile(r"</details\s*>", re.I)
+_SUMMARY = re.compile(r"<summary\b[^>]*>(.*?)</summary\s*>", re.I | re.S)
+_INLINE_CODE = re.compile(r"`+[^`\n]*`+")
+_TAG = re.compile(r"<[^>]+>")
+_HEADS = ("<details", "</details", "<summary")
+
+
+def masked(text: str) -> str:
+    """同长度的副本：行内代码和代码块里的字换成空格，扫标签时就不会认错。
+
+    正文里写一句「说明 `<details>` 没有被收起来」，反引号里那个标签是内容不是结构。
+    """
+    out: list[str] = []
+    fenced = False
+    for line in text.split("\n"):
+        head = line.strip()
+        if head.startswith(("```", "~~~")):
+            out.append(" " * len(line))
+            fenced = not fenced
+        elif fenced:
+            out.append(" " * len(line))
+        else:
+            out.append(_INLINE_CODE.sub(lambda m: " " * len(m.group(0)), line))
+    return "\n".join(out)
+
+
+def opens_details(line: str) -> bool:
+    """这一行是不是折叠块的开头。"""
+    return bool(_OPEN.match(masked(line)))
+
+
+def closes_details(line: str) -> bool:
+    """这一行里有没有折叠块的结尾（`</details>` 常跟正文挤在同一行）。"""
+    return bool(_CLOSE.search(masked(line)))
+
+
+def tag_balance(line: str) -> int:
+    """这一行让折叠块层数涨几层：里层套的也算，行内代码里写的不算。"""
+    scan = masked(line).lower()
+    return scan.count("<details") - scan.count("</details")
+
+
+def details_default_open(text: str) -> bool:
+    """`<details open>` 一开始就是展开的——HTML 本来就是这个语义。"""
+    match = _ATTRS.search(masked(text))
+    return bool(match and re.search(r"\bopen\b", match.group(1), re.I))
+
+
+def details_pending(partial: str) -> bool:
+    """这半行是不是折叠块的标记：`<det`、`</deta` 这种半截标记当正文画出去就收不回来。"""
+    head = partial.strip().lower()
+    return bool(head) and any(tag.startswith(head) or head.startswith(tag) for tag in _HEADS)
+
+
+def plain(markup: str) -> str:
+    """去掉标签留文字（折叠块抬头只收纯文本，混着标记会连尖括号一起画出来）。"""
+    return html.unescape(_TAG.sub("", markup)).strip()
+
+
+def split_details(text: str) -> tuple[str, str]:
+    """拆成（摘要文字, 里面的 markdown）。
+
+    里面还套着 `<details>` 时按**最外层**收尾标签截断（最后出现的那个），
+    截在前一个上会把里层的正文一起吞掉。
+    """
+    scan = masked(text)
+    match = _SUMMARY.search(scan)
+    if match:
+        summary = text[match.start(1) : match.end(1)]
+        body = text[match.end() :]
+    else:
+        summary = ""
+        body = _OPEN.sub("", text, count=1)
+    cut = masked(body).lower().rfind("</details")
+    if cut >= 0:
+        body = body[:cut]
+    return summary.strip(), body.strip("\n")
+
+
+def split_details_stream(text: str) -> list[tuple[str, str]]:
+    """按折叠块切一段文字：[("text", 原文) | ("details", 整段 <details>…</details>)]。
+
+    按层数配对，里层套的整段原样交给调用方再拆——不然一层套一层时，第一个收尾标签
+    就把外层关掉了，剩下的 `</details>` 会当正文露出来。
+    """
+    segments: list[tuple[str, str]] = []
+    plain_lines: list[str] = []
+    block: list[str] = []
+    depth = 0
+    for line, scan in zip(text.split("\n"), masked(text).split("\n")):
+        low = scan.lower()
+        opens = low.count("<details")
+        closes = low.count("</details")
+        if depth:
+            block.append(line)
+            depth += opens - closes
+            if depth <= 0:
+                segments.append(("details", "\n".join(block)))
+                block, depth = [], 0
+            continue
+        if opens:
+            if plain_lines:
+                segments.append(("text", "\n".join(plain_lines)))
+                plain_lines = []
+            block = [line]
+            depth = opens - closes
+            if depth <= 0:
+                segments.append(("details", "\n".join(block)))
+                block, depth = [], 0
+            continue
+        plain_lines.append(line)
+    if plain_lines:
+        segments.append(("text", "\n".join(plain_lines)))
+    if block:
+        segments.append(("details", "\n".join(block)))
+    return segments
 
 
 def is_structural(line: str) -> bool:

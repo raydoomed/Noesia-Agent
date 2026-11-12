@@ -69,6 +69,8 @@ class ChatView(QtWidgets.QTextBrowser):
         if self._folds is not None:
             self._folds.fit_window(self.visible_range())
         self._relayout_tools()
+        # 透明窗口的滚动是搬上一帧的像素，不整屏重画就会留下上一帧的残影。
+        self.viewport().update()
         self.scrolled.emit()
 
     def visible_range(self) -> tuple[int, int]:
