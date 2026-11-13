@@ -361,6 +361,7 @@ class EngineWire(QtCore.QObject):
         self._attaching = False
         self._attach_since = 0.0
         self._recover_rounds = 0
+        self._attach_timeouts = 0
         self._pending_text = ""
         self._pending_turns: list[tuple[str, list, bool]] = []
         self._turn: dict | None = None
@@ -388,6 +389,7 @@ class EngineWire(QtCore.QObject):
         self._attaching = False
         self._attach_since = 0.0
         self._recover_rounds = 0
+        self._attach_timeouts = 0
         self._attach_names.clear()
         self._session_id = ""
         self._pending_text = ""
@@ -1002,12 +1004,23 @@ class EngineWire(QtCore.QObject):
         `_attaching` 只能由回包、出错、换进程三条路摘掉。万一三条都没来（引擎收了建会话的帧
         却一直不回），它就一直挂着：之后每句话只往 `_pending_text` 里堆，一个字也送不出去，
         界面连报错都没有——只有重启程序能恢复。这里给一个时限。
+
+        超时之后**不能**拿同一个存储 id 再赌一次：被强杀打断的会话在引擎那边停在 `unknown`，
+        重连多少次都是同一个结果，用户看到的就是「消息一直排队」。所以第一次超时就丢掉存储 id、
+        换一场新会话，让攒着的话自己发出去；连试几次都不行才收手报错——宁可让他看见红字。
         """
         if self._attaching and self._attach_since:
             if time.monotonic() - self._attach_since >= self.ATTACH_TIMEOUT_S:
                 self._attaching = False
                 self._attach_since = 0.0
-                self.failed.emit("引擎一直没回会话，这次没接上")
+                self._attach_timeouts += 1
+                if self._stored_id and not self._session_id:
+                    self._stored_id = ""
+                    self.failed.emit("上一场会话接不上了，这条开一场新的发出去")
+                    self._ensure_session()
+                elif self._attach_timeouts == 1 or self._attach_timeouts % 5 == 0:
+                    # 引擎彻底不回的时候别刷屏：说一次，之后每五次提一次。
+                    self.failed.emit("引擎一直没回会话，这条还攒着——再等等，或者重开一次 Noesia")
         return not self._session_id or self._attaching
 
     def _session_ready(self, session_id: str, stored_id: str = "") -> None:
@@ -1023,6 +1036,7 @@ class EngineWire(QtCore.QObject):
         self._attaching = False
         self._attach_since = 0.0
         self._recover_rounds = 0
+        self._attach_timeouts = 0
         self._session_id = session_id
         if stored_id:
             self._stored_id = stored_id
@@ -1032,10 +1046,13 @@ class EngineWire(QtCore.QObject):
 
         冷启动窗口期用户连点两句时，两次都走这里——只发一次 create/resume，
         否则两场会话里各有一半对话。
+
+        **别在这里自己置 `_attaching`**：`resume_session` / `create_session` 进去第一件事就是
+        `if self._attaching: return`，先置就等于把要发的那一帧吃掉——话说攒着，请求一个没发，
+        界面还一声不响（用户看到的就是「消息一直排队」）。置位是它们自己的事。
         """
         if self._session_id or self._attaching or self._recovering:
             return
-        self._attaching = True
         if self._stored_id:
             self.resume_session(self._stored_id)
         else:
