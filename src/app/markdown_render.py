@@ -269,7 +269,6 @@ def block(text: str) -> str:
 # 真折叠落在文档的折叠段上（`disclosure.Folds`）；这里只认边界，把摘要和正文分开。
 _OPEN = re.compile(r"^\s*<details\b[^>]*>", re.I)
 _ATTRS = re.compile(r"<details\b([^>]*)>", re.I)
-_CLOSE = re.compile(r"</details\s*>", re.I)
 _SUMMARY = re.compile(r"<summary\b[^>]*>(.*?)</summary\s*>", re.I | re.S)
 _INLINE_CODE = re.compile(r"`+[^`\n]*`+")
 _TAG = re.compile(r"<[^>]+>")
@@ -298,11 +297,6 @@ def masked(text: str) -> str:
 def opens_details(line: str) -> bool:
     """这一行是不是折叠块的开头。"""
     return bool(_OPEN.match(masked(line)))
-
-
-def closes_details(line: str) -> bool:
-    """这一行里有没有折叠块的结尾（`</details>` 常跟正文挤在同一行）。"""
-    return bool(_CLOSE.search(masked(line)))
 
 
 def tag_balance(line: str) -> int:

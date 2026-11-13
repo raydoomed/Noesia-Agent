@@ -53,8 +53,6 @@ class VoiceRecorder(QtCore.QObject):
 
     level = QtCore.Signal(float)
     failed = QtCore.Signal(str)
-    devices_changed = QtCore.Signal(list)  # [(guid, name, active), ...]
-    stream_ready = QtCore.Signal(str)
     device_lost = QtCore.Signal(str)
 
     _opened = QtCore.Signal(object, int)
@@ -139,8 +137,7 @@ class VoiceRecorder(QtCore.QObject):
     def choose(self, guid: str) -> None:
         """切设备。传空串 = 跟随系统默认。
 
-        只记下选择；真正的换流在 `reopen()` 里做——调用方应当在切完之后立刻收一次
-        `stream_ready`/`failed`，界面据此更新。
+        只记下选择；真正的换流在 `reopen()` 里做——开不出来走 `failed`，界面据此更新。
         """
         self._chosen_guid = (guid or "").strip()
         self.reopen()
@@ -277,7 +274,6 @@ class VoiceRecorder(QtCore.QObject):
             "[录音] %s 就绪（%s · %d Hz / %d 声道）",
             capture.endpoint.name, capture.backend, self._rate, self._channels,
         )
-        self.stream_ready.emit(capture.backend)
 
     @QtCore.Slot(int, str)
     def _on_open_failed(self, seq: int, message: str) -> None:
@@ -412,7 +408,6 @@ class VoiceRecorder(QtCore.QObject):
             return
 
         endpoints = self.devices()
-        self.devices_changed.emit([(e.guid, e.name, e.active) for e in endpoints])
         alive = {e.guid.lower() for e in endpoints}
 
         if self._endpoint is not None and self._endpoint.guid.lower() not in alive:

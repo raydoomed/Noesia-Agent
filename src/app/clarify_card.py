@@ -260,9 +260,6 @@ class ClarifyCard(QtWidgets.QWidget):
         text = " ".join(choice.split())
         return text[: -len(suffix)].strip() if text.endswith(suffix) else text
 
-    def pill_labels(self, index: int) -> list[str]:
-        return [button.text() for button in self._pills.get(index, []) if button.text() not in _NON_CHOICE]
-
     def mark_picks(self, index: int, picks: set[int]) -> None:
         """多选：勾上的那几颗点着，其余灭掉。"""
         buttons = self._pills.get(index, [])

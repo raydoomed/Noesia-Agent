@@ -1678,6 +1678,9 @@ class EngineWire(QtCore.QObject):
         typed_but_unsent = bool(self._pending_text)
         had_turn = self._turn is not None
         had_pending = bool(self._pending_turns)
+        # 在途的 RPC 也要收账：不合成一条失败回包，等它们的界面就一直停在「正在…」
+        # （`_sent` 随 `_reset_transport_state` 清掉，之后就再没人认领这些 id 了）。
+        self._fail_inflight("引擎断开，这一步没做完")
         self._reset_transport_state()
         if had_turn:
             self.attachment_failed.emit("整条消息", "引擎断开，这句话没发出去")

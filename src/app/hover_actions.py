@@ -157,15 +157,6 @@ QToolButton {
         self._reset.stop()
         self._back_to_idle()
 
-    def set_enabled(self, flag: bool) -> None:
-        """能不能点：非末尾回答上的「刷新」照样摆着，只是灰掉点不动。"""
-        self._enabled = bool(flag)
-        self.setEnabled(self._enabled)
-        self.setCursor(
-            QtCore.Qt.CursorShape.PointingHandCursor if self._enabled
-            else QtCore.Qt.CursorShape.ArrowCursor
-        )
-
     def set_backdrop(self, on: bool) -> None:
         """要不要垫一层底。摆进气泡里的那颗要——它压在最后一行字上，得把字尾盖住。"""
         self.setStyleSheet(self.BACKDROP_QSS if on else "")

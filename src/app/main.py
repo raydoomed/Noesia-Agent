@@ -1958,7 +1958,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     panel.show_notice("session", "已开新会话", ttl_ms=2500)
 
     def on_history_count(self, count: int) -> None:
-        """resume 只报了条数（引擎走 `omit_messages`）：历史按页从 REST 取，跟桌面端一样。"""
+        """resume 只报了条数（引擎按 `defer_history` 省掉正文）：历史按页从 REST 取，跟桌面端一样。"""
         say(f"[历史] 库里 {count} 条，按页取")
         self._history_initial_done = False
         if self.client is not None:
