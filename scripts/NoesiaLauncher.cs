@@ -1,7 +1,9 @@
 // Noesia 启动器：双击这个 exe 等同于双击 Noesia.vbs。
 // 之所以要一层 exe：vbs 文件带不了图标，资源管理器里只能显示系统给的卷轴图标。
 // 干的事：建一个 Job 对象把 pythonw（`-m app`）装进去，自己常驻到 pythonw 退出为止。
-// 「Noesia.exe」这个进程因此一直在；外部工具按 exe 关掉它时，Job 会连带收掉 pythonw 和它拉起的引擎。
+// 「Noesia.exe」这个进程因此一直在；外部工具按 exe 关掉它时，Job 会连带收掉 pythonw 和它的子孙。
+// 例外是引擎：它 spawn 时带 CREATE_BREAKAWAY_FROM_JOB，会跳出这个 Job 自己活（按空闲退出），
+// 所以关 App 不会把正在干活的那一轮拦腰砍断——这就是 JOB_OBJECT_LIMIT_BREAKAWAY_OK 的用处。
 using System;
 using System.IO;
 using System.Reflection;
@@ -20,6 +22,10 @@ internal static class Launcher
     private const uint CREATE_SUSPENDED = 0x00000004;
     private const uint CREATE_NO_WINDOW = 0x08000000;
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    // 没有这一位，Job 里任何子进程都别想用 CREATE_BREAKAWAY_FROM_JOB 逃出去（CreateProcess 直接
+    // ERROR_ACCESS_DENIED）。引擎是长活进程，它自己会按空闲退出，必须允许它脱离——否则 App 一退出，
+    // 这个 Job 关闭就把引擎 TerminateProcess 掉，跑着的那一轮连日志都写不完。
+    private const uint JOB_OBJECT_LIMIT_BREAKAWAY_OK = 0x00000800;
     private const int JobObjectExtendedLimitInformation = 9;
     private const uint INFINITE = 0xFFFFFFFF;
 
@@ -134,7 +140,7 @@ internal static class Launcher
         if (job != IntPtr.Zero)
         {
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
             SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits, Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)));
         }
 
