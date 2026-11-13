@@ -219,7 +219,8 @@ class _StickyPrompt(QtWidgets.QWidget):
 
     PAD = 8
     EDGE_PX = 1
-    TEXT = QtGui.QColor(214, 198, 222, 215)
+    #: 跟你说的话同一个粉：这条带钉的就是你那句话，颜色跟着走才看得出是同一条。
+    TEXT = QtGui.QColor("#e8a8c8")
 
     def __init__(self, parent: QtWidgets.QWidget, text_font: QtGui.QFont) -> None:
         super().__init__(parent)
@@ -2686,7 +2687,8 @@ class ChatPanel(QtWidgets.QWidget):
         cursor.removeSelectedText()
         body = QtGui.QTextCharFormat()
         body.setFont(self._user_text_font())
-        body.setForeground(QtGui.QColor(214, 198, 222, 215))
+        # 玫瑰粉：「你」说的话。整屏是暖调的，但光靠色相不够，还得跟「我」那句的冷白分开。
+        body.setForeground(QtGui.QColor("#e8a8c8"))
         cursor.insertText(shown, body)
 
     def append_user(self, message: str, attachments=(), row_id: int | None = None) -> None:
