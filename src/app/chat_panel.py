@@ -1643,6 +1643,12 @@ class ChatPanel(QtWidgets.QWidget):
         self._review_folded = False
         self._review_pending: list[str] = []
         self._reasoning_pending = ""
+        # 思考是碎片流：攒满 160 字才落盘的话，短思考整轮都不露脸（回答一来就折成「已思考」，
+        # 内容一次都没看见）。这条单发定时器就是它的落盘节拍。
+        self._reason_timer = QtCore.QTimer(self)
+        self._reason_timer.setSingleShot(True)
+        self._reason_timer.setInterval(180)
+        self._reason_timer.timeout.connect(self.flush_reasoning)
         # 这一场里画过的折叠卡（工具行、思考段）：引擎的历史行里没有它们，只有正文。
         # 补页要清屏重画，重画后按这张单子摆回原位——否则一滚工具和思考就整片消失。
         self._fold_log: list[dict] = []
@@ -2161,6 +2167,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._rewind_after_stop = None
         self._row_stamp_pending = None
         self._flush_timer.stop()
+        self._reason_timer.stop()
         self._assistant_pending = ""
         self._reasoning_pending = ""
         self._md_block = []
@@ -4487,10 +4494,14 @@ class ChatPanel(QtWidgets.QWidget):
         self._reasoning_pending += text
         if len(self._reasoning_pending) >= 160:
             self.flush_reasoning()
+        elif not self._reason_timer.isActive():
+            # 从第一片起就开始计时：180 毫秒后不管攒了多少都先落一次，人就能看见「思考中」在长。
+            self._reason_timer.start()
 
     def flush_reasoning(self) -> None:
         """把攒着的思考落进那个折叠段（回答开始、本轮结束、出错时都要先刷一下）。"""
         text, self._reasoning_pending = self._reasoning_pending, ""
+        self._reason_timer.stop()
         if not text.strip() or not self._show_reasoning:
             return
         if self._reason_fold is None:
@@ -4506,12 +4517,27 @@ class ChatPanel(QtWidgets.QWidget):
 
         桌面端对它的处理是「替换式追加」（`appendReasoningDelta(..., replace=true)`）。
         实测（真引擎）：这一帧是在这一轮**正文之后**、`message.complete` 之前到的，
-        payload 就是整轮回答的全文快照。所以回答已经落地时直接丢掉——不然回答底下会
-        再冒出一段「已思考」，把那篇回答原样斜体铺第二遍。
+        payload 就是整轮回答的全文快照：与正文一模一样的丢掉（否则回答底下会再冒出一段
+        「已思考」把回答铺第二遍），只有内容确实另算的才折成「已思考」贴进流里。
         """
-        if self._bubble_has_text:
-            return
         if not text.strip() or not self._show_reasoning:
+            return
+        # 多数供应商的 payload 就是整轮回答的全文快照（见方法头那段实测）：镜像丢掉，
+        # 否则回答底下会再冒出一段「思考中」把回答原样铺第二遍。正文可能还在待落盘的
+        # 缓冲区里（`_assistant_pending`），所以要连它一起比。
+        answer = (
+            str((self._stream_msg or {}).get("text") or "") + self._assistant_pending
+        ).strip()
+        if answer and (text.strip() == answer or answer in text.strip()):
+            return
+        if self._bubble_has_text:
+            # 回答已经落地，这一帧却是一段没见过的思考：折成「已思考」贴进流里——
+            # 整段消灭等于这一轮的思考一次都没露过脸。
+            fold = self._folds.new("reasoning", _THOUGHT_DONE, open_=False)
+            self._folds.append(fold, text.strip())
+            self._note_fold(fold, "reasoning")
+            self._note_fold_body(fold, text.strip())
+            self._settle_insert()
             return
         self._reasoning_pending += text
         self.flush_reasoning()
