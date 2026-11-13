@@ -261,15 +261,7 @@ class _StickyPrompt(QtWidgets.QWidget):
         margin = self._inset
         top = self._top
         painter = QtGui.QPainter(self)
-        box = QtCore.QRectF(
-            margin + 0.5,
-            top + 0.5,
-            self.width() - 2 * margin - 1,
-            self.height() - top - self._gap - 1,
-        )
-        painter.setPen(QtGui.QPen(self._edge, self.EDGE_PX))
-        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
-        painter.drawRect(box)
+        # 不描边：这条带只负责把提示词钉在顶上，画一圈框反而像多了一层面板。
 
         metrics = QtGui.QFontMetricsF(self._text_font)
         baseline = top + self.EDGE_PX + self.PAD + metrics.ascent()
@@ -2673,11 +2665,9 @@ class ChatPanel(QtWidgets.QWidget):
         frame.setFrameFormat(fmt)
 
     def _open_user_frame(self) -> QtGui.QTextFrame:
-        """给这条消息开一个框：只描一条边，里面不填色。"""
+        """给这条消息开一个框：不描边、不填色，只留内边距把这条话圈在自己的留白里。"""
         fmt = QtGui.QTextFrameFormat()
-        fmt.setBorder(1)
-        fmt.setBorderBrush(QtGui.QBrush(self.FRAME_EDGE))
-        fmt.setBorderStyle(QtGui.QTextFrameFormat.BorderStyle.BorderStyle_Solid)
+        fmt.setBorder(0)
         fmt.setPadding(self.FRAME_PAD)
         cursor = QtGui.QTextCursor(self.view.document())
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.End)
