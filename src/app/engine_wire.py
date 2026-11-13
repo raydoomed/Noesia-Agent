@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 # 定时任务、子代理、工具、看板跑出来的会话不是「用户自己聊的那场」：冷启动和恢复挑会话时跳过。
 # 引擎的自动恢复名单只挡 kanban/tool/oneshot，cron 的会话在它眼里同样「像人」。
 NON_CHAT_SOURCES = frozenset({"cron", "kanban", "tool", "oneshot", "subagent", "bot"})
+# 面板对引擎报的身份：引擎的 SURFACES 只认 gui/tui/cli/acp/tool/oneshot（桌面就是 gui），
+# 不报的话会话会被当成 cli，思考这类「本地窗口才显示」的东西整轮都不会发上来。
+SESSION_SOURCE = "gui"
 
 
 def chat_session_id(rows) -> str:
@@ -433,7 +436,7 @@ class EngineWire(QtCore.QObject):
             return
         self._attaching = True
         self._attach_since = time.monotonic()
-        params = {"cwd": cwd or str(self._workspace), "cwd_explicit": True}
+        params = {"cwd": cwd or str(self._workspace), "cwd_explicit": True, "source": SESSION_SOURCE}
         if self._reasoning_effort:
             params["reasoning"] = self._reasoning_effort
         rid = self._call("session.create", params, tag="session.create")
@@ -449,8 +452,8 @@ class EngineWire(QtCore.QObject):
         self._attaching = True
         self._attach_since = time.monotonic()
         self.reasoning_pending.emit(True)
-        rid = self._call("session.resume", {"session_id": session_id, "display_projection": True},
-                         tag="session.resume")
+        rid = self._call("session.resume", {"session_id": session_id, "display_projection": True,
+                                            "source": SESSION_SOURCE}, tag="session.resume")
         if rid not in self._sent:
             self._attaching = False
             self._attach_since = 0.0
@@ -938,7 +941,8 @@ class EngineWire(QtCore.QObject):
         if method in {"session.resume", "session.create"} or not self._stored_id:
             self._call("session.list", {"scope": "stored", "limit": 50}, tag="recover.recent")
             return
-        self._call("session.resume", {"session_id": self._stored_id}, tag="session.resume")
+        self._call("session.resume", {"session_id": self._stored_id, "source": SESSION_SOURCE},
+                   tag="session.resume")
 
     def answer_clarify(self, request_id: str, question_id: str, answer: str) -> None:
         """答掉引擎那一个问题：一次锁一个，全部锁完引擎自己结束这次提问。"""

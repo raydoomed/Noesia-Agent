@@ -1675,6 +1675,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._press_pos: QtCore.QPoint | None = None
         self._net = QtNetwork.QNetworkAccessManager(self)
         self._reason_fold: disclosure.Fold | None = None
+        self._reason_text = ""
+        self._answer_shown = ""
         self._spin_frame = 0
         self._spin_timer = QtCore.QTimer(self)
         self._spin_timer.setInterval(_SPIN_INTERVAL_MS)
@@ -2177,6 +2179,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._details_depth = 0
         self._para_break = False
         self._reason_fold = None
+        self._reason_text = ""
+        self._answer_shown = ""
 
         self._tool_folds = {}
         self._clarify = None
@@ -2750,6 +2754,7 @@ class ChatPanel(QtWidgets.QWidget):
             self.begin_assistant()
             self._bubble_has_text = False
         self._assistant_pending += chunk
+        self._answer_shown += chunk
         if self._stream_msg is not None:
             self._stream_msg["text"] += chunk
         if not self._flush_timer.isActive():
@@ -4507,8 +4512,8 @@ class ChatPanel(QtWidgets.QWidget):
         text = (text or "").strip()
         if not text:
             return
-        shown = str((self._stream_msg or {}).get("text") or "") + self._assistant_pending
-        if not shown.strip():
+        shown = self._answer_shown.strip()
+        if not shown:
             self.append_chunk(text)
             return
         if text in shown:
@@ -4531,6 +4536,7 @@ class ChatPanel(QtWidgets.QWidget):
         if self._reason_fold is None:
             self._reason_fold = self._folds.new("reasoning", _THINKING_LABEL, open_=True)
             self._fit_fold_gap(self._reason_fold)
+        self._reason_text += text.strip()
         self._folds.append(self._reason_fold, text.strip())
         self._note_fold(self._reason_fold, "reasoning")
         self._note_fold_body(self._reason_fold, text.strip())
@@ -4547,13 +4553,22 @@ class ChatPanel(QtWidgets.QWidget):
         if not text.strip() or not self._show_reasoning:
             return
         # 多数供应商的 payload 就是整轮回答的全文快照（见方法头那段实测）：镜像丢掉，
-        # 否则回答底下会再冒出一段「思考中」把回答原样铺第二遍。正文可能还在待落盘的
-        # 缓冲区里（`_assistant_pending`），所以要连它一起比。
-        answer = (
-            str((self._stream_msg or {}).get("text") or "") + self._assistant_pending
-        ).strip()
+        # 否则回答底下会再冒出一段「思考中」把回答原样铺第二遍。比对的是这一轮已经在流里
+        # 显示过的全部正文（`_answer_shown`），工具行前后分成的几段都算在内。
+        answer = self._answer_shown.strip()
         if answer and (text.strip() == answer or answer in text.strip()):
             return
+        # 这一轮已经边流边把它显示过了（`_reason_text` 就是已经露过脸的那些片段）：
+        # 再贴一段「已思考」等于同一段思考在流里出现两次。
+        seen = self._reason_text.strip()
+        if seen:
+            body = text.strip()
+            if body in seen:
+                return
+            extra = body[len(seen):].strip() if body.startswith(seen) else ""
+            if not extra:
+                return
+            text = extra
         if self._bubble_has_text:
             # 回答已经落地，这一帧却是一段没见过的思考：折成「已思考」贴进流里——
             # 整段消灭等于这一轮的思考一次都没露过脸。
@@ -6995,6 +7010,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._md_block = []
         self._md_fence = False
         self._reason_fold = None
+        self._reason_text = ""
+        self._answer_shown = ""
         self._tool_started.clear()
         self._tool_folds.clear()
         self._tool_clock.stop()
