@@ -219,16 +219,11 @@ class _StickyPrompt(QtWidgets.QWidget):
 
     PAD = 8
     EDGE_PX = 1
-    NAME = QtGui.QColor("#c9a6e0")
     TEXT = QtGui.QColor(214, 198, 222, 215)
 
-    def __init__(self, parent: QtWidgets.QWidget, edge: QtGui.QColor,
-                 name_font: QtGui.QFont, text_font: QtGui.QFont) -> None:
+    def __init__(self, parent: QtWidgets.QWidget, text_font: QtGui.QFont) -> None:
         super().__init__(parent)
-        self._edge = edge
-        self._name_font = name_font
         self._text_font = text_font
-        self._name = ""
         self._shown = ""
         self._inset = 0.0
         self._gap = 0
@@ -237,10 +232,9 @@ class _StickyPrompt(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoSystemBackground)
         self.hide()
 
-    def set_line(self, name: str, shown: str) -> None:
-        if name == self._name and shown == self._shown:
+    def set_line(self, shown: str) -> None:
+        if shown == self._shown:
             return
-        self._name = name
         self._shown = shown
         self.update()
 
@@ -266,17 +260,9 @@ class _StickyPrompt(QtWidgets.QWidget):
         metrics = QtGui.QFontMetricsF(self._text_font)
         baseline = top + self.EDGE_PX + self.PAD + metrics.ascent()
         x = margin + self.EDGE_PX + self.PAD
-        head = f"{self._name} " if self._name else ""
-        if head:  # 署名去掉了，只在真给了名字的时候才占那一段
-            painter.setFont(self._name_font)
-            painter.setPen(self.NAME)
-            painter.drawText(QtCore.QPointF(x, baseline), head)
         painter.setFont(self._text_font)
         painter.setPen(self.TEXT)
-        painter.drawText(
-            QtCore.QPointF(x + QtGui.QFontMetricsF(self._name_font).horizontalAdvance(head), baseline),
-            self._shown,
-        )
+        painter.drawText(QtCore.QPointF(x, baseline), self._shown)
         painter.end()
 
 
@@ -414,7 +400,6 @@ def _open_link(text: str) -> bool:
 
 
 from app.user_state import window_settings
-from app.env_keys import env_file
 from app.tool_view.ansi import has_ansi_codes as ansi_codes, parse_ansi
 from app.tool_scroll import ToolScroll
 from app.tool_view.diffview import diff_rows, strip_diff_file_headers
@@ -441,46 +426,6 @@ MIN_PANEL_HEIGHT = 300
 TITLE_FULL = "Noesia Agent"
 TITLE_SHORT = "Noesia"
 TITLE_FULL_MIN_WIDTH = 430
-
-_USER_NAME_CACHE: dict[str, object] = {"stamp": None, "name": ""}
-
-
-def _name_from_profile(text: str) -> str:
-    """从 USER.md 正文里挑出名字：只认 `Name: X` / `名字：X` 那一行，到第一个标点为止。
-
-    USER.md 由引擎侧的记忆工具自己整理，`Name:` 后面可能跟着整段档案，所以不能假定这行只有
-    名字：截到第一个标点，太长或带空格就退回空串（调用方会叫「你」），不准截半个句子当名字。
-    """
-    found = re.search(
-        r"^[ \t]*(?:name|名字)[ \t]*[:：][ \t]*(.+?)[ \t]*$", text, re.MULTILINE | re.IGNORECASE
-    )
-    if not found:
-        return ""
-    head = re.split(r"[，。、；：！？,.;:!?\s（(\[【]", found.group(1).strip(), maxsplit=1)[0]
-    return head if 1 <= len(head) <= 8 else ""
-
-
-def _user_display_name() -> str:
-    """用户那条冒什么名：USER.md 里记着名字就用名字，没有就叫「你」。
-
-    引擎起名那一轮会把名字写成一条 `Name: Ray`，所以这里只认这种键值行（中英文冒号都认）。
-    档案还没写、读不到、或者行不成样子，一律退回「你」——宁可叫「你」，不能叫错。
-    """
-    path = env_file().with_name("memories") / "USER.md"
-    try:
-        stamp = path.stat().st_mtime_ns
-    except OSError:
-        return "你"
-    if _USER_NAME_CACHE["stamp"] == stamp:
-        return str(_USER_NAME_CACHE["name"] or "你")
-    try:
-        text = path.read_text(encoding="utf-8-sig")
-    except OSError:
-        text = ""
-    name = _name_from_profile(text)
-    _USER_NAME_CACHE["stamp"] = stamp
-    _USER_NAME_CACHE["name"] = name
-    return name or "你"
 
 
 RESIZE_MARGIN = 12
@@ -2628,12 +2573,6 @@ class ChatPanel(QtWidgets.QWidget):
         for line in lines or ():
             self._insert_html(f"<span style='color:#8f9bb0;'>{html.escape(str(line))}</span>")
 
-    def _user_name_font(self) -> QtGui.QFont:
-        font = QtGui.QFont(self.view.font())
-        font.setPixelSize(13)
-        font.setBold(True)
-        return font
-
     def _user_text_font(self) -> QtGui.QFont:
         font = QtGui.QFont(self.view.font())
         font.setPixelSize(13)
@@ -2641,13 +2580,12 @@ class ChatPanel(QtWidgets.QWidget):
 
     USER_BAR_PX = 52
     FRAME_PAD = 8
-    FRAME_EDGE = QtGui.QColor(243, 172, 206, 130)
     BODY_BUTTON_MARGIN = 16
 
-    def _user_line_room(self, name_width: float) -> float:
+    def _user_line_room(self) -> float:
         document = self.view.document()
         margins = 2 * (document.documentMargin() + self.FRAME_PAD) + self.USER_BAR_PX + 4
-        return max(60.0, self.view.viewport().width() - margins - name_width)
+        return max(60.0, self.view.viewport().width() - margins)
 
     @staticmethod
     def _close_user_frame(frame: QtGui.QTextFrame) -> None:
@@ -2693,9 +2631,8 @@ class ChatPanel(QtWidgets.QWidget):
         text = str(msg.get("text") or "")
         if block is None or not block.isValid():
             return
-        name_width = 0.0  # 署名去掉了，整行宽度都留给正文
         shown = QtGui.QFontMetricsF(self._user_text_font()).elidedText(
-            text, QtCore.Qt.TextElideMode.ElideRight, self._user_line_room(name_width)
+            text, QtCore.Qt.TextElideMode.ElideRight, self._user_line_room()
         )
         msg["ellipsis"] = shown != text
         msg["fit_width"] = self.view.viewport().width()
@@ -5154,14 +5091,12 @@ class ChatPanel(QtWidgets.QWidget):
                 self._sticky.hide()
             return
         if self._sticky is None:
-            self._sticky = _StickyPrompt(
-                self.view, self.FRAME_EDGE, self._user_name_font(), self._user_text_font()
-            )
-        room = self._user_line_room(0.0)  # 署名去掉了，不再留名字的位置
+            self._sticky = _StickyPrompt(self.view, self._user_text_font())
+        room = self._user_line_room()
         shown = QtGui.QFontMetricsF(self._user_text_font()).elidedText(
             str(target.get("text") or ""), QtCore.Qt.TextElideMode.ElideRight, room
         )
-        self._sticky.set_line("", shown)
+        self._sticky.set_line(shown)
         margin = self.view.document().documentMargin()
         frame_h = px - int(round(margin)) - MSG_GAP
         top = min(margin, strip - MSG_GAP - frame_h)
