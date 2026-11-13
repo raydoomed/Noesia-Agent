@@ -37,6 +37,7 @@ from app.clarify_card import ClarifyCard
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap, svg_icon
 from app.approval_dialog import ConfirmDialog
 from app.photo_view import PhotoView
+from app.paused_bar import PausedBar
 from app.speech_bar import SpeechBar
 from app.status_stack import StatusStack
 from app.voice_input import SILENT_PEAK, VoiceRecorder, peak_of, write_wav
@@ -662,6 +663,16 @@ QMenu::indicator { width: 14px; height: 14px; }
 #speechprogress { background: rgba(255, 255, 255, 22); border: none; border-radius: 2px; }
 #speechprogress::chunk { background: rgba(247, 182, 210, 210); border-radius: 2px; }
 #speechbar QToolButton { color: rgba(240, 221, 232, 190); font-size: 11px; }
+/* 上一轮被重启打断：淡琥珀色，和语音条同一种细横幅，一眼看出是在等一个拍板 */
+#pausedbar {
+    background: rgba(255, 196, 120, 18);
+    border: 1px solid rgba(255, 196, 120, 62);
+    border-radius: 9px;
+}
+#pausedtitle { color: #f3e2cd; font-size: 12px; }
+#pausedbar QToolButton { color: rgba(255, 214, 160, 225); font-size: 11px; }
+#pausedbar QToolButton:hover { color: #ffffff; }
+#pausedbar QToolButton:disabled { color: rgba(255, 214, 160, 110); }
 /* 输入框里的图标键：审批盾牌 / 思考火花，低调，别跟「发送」抢眼 */
 #icon {
     background: transparent;
@@ -1516,6 +1527,7 @@ class ChatPanel(QtWidgets.QWidget):
     approval_requested = QtCore.Signal(str)
     stop_requested = QtCore.Signal()
     speech_stop_requested = QtCore.Signal()
+    paused_discard_requested = QtCore.Signal()
     voice_mode_changed = QtCore.Signal(str)
     voice_transcribe_requested = QtCore.Signal(str)
     voice_record_started = QtCore.Signal()
@@ -1791,6 +1803,10 @@ class ChatPanel(QtWidgets.QWidget):
         self.speech_bar = SpeechBar(frame)
         self.speech_bar.stop_requested.connect(self.speech_stop_requested.emit)
         layout.addWidget(self.speech_bar)
+
+        self.paused_bar = PausedBar(frame)
+        self.paused_bar.discard_requested.connect(self.paused_discard_requested.emit)
+        layout.addWidget(self.paused_bar)
 
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(8)
@@ -2197,6 +2213,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._clarify = None
         self._clear_queue()
         self.stack.clear_all()
+        self.paused_bar.set_paused(None)
         self._voice_orb.set_state(STATE_IDLE)
         self._tool_started.clear()
         self._tool_clock.stop()
@@ -2240,12 +2257,16 @@ class ChatPanel(QtWidgets.QWidget):
 
     HISTORY_PAGE = 15
 
+    # 开窗一次铺得下就全铺：15 条一页是给超长会话留的后路，短会话还分页看着就像历史丢了。
+    # 实测铺 40 条 85ms、150 条 0.4s、600 条 3.2s，所以 150 条是开窗还等得起的上限。
+    HISTORY_FULL = 150
+
     def set_history(self, messages) -> None:
         """界面打开：把上一段对话铺出来（不是让用户去输入什么）。
 
         内容来自引擎的会话库，界面只负责显示——所以这里是整窗重画，不留第二份历史
-        状态。为开窗快，只铺最近 `HISTORY_PAGE` 条；剩下的暂存成「还没铺的那截」，
-        翻到顶再往前补（`load_older_history`），那截也只是显示源。
+        状态。一次铺最近 `HISTORY_FULL` 条（短会话就是全部）；更长的会话超出的那截
+        暂存成「还没铺的那截」，翻到顶再往前补（`load_older_history`），那截也只是显示源。
 
         但这个窗口里已经铺了正文/工具行时**绝不能**重画：引擎的 `session.resume` 会在
         开窗、重连、切模型之后陆续回来，一旦重画，刚显示出来的工具行（历史里没有它们，
@@ -2260,14 +2281,14 @@ class ChatPanel(QtWidgets.QWidget):
             or str(item.get("name") or "").strip()
             or str(item.get("reasoning") or "").strip()
         ]
-        tail = items[-self.HISTORY_PAGE:]
+        tail = items[-self.HISTORY_FULL:]
         self._history_loading = True
         try:
             self.clear_conversation("历史重铺")
             # 新开窗：折叠卡单子跟着作废（这是上一段的痕迹，不是这一窗的）。
             self._fold_log = []
             self._fold_entries = {}
-            self._history_older = items[: -self.HISTORY_PAGE]
+            self._history_older = items[: -self.HISTORY_FULL]
             self._history_rendered = list(tail)
             self._paint_history(tail)
         finally:
@@ -3463,6 +3484,13 @@ class ChatPanel(QtWidgets.QWidget):
     def clear_status_notice(self, key: str) -> None:
         """撤掉输入框上方状态条里的一条（按 key；不碰聊天正文）。"""
         self.stack.clear_notice(key)
+
+    def set_paused_turn(self, lost: object) -> None:
+        """引擎说这场会话有一行丢了（`unknown`）：露出「丢弃那一轮」这条横幅，没有就收回去。"""
+        self.paused_bar.set_paused(lost)
+
+    def paused_discard_failed(self) -> None:
+        self.paused_bar.discard_failed()
 
     def set_processes(self, rows: list) -> None:
         """还在跑的后台进程：一行一个，右边能停（`process.list` 的原样行）。"""

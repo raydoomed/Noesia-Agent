@@ -304,6 +304,8 @@ class EngineWire(QtCore.QObject):
     cron_changed = QtCore.Signal()
     setup_needed = QtCore.Signal(str)
     error = QtCore.Signal(str)
+    paused = QtCore.Signal(object)
+    paused_discard_failed = QtCore.Signal()
     failed = QtCore.Signal(str)
     closed = QtCore.Signal()
 
@@ -334,6 +336,10 @@ class EngineWire(QtCore.QObject):
         self._stored_id = ""
         self._revision = 0
         self._generation = 0
+        self._paused: dict | None = None
+        self._paused_sending = False
+        self._resolving: dict = {}
+        self._pending_rows: list[dict] = []
         self._rewind_text = ""
         self._rewind_row = 0
         self._switch_payload: dict = {}
@@ -382,6 +388,10 @@ class EngineWire(QtCore.QObject):
         self._models_after_settings = False
         self._pending_turns.clear()
         self._turn = None
+        self._paused = None
+        self._paused_sending = False
+        self._resolving = {}
+        self._pending_rows = []
 
     def start(self) -> None:
         if self._started:
@@ -1107,6 +1117,21 @@ class EngineWire(QtCore.QObject):
             if tag == "prompt.submit" and code == 4009:
                 self.error.emit("这一轮还没停下，等它真结束再重发")
                 return
+            if tag == "prompt.submit":
+                data = err.get("data") if isinstance(err, dict) else None
+                if isinstance(data, dict) and data.get("reason") == "unknown_execution":
+                    self.paused.emit(dict(self._paused) if self._paused else None)
+                    if self._paused:
+                        self.error.emit("上一轮在重启时被打断了，这场会话卡着——先点横幅里的「丢弃那一轮」再发")
+                    else:
+                        self.error.emit("上一轮在重启时被打断了，这场会话卡着——重开 Noesia 后它会自己接着跑")
+                    return
+            if tag == "prompt.resolve_unknown":
+                self._paused_sending = False
+                self._resolving = {}
+                self.paused_discard_failed.emit()
+                self.error.emit(f"丢弃那一轮没成功：{message}")
+                return
             if tag == "rewind" or tag == "reasoning.set" or tag.startswith("model.set"):
                 data = err.get("data") if isinstance(err, dict) else None
                 fresh_rev = data.get("revision") if isinstance(data, dict) else None
@@ -1175,6 +1200,14 @@ class EngineWire(QtCore.QObject):
             if text:
                 self.submit(text)
             return
+        if tag == "prompt.resolve_unknown":
+            self._paused_sending = False
+            resolved = (self._resolving or {}).get("admission_id")
+            self._resolving = {}
+            self._pending_rows = [row for row in self._pending_rows
+                                  if row.get("admission_id") != resolved]
+            self._refresh_paused()
+            return
         if tag == "prompt.submit":
             row_id = result.get("user_row_id")
             if isinstance(row_id, int):
@@ -1203,6 +1236,7 @@ class EngineWire(QtCore.QObject):
             if tag == "session.resume":
                 self._revision = int(result.get("revision") or 0)
                 self._generation = int(result.get("execution_generation") or 0)
+                self._note_pending(result.get("pending"))
                 rows = [
                     {
                         "role": str(row.get("role", "")),
@@ -1360,6 +1394,42 @@ class EngineWire(QtCore.QObject):
         if self._turn["left"] <= 0:
             self._finish_turn()
 
+    def _note_pending(self, rows: object) -> None:
+        """引擎的排队清单（`session.resume` 回包和 `session.info` 事件都带）：里面有一行
+        `status='unknown'` 就说明这场会话被上一次重启打断了，整条队列等一个人拍板。"""
+        if not isinstance(rows, list):
+            return
+        self._pending_rows = [row for row in rows if isinstance(row, dict)]
+        self._refresh_paused()
+
+    def _refresh_paused(self) -> None:
+        lost: dict | None = None
+        for row in self._pending_rows:
+            if str(row.get("status") or "") != "unknown":
+                continue
+            admission_id = row.get("admission_id")
+            if not isinstance(admission_id, str) or not admission_id:
+                continue
+            generation = row.get("execution_generation")
+            lost = {"admission_id": admission_id,
+                    "execution_generation": generation if isinstance(generation, int) else 0}
+            break
+        if lost == self._paused:
+            return
+        self._paused = lost
+        self._paused_sending = False
+        self.paused.emit(dict(lost) if lost else None)
+
+    def resolve_unknown(self) -> None:
+        """丢掉那一轮丢掉的输入（引擎侧的 `prompt.resolve_unknown`）：之后排队的第一条接着跑。"""
+        if not self._paused or self._paused_sending or not self._session_id:
+            return
+        self._paused_sending = True
+        self._resolving = dict(self._paused)
+        self._call("prompt.resolve_unknown",
+                   {"session_id": self._session_id, **self._resolving},
+                   tag="prompt.resolve_unknown")
+
     def _on_event(self, params: dict) -> None:
         kind = params.get("type") or ""
         sid = str(params.get("session_id") or "")
@@ -1424,6 +1494,8 @@ class EngineWire(QtCore.QObject):
         elif kind == "status.update":
             self.status_text.emit(str(payload.get("kind") or ""), str(payload.get("text") or ""))
         elif kind == "session.info":
+            if "pending" in payload:
+                self._note_pending(payload.get("pending"))
             running = payload.get("running")
             if running is not None:
                 self.status.emit("thinking" if running else "idle")

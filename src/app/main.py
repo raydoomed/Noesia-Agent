@@ -1188,6 +1188,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.process_kill_requested.connect(self._kill_process)
             self.chat_panel.attachment_failed.connect(self._attachment_problem)
             self.chat_panel.speech_stop_requested.connect(self._stop_voice)
+            self.chat_panel.paused_discard_requested.connect(self._discard_paused_turn)
             self.chat_panel.voice_mode_changed.connect(lambda _mode: self._voice_ok())
             self.speaker.preparing.connect(self.chat_panel.speech_preparing)
             panel = self.chat_panel
@@ -1285,6 +1286,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self.client is None:
             return
         self.client.interrupt()
+
+    def _discard_paused_turn(self) -> None:
+        """丢掉重启里丢的那一轮（引擎的 `prompt.resolve_unknown`）：排队的第一条随后自己跑。"""
+        if self.client is not None:
+            self.client.resolve_unknown()
 
     def _start_process_watch(self) -> None:
         """会话一连上就一直盯着后台进程，每 5 秒问一次（桌面端也是这样：窗口活着就问）。
@@ -1848,6 +1854,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self.chat_panel is not None:
             self.chat_panel.show_notice("setup", message, level="note")
         say(f"[引擎] {message}")
+
+    def on_paused_turn(self, lost) -> None:
+        """这场会话有一行丢在重启里了（引擎的 `unknown`）：露出横幅，丢不丢由用户拍板。"""
+        if self.chat_panel is not None:
+            self.chat_panel.set_paused_turn(lost)
 
     def on_engine_error(self, message: str) -> None:
         """某条请求被引擎拒了：红色错误行（这是真失败，跟通知分开）。
@@ -2697,6 +2708,9 @@ def main() -> int:
     wire.agent_step.connect(window.on_agent_step)
     wire.provider_wait.connect(window.on_provider_wait)
     wire.error.connect(window.on_engine_error)
+    wire.paused.connect(window.on_paused_turn)
+    wire.paused_discard_failed.connect(
+        lambda: window.chat_panel and window.chat_panel.paused_discard_failed())
     wire.setup_needed.connect(window.on_setup_needed)
     wire.completed.connect(window.on_complete)
     wire.turn_settled.connect(window.on_turn_settled)
