@@ -1885,6 +1885,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._apply_pending_rewind(self.chat_panel)
             self.chat_panel.show_reasoning(text)
 
+    def on_interim_text(self, text: str) -> None:
+        """`message.interim`：引擎说这段正文没流全，补上界面缺的那一截。"""
+        if self.chat_panel is not None and text:
+            self._apply_pending_rewind(self.chat_panel)
+            self.chat_panel.show_interim(text)
+
     def on_reasoning_block(self, text: str) -> None:
         """不流式的供应商一次给全的思考（引擎 `reasoning.available`）。"""
         if self.chat_panel is not None and text:
@@ -2683,6 +2689,7 @@ def main() -> int:
     wire.turn_started.connect(window.on_turn_started)
     wire.status_text.connect(window.on_status_text)
     wire.reasoning_delta.connect(window.on_reasoning_delta)
+    wire.interim_text.connect(window.on_interim_text)
     wire.reasoning_done.connect(lambda _t: window.chat_panel and window.chat_panel.flush_reasoning())
     wire.reasoning_block.connect(window.on_reasoning_block)
     wire.provider_wait.connect(window.on_provider_wait)

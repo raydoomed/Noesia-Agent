@@ -4498,6 +4498,30 @@ class ChatPanel(QtWidgets.QWidget):
             # 从第一片起就开始计时：180 毫秒后不管攒了多少都先落一次，人就能看见「思考中」在长。
             self._reason_timer.start()
 
+    def show_interim(self, text: str) -> None:
+        """`message.interim` 里「没流全」的那段正文：只补屏上还没有的那一截。
+
+        引擎在两种情况下发它：工具调用旁的旁白，和收尾提醒前那段「本来想当最终回答」的正文。
+        已经流过的部分不能再画一遍（会成重影），所以先比对再落，落的是缺的尾巴。
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        shown = str((self._stream_msg or {}).get("text") or "") + self._assistant_pending
+        if not shown.strip():
+            self.append_chunk(text)
+            return
+        if text in shown:
+            return
+        cut = 0
+        for n in range(min(len(text), len(shown)), 0, -1):
+            if shown.endswith(text[:n]):
+                cut = n
+                break
+        tail = text[cut:].strip()
+        if tail:
+            self.append_chunk(tail)
+
     def flush_reasoning(self) -> None:
         """把攒着的思考落进那个折叠段（回答开始、本轮结束、出错时都要先刷一下）。"""
         text, self._reasoning_pending = self._reasoning_pending, ""

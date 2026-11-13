@@ -267,6 +267,7 @@ class EngineWire(QtCore.QObject):
     provider_rows_failed = QtCore.Signal(str)
     save_result = QtCore.Signal(str, dict)
     delta = QtCore.Signal(str)
+    interim_text = QtCore.Signal(str)
     reasoning_delta = QtCore.Signal(str)
     reasoning_done = QtCore.Signal(str)
     reasoning_block = QtCore.Signal(str)
@@ -1376,6 +1377,12 @@ class EngineWire(QtCore.QObject):
             text = payload.get("text")
             if isinstance(text, str) and text:
                 self.delta.emit(text)
+        elif kind == "message.interim":
+            # 工具旁白 / 收尾前那段最终回答：引擎说「没流全」的才是界面缺的正文，补画；
+            # 已经流全的（`already_streamed`）再画一遍就成了重影。
+            text = payload.get("text")
+            if isinstance(text, str) and text.strip() and not payload.get("already_streamed"):
+                self.interim_text.emit(text)
         elif kind == "reasoning.delta":
             text = payload.get("text")
             if isinstance(text, str) and text:
