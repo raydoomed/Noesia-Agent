@@ -18,6 +18,8 @@ import PySide6.QtCore as QtCore
 import PySide6.QtGui as QtGui
 import PySide6.QtWidgets as QtWidgets
 
+from app.user_name import FALLBACK_NAME, user_display_name
+
 TITLE = "Noesia"
 KICKER = "AI Companion"
 LINE = "她住在你的桌面上。"
@@ -38,6 +40,8 @@ T_WORD = (2.60, 4.00)
 T_RULE = (3.90, 4.70)
 T_LINE = (4.30, 5.20)
 T_SUB = (4.80, 5.70)
+#: 最后那行招呼。比上面两行都大、都亮——它是这一幕里唯一一句直接对他说的话。
+T_GREET = (5.20, 6.30)
 T_STATUS = (5.40, 6.40)
 T_END = 7.20
 
@@ -51,6 +55,29 @@ def _ease(now: float, span: tuple[float, float]) -> float:
         return 1.0
     t = (now - start) / (end - start)
     return 1.0 - (1.0 - t) ** 3
+
+
+def _greeting() -> str:
+    """开场那句招呼：先认人，再挑一句不客气的。
+
+    名字放最前面（「Ray，又是你」），不是缀在句末——先叫人再看你一眼，比贴着句尾更像当面说。
+    「你就是新来的？」那种情形（USER.md 里还没写下名字）没有名字可叫，另说。
+    """
+    name = user_display_name()
+    if name == FALLBACK_NAME:
+        return "你就是新来的？"
+    hour = time.localtime().tm_hour
+    if 5 <= hour < 11:
+        body = "醒了？还以为你睡死了"
+    elif 11 <= hour < 13:
+        body = "中午了，你这哪国时差"
+    elif 13 <= hour < 18:
+        body = "下午了，你还活着呢"
+    elif 18 <= hour < 23:
+        body = "你还知道回来"
+    else:
+        body = "又是你"
+    return f"{name}，{body}"
 
 
 class BootSplash(QtWidgets.QWidget):
@@ -77,6 +104,7 @@ class BootSplash(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._step = "正在准备界面…"
         self._failed = False
+        self._greeting = _greeting()
         self._skipped = False
         self._started = time.monotonic()
         self._dismissing = False
@@ -355,9 +383,11 @@ class BootSplash(QtWidgets.QWidget):
         kicker_px = max(10.0, 11.5 * u)
         line_px = max(14.0, 15.0 * u)
         sub_px = max(11.0, 12.0 * u)
+        greet_px = max(21.0, 28.0 * u)
         gap_kicker = 14 * u
         gap_rule = 18 * u
         gap_line = 8 * u
+        gap_greet = 14 * u
         rule_len = 46 * u
 
         kicker_font = QtGui.QFont("Microsoft YaHei UI")
@@ -379,11 +409,18 @@ class BootSplash(QtWidgets.QWidget):
         sub_font = QtGui.QFont("Microsoft YaHei UI")
         sub_font.setPixelSize(int(sub_px))
 
+        greet_font = QtGui.QFont("Microsoft YaHei UI")
+        greet_font.setPixelSize(int(greet_px))
+        greet_font.setBold(True)
+        greet_font.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing, greet_px * 0.03)
+
         title_h = QtGui.QFontMetricsF(title_font).height()
         kicker_h = QtGui.QFontMetricsF(kicker_font).height()
         line_h = QtGui.QFontMetricsF(line_font).height()
         sub_h = QtGui.QFontMetricsF(sub_font).height()
-        block_h = kicker_h + gap_kicker + title_h + gap_rule + line_h + gap_line + sub_h
+        greet_h = QtGui.QFontMetricsF(greet_font).height()
+        block_h = (kicker_h + gap_kicker + title_h + gap_rule + line_h + gap_line
+                   + sub_h + gap_greet + greet_h)
         y = (height - block_h) / 2.0
 
         kicker = _ease(now, (T_WORD[0] - 0.20, T_WORD[0] + 0.55))
@@ -459,6 +496,20 @@ class BootSplash(QtWidgets.QWidget):
                 QtCore.QRectF(left, y + (1 - sub) * 6 * u, box_w, sub_h),
                 QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
                 SUB,
+            )
+            painter.restore()
+        y += sub_h + gap_greet
+
+        greet = _ease(now, T_GREET)
+        if greet > 0:
+            painter.save()
+            painter.setOpacity(greet)
+            painter.setFont(greet_font)
+            painter.setPen(CREAM)
+            painter.drawText(
+                QtCore.QRectF(left, y + (1 - greet) * 8 * u, box_w, greet_h),
+                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
+                self._greeting,
             )
             painter.restore()
 
