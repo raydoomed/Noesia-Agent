@@ -267,6 +267,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._approval_dialogs: list = []
         self._name_dialog = None
         self.client: EngineWire | None = None
+        # 开窗那一页历史铺上了没有：REST 分页的第一页只铺一次，之后回来的都是更早的。
+        self._history_initial_done = True
         self._new_session_pending = False
         self._new_session_sent = False
         self._new_session_queued = 0
@@ -1189,6 +1191,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.attachment_failed.connect(self._attachment_problem)
             self.chat_panel.speech_stop_requested.connect(self._stop_voice)
             self.chat_panel.paused_discard_requested.connect(self._discard_paused_turn)
+            self.chat_panel.history_more_requested.connect(self._fetch_more_history)
             self.chat_panel.voice_mode_changed.connect(lambda _mode: self._voice_ok())
             self.speaker.preparing.connect(self.chat_panel.speech_preparing)
             panel = self.chat_panel
@@ -1954,10 +1957,37 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 else:
                     panel.show_notice("session", "已开新会话", ttl_ms=2500)
 
-    def on_history(self, rows: list) -> None:
-        if self.chat_panel is not None and rows:
-            self.chat_panel.set_history(rows)
-            say(f"[历史] 铺回 {len(rows)} 条")
+    def on_history_count(self, count: int) -> None:
+        """resume 只报了条数（引擎走 `omit_messages`）：历史按页从 REST 取，跟桌面端一样。"""
+        say(f"[历史] 库里 {count} 条，按页取")
+        self._history_initial_done = False
+        if self.client is not None:
+            self.client.fetch_history(0)
+
+    def on_history_page(self, rows: list, more: bool) -> None:
+        """引擎回了一页历史：第一页铺出来，之后的都接在更早的位置。"""
+        panel = self.chat_panel
+        if panel is None:
+            return
+        if not self._history_initial_done:
+            self._history_initial_done = True
+            if rows:
+                panel.set_history(rows, more)
+                say(f"[历史] 铺回 {len(rows)} 条" + ("，还有更早的" if more else ""))
+            return
+        panel.add_history_page(rows, more)
+        say(f"[历史] 补回更早的 {len(rows)} 条" + ("，还有更早的" if more else ""))
+
+    def on_history_failed(self, reason: str) -> None:
+        """历史没取到：说一声，别让往上滚一直重试。"""
+        self._history_initial_done = True
+        if self.chat_panel is not None:
+            self.chat_panel.history_fetch_failed()
+            self.chat_panel.show_notice("history", reason, level="warn", ttl_ms=4000)
+
+    def _fetch_more_history(self) -> None:
+        if self.client is not None:
+            self.client.fetch_next_history()
 
     def on_user_row_stamped(self, row_id: int) -> None:
         """引擎回报这次提交落在历史的第几行：记在那条消息上，重新生成/编辑重发靠它定位。"""
@@ -2696,7 +2726,9 @@ def main() -> int:
     wire.attachment_failed.connect(window._attachment_problem)
     wire.sessions_listed.connect(_after_sessions)
     wire.session_ready.connect(window.on_session_ready)
-    wire.history.connect(window.on_history)
+    wire.history_count.connect(window.on_history_count)
+    wire.history_page.connect(window.on_history_page)
+    wire.history_failed.connect(window.on_history_failed)
     wire.user_row_stamped.connect(window.on_user_row_stamped)
     wire.delta.connect(window.on_delta)
     wire.turn_started.connect(window.on_turn_started)

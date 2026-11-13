@@ -72,6 +72,12 @@ class GatewayLink(QtCore.QObject):
         self._lock = threading.Lock()
         self._connected = False
         self._pid = 0
+        # 网关的 HTTP 根（`http://127.0.0.1:<port>`）：REST 和 `/api/ws` 是同一个服务，
+        # 历史分页走它的 `/api/sessions/...`。连上才有值。
+        self.api_origin = ""
+        # 连上时留下端点：REST 要凭一张一次性原生票据（见 `native_http_ticket`）。
+        self._endpoint = None
+        self._api_home = None
 
     def configure(self, *, home, engine, workspace) -> None:
         self._home = Path(home)
@@ -104,6 +110,22 @@ class GatewayLink(QtCore.QObject):
         except RuntimeError:
             return False
         return True
+
+    def native_http_ticket(self) -> str:
+        """给 REST 签一张原生票据：和 WS 同一个签发口（网关的私有控制通道），只是 purpose 不同。
+
+        本地桌面不带 dashboard 会话令牌，`web_server.auth_middleware` 会把裸 `/api/...` 请求 401 掉；
+        带这张票（`x-noesia-gateway-ticket` 头、回环、无 Origin）才按「本机同用户」放行。
+        票据一次性，每次请求现签。
+        """
+        if self._endpoint is None or self._api_home is None:
+            return ""
+        try:
+            from noesia_cli.gateway_client import _session_ticket
+
+            return _session_ticket(self._api_home, self._endpoint, purpose="native-http")
+        except Exception:  # noqa: BLE001 — 签不出来就让调用方报「没取到」，别把开窗拖在这儿
+            return ""
 
     def stop(self, timeout: float = 8.0) -> None:
         loop, stop = self._loop, self._stop
@@ -155,6 +177,9 @@ class GatewayLink(QtCore.QObject):
             self.gone.emit(message)
             return
         endpoint = result.endpoint
+        self.api_origin = str(getattr(endpoint, "api_origin", "") or "").rstrip("/")
+        self._endpoint = endpoint
+        self._api_home = home
         ticket = await asyncio.to_thread(_session_ticket, home, endpoint)
         url, protocols = gateway_ws_target(endpoint, ticket)
         try:

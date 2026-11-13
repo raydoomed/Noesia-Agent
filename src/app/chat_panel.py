@@ -1528,6 +1528,8 @@ class ChatPanel(QtWidgets.QWidget):
     stop_requested = QtCore.Signal()
     speech_stop_requested = QtCore.Signal()
     paused_discard_requested = QtCore.Signal()
+    # 本地取回的历史画完了、服务端还有更早的：让引擎再取一页（REST）。
+    history_more_requested = QtCore.Signal()
     voice_mode_changed = QtCore.Signal(str)
     voice_transcribe_requested = QtCore.Signal(str)
     voice_record_started = QtCore.Signal()
@@ -1645,6 +1647,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._assistant_pending = ""
         self._history_older: list = []
         self._history_rendered: list = []
+        # 服务端还有没有更早的历史（判定用）：本地画完了就按页去取。
+        self._history_more = False
+        # 这一窗的历史是不是走分页铺起来的：不是的话，晚到的页一律丢掉（重连时别把同段重复接上）。
+        self._history_paged = False
         self._history_loading = False
         self._history_page_pending = False
         self._flush_timer = QtCore.QTimer(self)
@@ -2184,6 +2190,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._msgs = []
         self._history_older = []
         self._history_rendered = []
+        self._history_more = False
+        self._history_paged = False
         self.view.clear()
         self._streaming = False
         self._row_stamp_pending = None
@@ -2255,42 +2263,43 @@ class ChatPanel(QtWidgets.QWidget):
             return True
         return bool(self.view.toPlainText().strip())
 
-    HISTORY_PAGE = 15
-
-    # 短会话一次铺到底：真实内容 38 条约 140ms、60 条约 180ms，开窗等得起。
-    # 长会话只铺最近 HISTORY_PAGE 条（ad02606 定的 15，为开窗提速），别把 745 条的会话拖回几百毫秒。
+    # 一屏画多少：≤60 条的会话一次画全（真实内容实测 60 条约 200ms，开窗等得起）；
+    # 更长的先画最近 30 条（≈100ms），往上滚再按 30 条一段从已取回的那页里补。
+    # 取页粒度归引擎（`EngineWire.HISTORY_PAGE = 120`），界面只管画。
     HISTORY_FULL = 60
+    HISTORY_RENDER_TICK = 30
 
-    def set_history(self, messages) -> None:
-        """界面打开：把上一段对话铺出来（不是让用户去输入什么）。
+    def set_history(self, messages, more: bool = False) -> None:
+        """界面打开：把引擎给的第一页历史铺出来（不是让用户去输入什么）。
 
-        内容来自引擎的会话库，界面只负责显示——所以这里是整窗重画，不留第二份历史
-        状态。短会话（≤`HISTORY_FULL` 条）一次全铺；更长的只铺最近 `HISTORY_PAGE` 条，
-        超出的那截暂存成「还没铺的那截」，翻到顶再往前补（`load_older_history`），那截也只是显示源。
+        内容来自引擎的会话库，界面只负责显示。一页是服务端按 `offset` 取的最近 120 条，
+        这里只画其中够看的：≤`HISTORY_FULL` 条一次画全，更多就先画最近 `HISTORY_RENDER_TICK`
+        条、剩下的排进「还没画的那截」，往上滚再补（`load_older_history`）；本地画完了，
+        还有更早的就按页问引擎要（`history_more_requested`）。开窗成本因此只看这一段，
+        跟会话多长无关。
 
         但这个窗口里已经铺了正文/工具行时**绝不能**重画：引擎的 `session.resume` 会在
         开窗、重连、切模型之后陆续回来，一旦重画，刚显示出来的工具行（历史里没有它们，
         历史只有 role/text）就整片消失——屏幕上只剩用户和回答，工具痕迹全没了。
         """
         if self.has_transcript():
+            # 屏上已经有这一场的内容了：这一窗不归分页管，晚到的页要丢掉（否则重连会把同一段重复接上）。
+            self._history_paged = False
+            self._history_more = False
             return
-        items = [
-            item
-            for item in (messages or ())
-            if str(item.get("text") or "").strip()
-            or str(item.get("name") or "").strip()
-            or str(item.get("reasoning") or "").strip()
-        ]
+        items = self._history_items(messages)
         if len(items) <= self.HISTORY_FULL:
             tail, older = items, []
         else:
-            tail, older = items[-self.HISTORY_PAGE:], items[: -self.HISTORY_PAGE]
+            tail, older = items[-self.HISTORY_RENDER_TICK:], items[: -self.HISTORY_RENDER_TICK]
         self._history_loading = True
         try:
             self.clear_conversation("历史重铺")
             # 新开窗：折叠卡单子跟着作废（这是上一段的痕迹，不是这一窗的）。
             self._fold_log = []
             self._fold_entries = {}
+            self._history_more = bool(more)
+            self._history_paged = True
             self._history_older = older
             self._history_rendered = list(tail)
             self._paint_history(tail)
@@ -2299,13 +2308,47 @@ class ChatPanel(QtWidgets.QWidget):
         self._follow = True
         self._scroll_to_end()
 
+    @staticmethod
+    def _history_items(messages) -> list:
+        """引擎回来的行里挑出要画的：有正文、有工具名、或有思考段。"""
+        return [
+            item
+            for item in (messages or ())
+            if str(item.get("text") or "").strip()
+            or str(item.get("name") or "").strip()
+            or str(item.get("reasoning") or "").strip()
+        ]
+
+    def add_history_page(self, messages, more: bool = False) -> None:
+        """引擎回过一页更早的历史（服务端按 `offset` 取的）：接到队列前面，接着补画一段。
+
+        界面不自己切页：`offset` 由引擎按「已取回几条」算，这里只把这一页排到更早的位置，
+        然后按 `HISTORY_RENDER_TICK` 往前画——滚一下补一段，不会一次把整页重排完。
+        """
+        items = self._history_items(messages)
+        self._history_loading = False
+        if not self._history_paged:
+            # 这一窗不是分页铺的（屏上已有内容）：晚到的页丢掉，别把同一段重复接上去。
+            return
+        self._history_more = bool(more)
+        if not items:
+            return
+        self._history_older = items + self._history_older
+        self.load_older_history()
+
     def load_older_history(self) -> None:
         """翻到顶：往前补一页更早的消息，铺完把滚动位置按新增高度让回来。
 
         重铺的那份 = 这页更早的 + 开窗快照 + 屏上后加的。少了最后那截，你刚发的一问一答
         会在补页这一拍里从屏上消失——引擎和库里都还在，只是没画回来。
         """
-        if not self._history_older or self._restoring or self._history_loading:
+        if self._restoring or self._history_loading:
+            return
+        if not self._history_older:
+            # 本地取回的都画完了：再往前得问引擎要一页（服务端按 offset 取，界面不切片）。
+            if self._history_more:
+                self._history_loading = True
+                self.history_more_requested.emit()
             return
         if self._stream_msg is not None or self._clarify is not None:
             # 流式回答还没落地、或者有个问题卡等你点：这拍不重画。重画会把半截回答画成成品、
@@ -2313,16 +2356,21 @@ class ChatPanel(QtWidgets.QWidget):
             self._history_page_pending = True
             return
         self._history_loading = True
+        more = self._history_more
         try:
             self._follow = False
-            take = self._history_older[-self.HISTORY_PAGE:]
-            older = self._history_older[: -self.HISTORY_PAGE]
+            take = self._history_older[-self.HISTORY_RENDER_TICK:]
+            older = self._history_older[: -self.HISTORY_RENDER_TICK]
             rendered = take + self._history_rendered + self._live_rows()
             layout = self.view.document().documentLayout()
             old_height = layout.documentSize().height()
             old_value = self.view.verticalScrollBar().value()
             self._snapshot_fold_state()
             self.clear_conversation("历史补页")
+            # 清窗会把这几个标记一起清掉：补页要的是同一场的继续，标记得原样带回来，
+            # 否则「服务端还有更早的」会被这一次重画抹成 false，往上滚就再也取不到了。
+            self._history_more = more
+            self._history_paged = True
             self._follow = False
             self._history_older = older
             self._history_rendered = rendered
@@ -2333,8 +2381,26 @@ class ChatPanel(QtWidgets.QWidget):
             for entry in self._fold_log:
                 entry["at"] = int(entry.get("at") or 0) + len(take)
             QtCore.QTimer.singleShot(0, lambda: self._restore_scroll(old_height, old_value))
+            QtCore.QTimer.singleShot(0, self._ask_more_if_at_top)
         finally:
             self._history_loading = False
+
+    def _ask_more_if_at_top(self) -> None:
+        """这一页画完了、人还停在顶：顺手把下一页要过来，别等他再滚一下。"""
+        bar = self.view.verticalScrollBar()
+        if (
+            not self._history_older
+            and self._history_more
+            and not self._history_loading
+            and not self._restoring
+            and bar.value() <= 0
+        ):
+            self._history_loading = True
+            self.history_more_requested.emit()
+
+    def history_fetch_failed(self) -> None:
+        """这一页没取到：把「正在取」的标记放下，别让往上滚卡在这一页。"""
+        self._history_loading = False
 
     def _live_rows(self) -> list[dict]:
         """屏上这些条里开窗快照没有的那部分：本场新发的，补页重铺时要连它一起带上。"""

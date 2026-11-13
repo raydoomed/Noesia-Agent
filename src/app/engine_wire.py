@@ -14,8 +14,12 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from collections.abc import MutableMapping
 from pathlib import Path
@@ -256,7 +260,10 @@ class EngineWire(QtCore.QObject):
 
     ready = QtCore.Signal(dict)
     session_ready = QtCore.Signal(dict)
-    history = QtCore.Signal(list)
+    # 历史走 REST 分页：resume 只报条数（`defer_history` 回 `messages=[]`），界面按页取。
+    history_count = QtCore.Signal(int)
+    history_page = QtCore.Signal(list, bool)
+    history_failed = QtCore.Signal(str)
     user_row_stamped = QtCore.Signal(int)
     sessions_listed = QtCore.Signal(list)
     config_value = QtCore.Signal(str, str)
@@ -335,6 +342,8 @@ class EngineWire(QtCore.QObject):
         self._onboarding_started = False
         self._stored_id = ""
         self._revision = 0
+        # 历史分页的游标：已经从服务端取回多少条。resume 一开窗就从 0 算。
+        self._history_offset = 0
         self._generation = 0
         self._paused: dict | None = None
         self._paused_sending = False
@@ -456,18 +465,161 @@ class EngineWire(QtCore.QObject):
             self._attach_since = 0.0
         self.reasoning_pending.emit(False)
 
+    # 一页历史多少条：跟 Hermes 桌面版一个数（`LATEST_SESSION_MESSAGES_LIMIT = 120`）。
+    HISTORY_PAGE = 120
+
     def resume_session(self, session_id: str) -> None:
         if self._attaching:
             return
         self._stored_id = session_id or self._stored_id
         self._attaching = True
         self._attach_since = time.monotonic()
+        self._history_offset = 0
         self.reasoning_pending.emit(True)
-        rid = self._call("session.resume", {"session_id": session_id, "display_projection": True,
-                                            "source": SESSION_SOURCE}, tag="session.resume")
+        rid = self._call("session.resume", {"session_id": session_id, "source": SESSION_SOURCE,
+                                            "omit_messages": True, "defer_history": True},
+                         tag="session.resume")
         if rid not in self._sent:
             self._attaching = False
             self._attach_since = 0.0
+
+    def fetch_history(self, offset: int = 0) -> None:
+        """取一页历史（REST）：`offset` 从最新一条往前数，和桌面端 `getOlderSessionMessages` 同义。
+
+        resume 不再背整份 transcript（`omit_messages`），历史由界面按页要——这样开窗成本跟
+        会话多长无关，滚到顶再往前取。
+        """
+        sid = self._session_id or self._stored_id
+        base = str(getattr(self._link, "api_origin", "") or "")
+        if not sid or not base:
+            self.history_failed.emit("引擎还没连上，历史没取到")
+            return
+        threading.Thread(target=self._fetch_history_job, args=(base, sid, int(offset)),
+                         name="history-page", daemon=True).start()
+
+    def _fetch_history_job(self, base: str, session_id: str, offset: int) -> None:
+        url = (f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
+               f"?limit={self.HISTORY_PAGE}&offset={offset}&order=latest&include_compacted=true")
+        try:
+            ticket = self._link.native_http_ticket()
+            headers = {"Accept": "application/json"}
+            if ticket:
+                # 本地桌面的 REST 凭证：网关按「本机同用户」认这张一次性票据，不认裸请求。
+                headers["x-noesia-gateway-ticket"] = ticket
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=15) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 — 取不到就报给界面，别把开窗卡在这儿
+            code = getattr(exc, "code", "")
+            logger.warning("[历史] 第 %s 页没取到：%s", offset, exc)
+            self.history_failed.emit(
+                f"历史没取到：{type(exc).__name__}{f' {code}' if code else ''}"
+            )
+            return
+        raw = payload.get("messages") or []
+        rows = self._page_rows(raw)
+        self._history_offset = offset + len(raw)
+        logger.info("[历史] 取回 offset=%s，%s 条", offset, len(rows))
+        self.history_page.emit(rows, len(raw) >= self.HISTORY_PAGE)
+
+    def fetch_next_history(self) -> None:
+        """再往前一页：`offset` 就是已经取回的条数（从最新一条往前数）。"""
+        self.fetch_history(self._history_offset)
+
+    @staticmethod
+    def _page_rows(raw: list) -> list:
+        """REST 回来的一页库行 → 界面行。
+
+        引擎那边已经按显示规范投影过：压缩摘要换成显示版（`display_content`）、
+        脚手架提示标成 `hidden`、插话换成用户原话——这里只补它不做的那部分：
+        工具行拿参数拼 80 字预览（`agent.display.build_tool_preview`，和 resume 同一个函数），
+        再把字段名统一成界面认的。
+        """
+        args_by_call = {}
+        for row in raw:
+            for call in (row.get("tool_calls") or ()) if isinstance(row, dict) else ():
+                fn = (call or {}).get("function") or {}
+                call_id = (call or {}).get("id")
+                if not (call_id and fn.get("name")):
+                    continue
+                try:
+                    args_by_call[call_id] = json.loads(fn.get("arguments") or "{}")
+                except (TypeError, ValueError):
+                    args_by_call[call_id] = {}
+        out = []
+        for row in raw:
+            if not isinstance(row, dict) or str(row.get("display_kind") or "") == "hidden":
+                continue
+            role = str(row.get("role") or "")
+            stamp = row.get("timestamp")
+            try:
+                stamp = float(stamp) if stamp not in (None, "") else None
+            except (TypeError, ValueError):
+                stamp = None
+            if role == "tool":
+                name = str(row.get("tool_name") or "tool")
+                out.append({
+                    "role": "tool",
+                    "text": "",
+                    "display_kind": "",
+                    "row_id": row.get("id"),
+                    "timestamp": stamp,
+                    "name": name,
+                    "context": EngineWire._tool_preview(
+                        name, args_by_call.get(row.get("tool_call_id")) or {}
+                    ),
+                    "tool_call_id": row.get("tool_call_id"),
+                    "labels": None,
+                    "reasoning": "",
+                })
+                continue
+            shown = row.get("display_content")
+            out.append({
+                "role": role,
+                "text": EngineWire._content_text(shown if shown is not None else row.get("content")),
+                "display_kind": str(row.get("display_kind") or ""),
+                "row_id": row.get("id"),
+                "timestamp": stamp,
+                "name": "",
+                "context": "",
+                "tool_call_id": None,
+                "labels": None,
+                "reasoning": str(row.get("reasoning") or row.get("reasoning_content") or ""),
+            })
+        return out
+
+    @staticmethod
+    def _tool_preview(name: str, args: dict) -> str:
+        """工具行的参数预览：引擎的 `build_tool_preview`，和 resume 那一路同一个函数。"""
+        try:
+            from agent.display import build_tool_preview
+
+            return build_tool_preview(name, args, max_len=80) or ""
+        except Exception:  # noqa: BLE001 — 预览拼不出来就不显示，别拖垮整页
+            for value in (args or {}).values():
+                if isinstance(value, str) and value.strip():
+                    return value.strip()[:80]
+            return ""
+
+    @staticmethod
+    def _content_text(content) -> str:
+        """库里的 `content` 可能是字符串，也可能是分块列表：取出能显示的文字。"""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    if isinstance(part.get("text"), str):
+                        parts.append(part["text"])
+                    elif part.get("type") == "image_url" or part.get("image_url"):
+                        parts.append("[图片]")
+            return "".join(parts)
+        if content is None:
+            return ""
+        return str(content)
 
     def list_sessions(self, limit: int = 50) -> None:
         """库里存过的会话（含来源）：没有「上一场」存档时，靠它挑一场真正的对话。"""
@@ -1237,26 +1389,10 @@ class EngineWire(QtCore.QObject):
                 self._revision = int(result.get("revision") or 0)
                 self._generation = int(result.get("execution_generation") or 0)
                 self._note_pending(result.get("pending"))
-                rows = [
-                    {
-                        "role": str(row.get("role", "")),
-                        "text": str(row.get("text") or row.get("content") or ""),
-                        "display_kind": str(row.get("display_kind") or ""),
-                        "row_id": row.get("row_id"),
-                        "timestamp": row.get("timestamp"),
-                        # 工具行没有正文：引擎给的是名字 + 80 字预览（`context`），
-                        # 界面上那一行就是照它画的，别在半路丢掉。
-                        "name": str(row.get("name") or ""),
-                        "context": str(row.get("context") or ""),
-                        "tool_call_id": row.get("tool_call_id"),
-                        "labels": row.get("labels"),
-                        # 回答的思考段：与正文同一行回来，重铺时一并画。
-                        "reasoning": str(row.get("reasoning") or row.get("reasoning_content") or ""),
-                    }
-                    for row in (result.get("display_messages") or result.get("messages") or [])
-                    if isinstance(row, dict) and str(row.get("display_kind") or "") != "hidden"
-                ]
-                self.history.emit(rows)
+                # 引擎把正文省了（`defer_history` 回 `messages=[]`）：它只报条数，
+                # 历史照桌面端的做法按页从 REST 取。
+                if count := int(result.get("message_count") or 0):
+                    self.history_count.emit(count)
                 if self._rewind_text and self._rewind_row:
                     self._send_rewind()
             self.session_ready.emit(result)
