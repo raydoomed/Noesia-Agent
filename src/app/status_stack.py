@@ -6,8 +6,13 @@
 
 from __future__ import annotations
 
+import time
+
 import PySide6.QtCore as QtCore
 import PySide6.QtWidgets as QtWidgets
+
+#: 结束态。这些行在界面上只用来「播报一次跑完了」，不该在下次打开界面时重播。
+_DEAD_STATUS = frozenset({"exited", "killed", "lost", "failed", "failed_start", "already_exited"})
 
 _LEVELS = {
     "success": "statusdone",
@@ -76,6 +81,8 @@ class StatusStack(QtWidgets.QFrame):
         self._bg_rows: dict[str, QtWidgets.QWidget] = {}
         self._bg_linger: dict[str, QtCore.QTimer] = {}
         self._bg_done: set[str] = set()
+        # 这次界面起来的时间点：比它还早结束的后台任务属于「上一回」，不再重播（见 _stale_finished）。
+        self._boot_epoch = time.time()
         self.hide()
 
 
@@ -157,10 +164,28 @@ class StatusStack(QtWidgets.QFrame):
         self._sync()
 
 
+    def _stale_finished(self, row: dict) -> bool:
+        """这一行是不是「上一回界面里就跑完了」的，该丢掉不画。
+
+        引擎那张表会一直留着最近结束的条目（它内存里的 `_finished`），App 重开时一起报上来。
+        结束时间比这次启动还早的，属于上一回的播报——重画出来就是一条假的「后台运行 1 个进程」，
+        而且引擎现在能跨 App 重启活着，这条记录不会自己随风散掉。
+        """
+        status = str(row.get("status") or "").strip().lower()
+        if status not in _DEAD_STATUS:
+            return False
+        try:
+            exited_at = float(row.get("exited_at") or 0.0)
+        except (TypeError, ValueError):
+            return False
+        return 0.0 < exited_at < self._boot_epoch
+
     def set_processes(self, rows: list) -> None:
         rows = [
             row for row in rows or []
-            if isinstance(row, dict) and str(row.get("session_id") or "") not in self._bg_done
+            if isinstance(row, dict)
+            and str(row.get("session_id") or "") not in self._bg_done
+            and not self._stale_finished(row)
         ]
         if not rows:
             self._drop_bg()
