@@ -28,6 +28,8 @@ RAIL_LINE = QtGui.QColor(255, 255, 255, 17)
 RAIL_LINE_NOW = QtGui.QColor(255, 215, 230, 102)
 RAIL_DOT_EDGE = QtGui.QColor(255, 255, 255, 41)
 RAIL_DOT = QtGui.QColor(42, 36, 54)
+#: 用户自己说的那句：白点。助手那条用 RAIL_DOT，深得几乎看不见，靠这个把两者分开。
+RAIL_DOT_YOU = QtGui.QColor(255, 255, 255, 236)
 RAIL_TIME = QtGui.QColor(68, 61, 80)
 RAIL_NOW = QtGui.QColor(255, 215, 230)
 RAIL_NOW_GLOW = QtGui.QColor(255, 215, 230, 33)
@@ -221,6 +223,11 @@ class RailStrip(QtWidgets.QWidget):
                 painter.setBrush(RAIL_NOW_GLOW)
                 painter.drawEllipse(dot, 7.5, 7.5)
                 painter.setBrush(RAIL_NOW)
+                painter.drawEllipse(dot, 3.5, 3.5)
+            elif kind == "you":
+                # 用户那句打成白点：助手那条是 RAIL_DOT，深得几乎看不见，不分颜色就分不出谁说的。
+                painter.setPen(QtGui.QPen(RAIL_DOT_EDGE, 1))
+                painter.setBrush(RAIL_DOT_YOU)
                 painter.drawEllipse(dot, 3.5, 3.5)
             else:
                 painter.setPen(QtGui.QPen(RAIL_DOT_EDGE, 1))

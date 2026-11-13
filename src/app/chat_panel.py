@@ -266,10 +266,11 @@ class _StickyPrompt(QtWidgets.QWidget):
         metrics = QtGui.QFontMetricsF(self._text_font)
         baseline = top + self.EDGE_PX + self.PAD + metrics.ascent()
         x = margin + self.EDGE_PX + self.PAD
-        painter.setFont(self._name_font)
-        painter.setPen(self.NAME)
-        head = f"{self._name} "
-        painter.drawText(QtCore.QPointF(x, baseline), head)
+        head = f"{self._name} " if self._name else ""
+        if head:  # 署名去掉了，只在真给了名字的时候才占那一段
+            painter.setFont(self._name_font)
+            painter.setPen(self.NAME)
+            painter.drawText(QtCore.QPointF(x, baseline), head)
         painter.setFont(self._text_font)
         painter.setPen(self.TEXT)
         painter.drawText(
@@ -2692,9 +2693,7 @@ class ChatPanel(QtWidgets.QWidget):
         text = str(msg.get("text") or "")
         if block is None or not block.isValid():
             return
-        name_width = QtGui.QFontMetricsF(self._user_name_font()).horizontalAdvance(
-            f"{_user_display_name()} "
-        )
+        name_width = 0.0  # 署名去掉了，整行宽度都留给正文
         shown = QtGui.QFontMetricsF(self._user_text_font()).elidedText(
             text, QtCore.Qt.TextElideMode.ElideRight, self._user_line_room(name_width)
         )
@@ -2737,20 +2736,20 @@ class ChatPanel(QtWidgets.QWidget):
             QtGui.QTextCursor(block).setBlockFormat(fmt)
 
     def _write_user_line(self, block: QtGui.QTextBlock, shown: str) -> None:
-        """这一行只有「署名 + 正文」两段字，直接按字符格式写，不走 HTML 解析。"""
+        """这一行只有正文，直接按字符格式写，不走 HTML 解析。
+
+        以前前面还带一个署名（紫色加粗的名字 + 空格）。名字是同一个字，每条都在，
+        除了占地方没别的用，去掉了；时间轴那侧用一个白点标出「这条是你说的」。
+        """
         cursor = QtGui.QTextCursor(block)
         cursor.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
         cursor.movePosition(
             QtGui.QTextCursor.MoveOperation.EndOfBlock, QtGui.QTextCursor.MoveMode.KeepAnchor
         )
         cursor.removeSelectedText()
-        name = QtGui.QTextCharFormat()
-        name.setFont(self._user_name_font())
-        name.setForeground(QtGui.QColor("#c9a6e0"))
         body = QtGui.QTextCharFormat()
         body.setFont(self._user_text_font())
         body.setForeground(QtGui.QColor(214, 198, 222, 215))
-        cursor.insertText(f"{_user_display_name()} ", name)
         cursor.insertText(shown, body)
 
     def append_user(self, message: str, attachments=(), row_id: int | None = None) -> None:
@@ -5158,13 +5157,11 @@ class ChatPanel(QtWidgets.QWidget):
             self._sticky = _StickyPrompt(
                 self.view, self.FRAME_EDGE, self._user_name_font(), self._user_text_font()
             )
-        name = _user_display_name()
-        label = f"{name} "
-        room = self._user_line_room(QtGui.QFontMetricsF(self._user_name_font()).horizontalAdvance(label))
+        room = self._user_line_room(0.0)  # 署名去掉了，不再留名字的位置
         shown = QtGui.QFontMetricsF(self._user_text_font()).elidedText(
             str(target.get("text") or ""), QtCore.Qt.TextElideMode.ElideRight, room
         )
-        self._sticky.set_line(name, shown)
+        self._sticky.set_line("", shown)
         margin = self.view.document().documentMargin()
         frame_h = px - int(round(margin)) - MSG_GAP
         top = min(margin, strip - MSG_GAP - frame_h)
