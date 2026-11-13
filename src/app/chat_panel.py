@@ -2257,16 +2257,16 @@ class ChatPanel(QtWidgets.QWidget):
 
     HISTORY_PAGE = 15
 
-    # 开窗一次铺得下就全铺：15 条一页是给超长会话留的后路，短会话还分页看着就像历史丢了。
-    # 实测铺 40 条 85ms、150 条 0.4s、600 条 3.2s，所以 150 条是开窗还等得起的上限。
-    HISTORY_FULL = 150
+    # 短会话一次铺到底：真实内容 38 条约 140ms、60 条约 180ms，开窗等得起。
+    # 长会话只铺最近 HISTORY_PAGE 条（ad02606 定的 15，为开窗提速），别把 745 条的会话拖回几百毫秒。
+    HISTORY_FULL = 60
 
     def set_history(self, messages) -> None:
         """界面打开：把上一段对话铺出来（不是让用户去输入什么）。
 
         内容来自引擎的会话库，界面只负责显示——所以这里是整窗重画，不留第二份历史
-        状态。一次铺最近 `HISTORY_FULL` 条（短会话就是全部）；更长的会话超出的那截
-        暂存成「还没铺的那截」，翻到顶再往前补（`load_older_history`），那截也只是显示源。
+        状态。短会话（≤`HISTORY_FULL` 条）一次全铺；更长的只铺最近 `HISTORY_PAGE` 条，
+        超出的那截暂存成「还没铺的那截」，翻到顶再往前补（`load_older_history`），那截也只是显示源。
 
         但这个窗口里已经铺了正文/工具行时**绝不能**重画：引擎的 `session.resume` 会在
         开窗、重连、切模型之后陆续回来，一旦重画，刚显示出来的工具行（历史里没有它们，
@@ -2281,14 +2281,17 @@ class ChatPanel(QtWidgets.QWidget):
             or str(item.get("name") or "").strip()
             or str(item.get("reasoning") or "").strip()
         ]
-        tail = items[-self.HISTORY_FULL:]
+        if len(items) <= self.HISTORY_FULL:
+            tail, older = items, []
+        else:
+            tail, older = items[-self.HISTORY_PAGE:], items[: -self.HISTORY_PAGE]
         self._history_loading = True
         try:
             self.clear_conversation("历史重铺")
             # 新开窗：折叠卡单子跟着作废（这是上一段的痕迹，不是这一窗的）。
             self._fold_log = []
             self._fold_entries = {}
-            self._history_older = items[: -self.HISTORY_FULL]
+            self._history_older = older
             self._history_rendered = list(tail)
             self._paint_history(tail)
         finally:
