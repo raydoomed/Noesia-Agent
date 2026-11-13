@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 import PySide6.QtCore as QtCore
 import PySide6.QtGui as QtGui
@@ -75,7 +76,7 @@ class Fold:
     has_body: bool = False
     pinned: bool = False
     glyph: QtGui.QTextImageFormat | None = field(default=None, repr=False)
-    scroll: ToolScroll | None = field(default=None, repr=False)
+    scroll: QtWidgets.QWidget | None = field(default=None, repr=False)
     slot: QtGui.QTextBlock | None = field(default=None, repr=False)
     chunks: list[tuple[str, QtGui.QColor | None, QtGui.QColor | None]] = field(default_factory=list, repr=False)
     drawn: int = 0
@@ -322,17 +323,28 @@ class Folds:
         self._refresh_scroll(fold)
 
     def _refresh_scroll(self, fold: Fold) -> None:
-        from .tool_scroll import ToolScroll
-
         scroll = fold.scroll
-        if scroll is None:
-            scroll = fold.scroll = ToolScroll(self._host)
+        if not isinstance(scroll, ToolScroll):
+            if scroll is not None:
+                scroll.setParent(None)
+                scroll.deleteLater()
+            scroll = ToolScroll(self._host)
+            fold.scroll = scroll
             scroll.set_rows(fold.chunks)
             fold.drawn = len(fold.chunks)
         elif len(fold.chunks) > fold.drawn:
             scroll.add_rows(fold.chunks[fold.drawn :])
             fold.drawn = len(fold.chunks)
         scroll.setVisible(self._effective_open(fold))
+        fold.has_body = True
+        self._sync_slot(fold)
+
+    def attach_widget(self, fold: Fold, widget: QtWidgets.QWidget) -> None:
+        """正文换成自己的控件（提问卡片这种自有版式的）：留一块等高空位，几何交给 ChatView 摆。
+
+        控件得跟 `ToolScroll` 一样有 `fit(width) -> 高度`。
+        """
+        fold.scroll = widget
         fold.has_body = True
         self._sync_slot(fold)
 
@@ -373,7 +385,10 @@ class Folds:
         scroll = fold.scroll
         if scroll is None:
             return
-        height = scroll.fit(width)
+        fit: Callable[[int], float] | None = getattr(scroll, "fit", None)
+        if fit is None:
+            return
+        height = float(fit(width))
         block = fold.slot
         if block is None or not block.isValid():
             cursor = self._body_cursor(fold)

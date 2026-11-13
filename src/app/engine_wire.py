@@ -946,17 +946,13 @@ class EngineWire(QtCore.QObject):
         self._call("session.resume", {"session_id": self._stored_id, "source": SESSION_SOURCE},
                    tag="session.resume")
 
-    def answer_clarify(self, request_id: str, question_id: str, answer: str) -> None:
-        """答掉引擎那一个问题：一次锁一个，全部锁完引擎自己结束这次提问。"""
+    def answer_clarify(self, request_id: str, question_id: str, answer) -> None:
+        """答掉引擎那一个问题：一次锁一个，全部锁完引擎自己结束这次提问。None = 这题跳过。"""
         self._call(
             "clarify.lock",
             {"answer": answer, "question_id": question_id, "request_id": request_id},
             tag="clarify.lock",
         )
-
-    def skip_clarify(self, reply_id) -> None:
-        """整个提问跳过：空回包就是「一个都没选」。"""
-        self._reply(reply_id, {})
 
     def answer_secret(self, reply_id, value: str) -> None:
         """密钥 / sudo 密码：`value` 是字符串，空串等于跳过。"""

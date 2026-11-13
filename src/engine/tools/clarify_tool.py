@@ -71,6 +71,11 @@ def _normalize_questions(questions) -> tuple:
                     return None, (f"questions[{index}].choices[{pos}] is {len(choice.strip())} characters; the limit is "
                                   f"{MAX_CHOICE_CHARS}. Move detail into the question text and resend.")
             cleaned = [c.strip() for c in choices if c.strip()][:MAX_CHOICES]
+            deduped: list[str] = []
+            for label in cleaned:
+                if label not in deduped:
+                    deduped.append(label)
+            cleaned = deduped
             if choices and not cleaned:
                 # A card with no options strands the turn: say so instead of silently asking open-ended.
                 return None, (f"questions[{index}].choices has {len(choices)} entries but all are blank. "

@@ -73,6 +73,11 @@ class ChatView(QtWidgets.QTextBrowser):
         self._sync_folds = True
         self._queue_sync()
 
+    def sync_folds(self) -> None:
+        """折叠段里的控件换了样子（高度变了）：把正文里留的空位重新量一遍。"""
+        self._sync_folds = True
+        self._queue_sync()
+
     def _queue_sync(self, *_args) -> None:
         """内容变了：攒到本轮事件处理完再摆，一次插入只摆一遍。"""
         if self._sync_queued:
@@ -153,6 +158,9 @@ class ChatView(QtWidgets.QTextBrowser):
                 if widget.isVisible():
                     widget.hide()
                 continue
+            reserve = float(slot.blockFormat().lineHeight())
+            if reserve > rect.height():
+                rect.setHeight(reserve)
             widget.setGeometry(rect.toRect())
             widget.show()
 

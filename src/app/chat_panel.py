@@ -15,7 +15,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Callable, cast
+from typing import Any, Callable, cast
 from urllib.parse import unquote, urlparse
 
 import PySide6.QtCore as QtCore
@@ -33,6 +33,7 @@ from app import (
     voice_input_prefs,
 )
 from app.chat_view import ChatView
+from app.clarify_card import ClarifyCard
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap, svg_icon
 from app.approval_dialog import ConfirmDialog
 from app.photo_view import PhotoView
@@ -1522,8 +1523,7 @@ class ChatPanel(QtWidgets.QWidget):
     reasoning_requested = QtCore.Signal(str)
     attachment_picked = QtCore.Signal(list)
     attachment_failed = QtCore.Signal(str)
-    clarify_answered = QtCore.Signal(str, str, str)
-    clarify_skipped = QtCore.Signal(str)
+    clarify_answered = QtCore.Signal(str, str, object)
     process_kill_requested = QtCore.Signal(str)
     resubmit_requested = QtCore.Signal(object, str, bool)
 
@@ -3437,9 +3437,6 @@ class ChatPanel(QtWidgets.QWidget):
     def _on_anchor(self, url: QtCore.QUrl) -> None:
         """文档里的链接：折叠段的抬头（`#fold:N`）就地开合，其余是附件（用默认程序打开）。"""
         target = url.fragment()
-        if target.startswith("clarify:"):
-            self._on_clarify_click(target.split(":", 1)[1])
-            return
         if target.startswith("fold:"):
             fold = self._folds.get(int(target.split(":", 1)[1]))
             if fold is not None:
@@ -3479,35 +3476,6 @@ class ChatPanel(QtWidgets.QWidget):
         self.stack.set_activity(text)
 
 
-    def _question_format(self) -> QtGui.QTextCharFormat:
-        """问题本身：比选项亮一点、大一点，扫一眼就知道在问什么。"""
-        fmt = QtGui.QTextCharFormat()
-        fmt.setForeground(QtGui.QColor("#e6ecf8"))
-        fmt.setFontPointSize(10)
-        return fmt
-
-    def _qlabel_format(self) -> QtGui.QTextCharFormat:
-        """「问 题」这个小抬头：暗、小、字距拉开，只用来分层。"""
-        fmt = QtGui.QTextCharFormat()
-        fmt.setForeground(QtGui.QColor("#7f8a9c"))
-        fmt.setFontPointSize(8)
-        fmt.setFontLetterSpacing(140)
-        return fmt
-
-    def _chip_format(self) -> QtGui.QTextCharFormat:
-        """「选一个」「可多选」这种提示：一小截淡灰字，不铺底色。"""
-        fmt = QtGui.QTextCharFormat()
-        fmt.setForeground(QtGui.QColor("#8a94a6"))
-        fmt.setFontPointSize(8)
-        return fmt
-
-    def _badge_format(self) -> QtGui.QTextCharFormat:
-        """选项行首的 A/B/C：淡灰小字，同样不铺底色。"""
-        fmt = QtGui.QTextCharFormat()
-        fmt.setForeground(QtGui.QColor("#8a94a6"))
-        fmt.setFontPointSize(8.5)
-        return fmt
-
     @staticmethod
     def _bare_choice(choice: str) -> tuple[str, bool]:
         """引擎给推荐选项后面加 "(Recommended)"（`mark_recommended`）；桌面把它剥掉只留淡字提示。"""
@@ -3515,46 +3483,6 @@ class ChatPanel(QtWidgets.QWidget):
         if choice.endswith(suffix):
             return choice[: -len(suffix)].strip(), True
         return choice, False
-
-    def _spacer_format(self) -> QtGui.QTextCharFormat:
-        fmt = QtGui.QTextCharFormat()
-        fmt.setFontPointSize(3)
-        return fmt
-
-    def _hint_format(self) -> QtGui.QTextCharFormat:
-        """「在下面输入框回答我」这种说明：斜体暗字，不跟选项抢。"""
-        fmt = QtGui.QTextCharFormat()
-        fmt.setForeground(QtGui.QColor("#93a0b4"))
-        fmt.setFontPointSize(9)
-        fmt.setFontItalic(True)
-        return fmt
-
-    def _answered_format(self, *, picked: bool) -> QtGui.QTextCharFormat:
-        """答完之后：选中的绿字加粗，没选的降成暗字（还留在记录里，只是不再可点）。"""
-        fmt = QtGui.QTextCharFormat()
-        fmt.setFontPointSize(9.5)
-        if picked:
-            fmt.setForeground(QtGui.QColor("#8fd8a8"))
-            fmt.setFontWeight(QtGui.QFont.Weight.DemiBold)
-        else:
-            fmt.setForeground(QtGui.QColor("#7d8798"))
-        return fmt
-
-    def _quiet_link_format(self, href: str, *, color: str) -> QtGui.QTextCharFormat:
-        """次要的可点动作（「跳过」「✔ 就这样」）：不抢选项的蓝色。"""
-        fmt = self._hint_format()
-        fmt.setAnchor(True)
-        fmt.setAnchorHref(href)
-        fmt.setForeground(QtGui.QColor(color))
-        fmt.setFontItalic(False)
-        return fmt
-
-    def _link_format(self, href: str) -> QtGui.QTextCharFormat:
-        fmt = QtGui.QTextCharFormat(self._question_format())
-        fmt.setAnchor(True)
-        fmt.setAnchorHref(href)
-        fmt.setForeground(QtGui.QColor("#8fc2ff"))
-        return fmt
 
     @staticmethod
     def _choice_rows(question: dict) -> tuple[list[str], bool]:
@@ -3573,142 +3501,80 @@ class ChatPanel(QtWidgets.QWidget):
         ]
         if not questions:
             return
-        fold = self._folds.new("clarify", self._clarify_head(questions), open_=True)
+        self._end_reasoning_group()
+        fold = self._folds.new("clarify", "", open_=True)
+        head = fold.head_block
+        if head is not None and head.isValid():
+            head.setVisible(False)
         self._clarify_gen += 1
+        card = ClarifyCard(questions, self.view.viewport())
+        card.wheel_target = self.view
+        card.picked.connect(self._on_card_pick)
+        card.custom.connect(self._on_card_text)
+        card.skipped.connect(self._on_card_skip)
+        self._folds.attach_widget(fold, card)
         self._clarify = {
             "gen": self._clarify_gen,
-            "qcount": len(questions),
             "request_id": str(payload.get("request_id") or ""),
             "reply_id": payload.get("reply_id"),
             "fold": fold,
+            "card": card,
             "questions": questions,
             "answers": {},
-            "marks": {},
-            "choice_marks": {},
             "picks": {},
         }
-        for index in range(len(questions)):
-            self._draw_clarify_question(index)
-        self._folds.append_marked(
-            fold, "跳过",
-            body_format=self._quiet_link_format(f"#clarify:{self._clarify['gen']}:skip", color="#8d96a8")
-        )
         self._settle_insert()
+        self.view._queue_sync()
 
-    @staticmethod
-    def _clarify_head(questions: list[dict]) -> str:
-        """卡片的抬头：说清要你干什么，别用第三人称说「她在问你」。"""
-        if len(questions) > 1:
-            return f"需要你确认 · {len(questions)} 件事"
-        question = questions[0]
-        if question.get("choices"):
-            return "需要你选几个" if question.get("multi_select") else "需要你选一个"
-        return "需要你回答"
-
-    def _draw_clarify_question(self, qindex: int) -> None:
+    def _on_card_pick(self, qindex: int, index: int) -> None:
+        """卡片上的药丸被点了：单选直接算答了，多选先勾着，`-1` 是「就这样」。"""
         state = self._clarify
-        if state is None:
+        if state is None or not 0 <= qindex < len(state["questions"]):
             return
         question = state["questions"][qindex]
-        fold = state["fold"]
-        qid = str(question.get("qid") or "")
-        text = " ".join(str(question.get("question") or "").split())
         choices, multi = self._choice_rows(question)
-        marks = state["marks"].setdefault(qid, [])
-        if qindex:
-            self._folds.append_marked(fold, " ", body_format=self._spacer_format())
-        if state["qcount"] > 1:
-            marks.append(
-                self._folds.append_marked(fold, f"问题 {qindex + 1}", body_format=self._qlabel_format())
-            )
         if not choices:
-            marks.append(self._folds.append_marked(fold, text, body_format=self._question_format()))
-            marks.append(
-                self._folds.append_marked(
-                    fold, "✎ 在下面的输入框里敲一句回答我", body_format=self._hint_format()
-                )
-            )
             return
-        marks.append(
-            self._folds.append_marked(
-                fold, "",
-                runs=[
-                    (text, self._question_format()),
-                    ("   ", self._question_format()),
-                    ("可多选" if multi else "选一个", self._chip_format()),
+        if not multi:
+            self._answer_clarify(qindex, self._bare_choice(" ".join(choices[index].split()))[0])
+            return
+        qid = str(question.get("qid") or "")
+        picks = state["picks"].setdefault(qid, set())
+        if index < 0:
+            if not picks:
+                return
+            answer = json.dumps(
+                [
+                    self._bare_choice(" ".join(choices[position].split()))[0]
+                    for position in sorted(picks)
+                    if position < len(choices)
                 ],
+                ensure_ascii=False,
             )
-        )
-        picked = state["picks"].get(qid) or set()
-        choice_marks = state["choice_marks"].setdefault(qid, [])
-        for index, choice in enumerate(choices):
-            label, recommended = self._bare_choice(" ".join(choice.split()))
-            badge = ("☑" if index in picked else "☐") if multi else chr(ord("A") + index)
-            runs = [
-                (f"{badge}  ", self._badge_format()),
-                (label, self._link_format(f"#clarify:{state['gen']}:{qindex}:{index}")),
-            ]
-            if recommended:
-                runs.append((" (Recommended)", self._hint_format()))
-            choice_marks.append(self._folds.append_marked(fold, "", runs=runs))
-        if multi:
-            marks.append(
-                self._folds.append_marked(
-                    fold, "✔ 就这样",
-                    body_format=self._quiet_link_format(
-                        f"#clarify:{state['gen']}:{qindex}:*", color="#9ad0ff"
-                    ),
-                )
-            )
-
-    def _redraw_clarify_question(self, qindex: int) -> None:
-        """多选勾一下：把每题的那几行**原地换字**（勾上了就 ☑，去掉就 ☐）。"""
-        state = self._clarify
-        if state is None:
+            self._answer_clarify(qindex, answer)
             return
-        question = state["questions"][qindex]
-        qid = str(question.get("qid") or "")
-        choices, _multi = self._choice_rows(question)
-        picked = state["picks"].get(qid) or set()
-        marks = state["choice_marks"].get(qid) or []
-        for index, choice in enumerate(choices):
-            if index >= len(marks):
-                break
-            label = " ".join(choice.split())
-            self._folds.set_mark_text(
-                marks[index], f"{'☑' if index in picked else '☐'} {label}",
-                body_format=self._link_format(f"#clarify:{state['gen']}:{qindex}:{index}"),
-            )
+        picks.symmetric_difference_update({index})
+        state["card"].mark_picks(qindex, picks)
 
-    def _mark_clarify_answered(self, qindex: int, answer: str) -> None:
-        """答完之后这一题不再可点：选中的留 ✓，其余的降成暗字。"""
+    def _on_card_text(self, qindex: int, text: str) -> None:
+        """卡片里那一行自己写的答案，回车就填给这一题。"""
         state = self._clarify
-        if state is None:
+        if state is None or not 0 <= qindex < len(state["questions"]):
             return
-        question = state["questions"][qindex]
-        qid = str(question.get("qid") or "")
-        choices, _multi = self._choice_rows(question)
-        marks = state["marks"].get(qid) or []
-        choice_marks = state["choice_marks"].get(qid) or []
-        shown = {item.strip() for item in answer.replace("[", "").replace("]", "").split('", "')}
-        shown = {item.strip('" ') for item in shown}
-        if choices:
-            for index, choice in enumerate(choices):
-                if index >= len(choice_marks):
-                    break
-                label = " ".join(choice.split())
-                picked = label in {" ".join(item.split()) for item in shown}
-                self._folds.set_mark_text(
-                    choice_marks[index],
-                    f"{'✓' if picked else '·'} {label}",
-                    body_format=self._answered_format(picked=picked),
-                )
-        else:
-            anchor = marks[-1] if marks else None
-            if anchor is not None:
-                self._folds.insert_after(
-                    state["fold"], anchor, f"✓ {answer}", body_format=self._answered_format(picked=True)
-                )
+        self._answer_clarify(qindex, text.strip())
+
+    def _on_card_skip(self, qindex: int) -> None:
+        """这一题按了跳过：这一题交空答案（引擎认得 None = 跳过），别的题接着答。"""
+        state = self._clarify
+        if state is None or not 0 <= qindex < len(state["questions"]):
+            return
+        qid = str(state["questions"][qindex].get("qid") or "")
+        if qid in state["answers"]:
+            return
+        state["answers"][qid] = None
+        state["card"].mark_skipped(qindex)
+        self.clarify_answered.emit(state["request_id"], qid, None)
+        self._finish_clarify(state)
 
     def _answer_clarify(self, qindex: int, answer: str) -> None:
         state = self._clarify
@@ -3719,16 +3585,52 @@ class ChatPanel(QtWidgets.QWidget):
         if qid in state["answers"]:
             return
         state["answers"][qid] = answer
-        self._mark_clarify_answered(qindex, answer)
+        state["card"].mark_answered(qindex, answer)
         self.clarify_answered.emit(state["request_id"], qid, answer)
-        if len(state["answers"]) >= len(state["questions"]):
-            self._settle_clarify("✓ 已答")
+        self._finish_clarify(state)
+
+    def _finish_clarify(self, state: dict) -> None:
+        """每题都给了结果（答案或跳过）才算问完：卡底写一句已答，卡片本身原样留着。"""
+        if len(state["answers"]) < len(state["questions"]):
+            return
+        ordered = {
+            str(question.get("qid") or ""): state["answers"][str(question.get("qid") or "")]
+            for question in state["questions"]
+            if str(question.get("qid") or "") in state["answers"]
+        }
+        state["card"].show_done(self._clarify_done_label(ordered))
+        self._clarify = None
+
+    @staticmethod
+    def _clarify_done_label(answers: dict) -> str:
+        """答完的卡底照设计图写「✓ 已答：老虎」——把你选的那句带上，光一个「已答」看不出答了啥。"""
+        parts: list[str] = []
+        for value in answers.values():
+            if value is None:
+                parts.append("跳过")
+                continue
+            text = str(value).strip()
+            if text.startswith("[") and text.endswith("]"):
+                try:
+                    items = json.loads(text)
+                except ValueError:
+                    items = []
+                if isinstance(items, list):
+                    text = "、".join(str(item) for item in items if str(item).strip())
+            text = text.strip().strip('"')
+            if text:
+                parts.append(text)
+        text = "、".join(parts)
+        if len(text) > 24:
+            text = text[:23] + "…"
+        return f"✓ 已答：{text}" if text else "✓ 已答"
 
     def _settle_clarify(self, label: str) -> None:
+        """这张卡不答了（跳过 / 超时）：选项全按下去，卡底给一句交代。"""
         state = self._clarify
         if state is None:
             return
-        self._folds.retitle(state["fold"], label)
+        state["card"].settle(label)
         self._clarify = None
 
     def expire_clarify(self, request_id: str = "") -> None:
@@ -3744,52 +3646,6 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self._settle_clarify("已结束")
 
-    def _on_clarify_click(self, rest: str) -> None:
-        state = self._clarify
-        if state is None:
-            return
-        gen, _, rest = rest.partition(":")
-        if gen != str(state.get("gen")):
-            return
-        if rest == "skip":
-            reply_id = state.get("reply_id")
-            self._settle_clarify("跳过了")
-            if reply_id is not None:
-                self.clarify_skipped.emit(str(reply_id))
-            return
-        head, _, tail = rest.partition(":")
-        try:
-            qindex = int(head)
-        except ValueError:
-            return
-        if not 0 <= qindex < len(state["questions"]):
-            return
-        question = state["questions"][qindex]
-        choices, multi = self._choice_rows(question)
-        if not choices:
-            return
-        if multi and tail == "*":
-            qid = str(question.get("qid") or "")
-            picked = sorted(state["picks"].get(qid) or [])
-            if not picked:
-                return
-            answer = json.dumps([choices[index] for index in picked if index < len(choices)], ensure_ascii=False)
-            self._answer_clarify(qindex, answer)
-            return
-        try:
-            index = int(tail)
-        except ValueError:
-            return
-        if not 0 <= index < len(choices):
-            return
-        if multi:
-            qid = str(question.get("qid") or "")
-            picks = state["picks"].setdefault(qid, set())
-            picks.symmetric_difference_update({index})
-            self._redraw_clarify_question(qindex)
-            return
-        self._answer_clarify(qindex, choices[index])
-
     def pending_clarify(self) -> bool:
         """她还在等一个回答（输入框里的下一句就当答案，和桌面端一样）。"""
         return self._clarify is not None
@@ -3800,8 +3656,7 @@ class ChatPanel(QtWidgets.QWidget):
         if state is None or not text.strip():
             return False
         for index, question in enumerate(state["questions"]):
-            qid = str(question.get("qid") or "")
-            if qid in state["answers"]:
+            if str(question.get("qid") or "") in state["answers"]:
                 continue
             self._answer_clarify(index, text.strip())
             return True
@@ -6661,23 +6516,33 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _body_scroll_rect(self, key: int) -> QtCore.QRect | None:
         fold = self._folds.get(key)
-        scroll = getattr(fold, "scroll", None) if fold is not None else None
+        scroll: Any = getattr(fold, "scroll", None) if fold is not None else None
         if scroll is None:
             return None
-        viewport = scroll.viewport()
-        top_left = viewport.mapTo(self.view.viewport(), QtCore.QPoint(0, 0))
-        return QtCore.QRect(top_left, viewport.size())
+        viewport: Callable[[], Any] | None = getattr(scroll, "viewport", None)
+        inner = viewport() if viewport is not None else scroll
+        top_left = inner.mapTo(self.view.viewport(), QtCore.QPoint(0, 0))
+        return QtCore.QRect(top_left, inner.size())
 
     def _hook_tool_scrolls(self) -> None:
-        """工具正文那几块是独立控件，盖在正文上：鼠标事件得从它们那儿转进来，否则悬停不亮。"""
+        """工具正文那几块是独立控件，盖在正文上：鼠标事件得从它们那儿转进来，否则悬停不亮。
+
+        提问卡片这种自有控件没有内层视口，钩它自己就够。
+        """
         for fold in self._folds.all():
-            scroll = getattr(fold, "scroll", None)
+            scroll: Any = getattr(fold, "scroll", None)
             if scroll is None or id(scroll) in self._hooked_scrolls:
                 continue
             self._hooked_scrolls.add(id(scroll))
+            if not isinstance(scroll, QtWidgets.QWidget):
+                continue
             scroll.installEventFilter(self)
-            scroll.viewport().installEventFilter(self)
-            scroll.verticalScrollBar().installEventFilter(self)
+            viewport: Callable[[], Any] | None = getattr(scroll, "viewport", None)
+            if viewport is not None and isinstance(viewport(), QtWidgets.QWidget):
+                viewport().installEventFilter(self)
+            bar: Callable[[], Any] | None = getattr(scroll, "verticalScrollBar", None)
+            if bar is not None and isinstance(bar(), QtWidgets.QWidget):
+                bar().installEventFilter(self)
 
     def _sync_elements(self) -> None:
         """文档里新出现的代码块、图片，各建一颗自己的按钮：创建跟着元素走，不跟着鼠标走。"""
@@ -7516,8 +7381,19 @@ class ChatPanel(QtWidgets.QWidget):
             and new is not self.input
             and self.isAncestorOf(new)
             and not self._voice_mode_on
+            and not self._on_clarify_card(new)
         ):
             self.input.setFocus()
+
+    def _on_clarify_card(self, widget: QtWidgets.QWidget) -> bool:
+        """提问卡片里那一行是给人打字的：光标落进去就别抢回底部输入框。"""
+        state = self._clarify
+        if state is None:
+            return False
+        card = state.get("card")
+        if card is None:
+            return False
+        return widget is card or card.isAncestorOf(widget)
 
     def event(self, ev) -> bool:
         if ev.type() == QtCore.QEvent.Type.WindowActivate and not self._voice_mode_on:

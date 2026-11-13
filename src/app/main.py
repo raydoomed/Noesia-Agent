@@ -1185,7 +1185,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.stop_requested.connect(self.stop_turn)
             self.chat_panel.attachment_picked.connect(self._attach_picked)
             self.chat_panel.clarify_answered.connect(self._answer_clarify)
-            self.chat_panel.clarify_skipped.connect(self._skip_clarify)
             self.chat_panel.process_kill_requested.connect(self._kill_process)
             self.chat_panel.attachment_failed.connect(self._attachment_problem)
             self.chat_panel.speech_stop_requested.connect(self._stop_voice)
@@ -1830,13 +1829,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """
         self.flash_hearts()
 
-    def _answer_clarify(self, request_id: str, question_id: str, answer: str) -> None:
+    def _answer_clarify(self, request_id: str, question_id: str, answer) -> None:
         if self.client is not None:
             self.client.answer_clarify(request_id, question_id, answer)
-
-    def _skip_clarify(self, reply_id: str) -> None:
-        if self.client is not None:
-            self.client.skip_clarify(int(reply_id) if str(reply_id).isdigit() else reply_id)
 
     def _kill_process(self, process_id: str) -> None:
         if self.client is not None:
