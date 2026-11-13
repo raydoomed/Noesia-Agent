@@ -339,7 +339,7 @@ def _keep_edge_spaces(markup: str) -> str:
 _PHOTO_CACHE = 24
 _ORIGINAL_CACHE = 6
 _THUMB_WIDTH = 200
-_HINT_TEXT = "Enter 发送 · Esc 收起"
+_HINT_TEXT = "Enter 发送 · Esc 收起 · 拖边缘缩放"
 
 _IMAGE_SUFFIX = {
     "png": ".png",
@@ -686,6 +686,7 @@ QMenu::indicator { width: 14px; height: 14px; }
 APPROVAL_TINT = {"manual": "#ffcf8a", "smart": "#e8e8ef", "off": "#ff9a9a"}
 
 _THINKING_LABEL = "思考中"
+_HEADER_RUNNING = "正在跑"
 
 _APPROVAL_MODES = (
     ("manual", "手动 · 执行需要审批的操作前询问"),
@@ -1676,6 +1677,12 @@ class ChatPanel(QtWidgets.QWidget):
         self._net = QtNetwork.QNetworkAccessManager(self)
         self._reason_fold: disclosure.Fold | None = None
         self._reason_text = ""
+        self._reason_steps = 0
+        self._reason_started: float | None = None
+        self._state_text = ""
+        self._reason_clock = QtCore.QTimer(self)
+        self._reason_clock.setInterval(1000)
+        self._reason_clock.timeout.connect(self._tick_reason)
         self._answer_shown = ""
         self._spin_frame = 0
         self._spin_timer = QtCore.QTimer(self)
@@ -2180,6 +2187,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._para_break = False
         self._reason_fold = None
         self._reason_text = ""
+        self._reason_steps = 0
+        self._reason_started = None
+        self._state_text = ""
+        self._reason_clock.stop()
         self._answer_shown = ""
 
         self._tool_folds = {}
@@ -3711,7 +3722,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._mark_clarify_answered(qindex, answer)
         self.clarify_answered.emit(state["request_id"], qid, answer)
         if len(state["answers"]) >= len(state["questions"]):
-            self._settle_clarify("已回答")
+            self._settle_clarify("✓ 已答")
 
     def _settle_clarify(self, label: str) -> None:
         state = self._clarify
@@ -3883,10 +3894,15 @@ class ChatPanel(QtWidgets.QWidget):
 
         path = view.subtitle if is_file_edit else None
 
-        if (view.terminal_command is not None or view.terminal_exit_code is not None) and not pending:
-            if not self._tool_term_drawn.get(fold.key):
-                self._tool_term_drawn[fold.key] = True
+        if view.terminal_command is not None or view.terminal_exit_code is not None:
+            drawn = self._tool_term_drawn.get(fold.key)
+            if drawn is None:
+                # 命令一到就画：还在跑的时候点开也能看见跑的是哪一句。
+                self._tool_term_drawn[fold.key] = view.terminal_exit_code is not None
                 self._folds.append_runs(fold, self._terminal_rows(view))
+            elif view.terminal_exit_code is not None and not drawn:
+                self._tool_term_drawn[fold.key] = True
+                self._folds.append_runs(fold, self._terminal_exit_row(view))
 
         if view.image_url and self._tool_images.get(fold.key) != view.image_url:
             self._tool_images[fold.key] = view.image_url
@@ -4270,6 +4286,15 @@ class ChatPanel(QtWidgets.QWidget):
             row.append((f"   exit {code}", badge))
         return [row] if row else []
 
+    def _terminal_exit_row(self, view) -> list[list[tuple[str, QtGui.QTextCharFormat]]]:
+        """退出码是命令跑完之后才到的：单独补一行，不把上面那句命令重画一遍。"""
+        if view.terminal_exit_code is None:
+            return []
+        code = int(view.terminal_exit_code)
+        badge = QtGui.QTextCharFormat(self._body_char())
+        badge.setForeground(QtGui.QColor("#98c379" if code == 0 else "#e5c07b"))
+        return [[(f"   exit {code}", badge)]]
+
     def _append_image(self, fold, url: str) -> None:
         """图片工具直接贴图，宽度上限 18rem。"""
         path = Path(url)
@@ -4488,6 +4513,50 @@ class ChatPanel(QtWidgets.QWidget):
         """`display.tool_progress`：引擎配置成 off 时，工具行一行都不画。"""
         self._tool_progress = (mode or "all").strip().lower() or "all"
 
+    def set_turn_step(self, iteration: int) -> None:
+        """引擎报「本轮第几步」（`agent.step`）：抬头那行状态里的步数由它数。
+
+        引擎每调一次模型算一步，轮内从 1 起；1 就是新一轮的起点，从那一刻开始掐表。
+        """
+        step = int(iteration or 0)
+        if step <= 0:
+            return
+        if step == 1:
+            self._reason_steps = 1
+            self._reason_started = time.monotonic()
+            self._reason_clock.start()
+        elif step > self._reason_steps:
+            self._reason_steps = step
+            if self._reason_started is None:
+                self._reason_started = time.monotonic()
+                self._reason_clock.start()
+        else:
+            return
+        self._paint_state_label()
+
+    def _paint_state_label(self) -> None:
+        """抬头那行字：`Noesia Agent ● 思考中 · 2 步 · 4.2s`。
+
+        一轮在跑就把引擎报的步数和已跑时长拼在状态字后面；跑完了只显示引擎自己的状态。
+        """
+        text = self._state_text
+        if self._busy and self._reason_steps:
+            bits = [_HEADER_RUNNING, f"{self._reason_steps} 步"]
+            elapsed = None if self._reason_started is None else time.monotonic() - self._reason_started
+            if elapsed is not None and elapsed >= 0.1:
+                bits.append(f"{elapsed:.1f}s" if elapsed < 10 else format_duration_seconds(elapsed))
+            text = " · ".join(bits)
+        if not text:
+            text = self._provider_wait
+        self._state_label.setText(text)
+
+    def _tick_reason(self) -> None:
+        """一秒一下：把这行的秒数往前推；这一轮完了就停表。"""
+        if not self._busy or self._reason_started is None:
+            self._reason_clock.stop()
+            return
+        self._paint_state_label()
+
     def show_reasoning(self, text: str) -> None:
         """思考增量：攒够一段才落盘，落进一个可折叠的「思考中」段。
 
@@ -4620,15 +4689,14 @@ class ChatPanel(QtWidgets.QWidget):
         一条它不认识的状态（idle / working / tool / ready…），按钮就从「停止」跳回「发送」，
         那一轮从此叫不停——重启后引擎自己续跑时最容易撞上。
         """
-        text = {"thinking": "思考中…", "speaking": "说话中…", "listening": "听着…"}.get(value, "")
-        if not text:
-            text = self._provider_wait
-        self._state_label.setText(text)
+        text = {"thinking": f"{_HEADER_RUNNING}…", "speaking": "说话中…", "listening": "听着…"}.get(value, "")
+        self._state_text = text
+        self._paint_state_label()
 
     def set_provider_wait(self, text: str) -> None:
         """引擎在等供应商（`thinking.delta` 里那几句）：桌面端放底部状态行，不进正文。"""
         self._provider_wait = (text or "").strip()
-        self._state_label.setText(self._provider_wait)
+        self._paint_state_label()
 
     def set_anchor(self, rect: QtCore.QRect | None) -> None:
         """头像窗挪了/缩了：记下新位置；已经吸在她下面的，就跟着一起走。"""
@@ -5382,6 +5450,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._busy = bool(busy)
         self._sync_send_button()
         if not self._busy:
+            self._reason_steps = 0
+            self._reason_started = None
+            self._reason_clock.stop()
             self.set_activity("")
             self.set_provider_wait("")
 
@@ -5403,6 +5474,17 @@ class ChatPanel(QtWidgets.QWidget):
         pending, self._rewind_after_stop = self._rewind_after_stop, None
         if pending is not None:
             self._emit_rewind(pending[0], pending[1], pending[2])
+            return
+        self._drain_queue()
+
+    def flush_queue(self) -> None:
+        """本轮收尾了（`message.complete`）：把排队的下一句交给引擎。
+
+        网关这条链上引擎只发 `message.complete`，没有 TUI 那条路的 `turn.done`；排队原先
+        只在 `settle_turn` 里抽，那一帧永远不来，于是排队的第二句就一直挂着没人发。
+        桌面端是这轮一完就把下一句递过去、让引擎自己按序跑，这里照同一条路走。
+        """
+        if self._rewind_after_stop is not None:
             return
         self._drain_queue()
 

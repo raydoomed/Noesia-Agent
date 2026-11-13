@@ -274,6 +274,7 @@ class EngineWire(QtCore.QObject):
     reasoning_delta = QtCore.Signal(str)
     reasoning_done = QtCore.Signal(str)
     reasoning_block = QtCore.Signal(str)
+    agent_step = QtCore.Signal(int)
     provider_wait = QtCore.Signal(str)
     review_summary = QtCore.Signal(str)
     tool = QtCore.Signal(dict)
@@ -484,7 +485,7 @@ class EngineWire(QtCore.QObject):
             self._ensure_session()
             return
         params: dict = {"session_id": self._session_id, "text": text,
-                        "submission_id": uuid.uuid4().hex}
+                        "submission_id": uuid.uuid4().hex, "clarify_batch": True}
         if queued:
             params["queued"] = True
         self._call("prompt.submit", params, tag="prompt.submit")
@@ -594,7 +595,7 @@ class EngineWire(QtCore.QObject):
             self._ensure_session()
             return
         params: dict = {"session_id": self._session_id, "text": text,
-                        "submission_id": uuid.uuid4().hex}
+                        "submission_id": uuid.uuid4().hex, "clarify_batch": True}
         if turn.get("queued"):
             params["queued"] = True
         self._call("prompt.submit", params, tag="prompt.submit")
@@ -897,7 +898,8 @@ class EngineWire(QtCore.QObject):
         if self._pending_text:
             text, self._pending_text = self._pending_text, ""
             self._call("prompt.submit", {"session_id": self._session_id, "text": text,
-                                         "submission_id": uuid.uuid4().hex}, tag="prompt.submit")
+                                         "submission_id": uuid.uuid4().hex,
+                                         "clarify_batch": True}, tag="prompt.submit")
 
     @staticmethod
     def _is_session_gone(code, message) -> bool:
@@ -1401,6 +1403,10 @@ class EngineWire(QtCore.QObject):
             if text:
                 self.reasoning_done.emit(text)
                 self.reasoning_block.emit(text)
+        elif kind == "agent.step":
+            step = payload.get("iteration")
+            if isinstance(step, int) and step > 0:
+                self.agent_step.emit(step)
         elif kind == "review.summary":
             text = re.sub(r"^[^\w]+", "", str(payload.get("text") or "")).strip()
             if text:

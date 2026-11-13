@@ -1632,6 +1632,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 panel.clear_status_notice("turn")
             panel.end_assistant()
             panel.set_busy(False)
+            panel.flush_queue()
         self._refresh_processes()
         reply, self._reply_text = self._reply_text, ""
         if reply and not self._turn_stopped:
@@ -1659,6 +1660,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         panel.expire_clarify()
         self._turn_stopped = False
         self._reply_text = ""
+
+    def on_agent_step(self, iteration: int) -> None:
+        """引擎报「本轮第几步」（`agent.step`）：只有思考行的抬头用它。"""
+        panel = self.chat_panel
+        if panel is not None:
+            panel.set_turn_step(iteration)
 
     def on_tool_event(self, event: dict) -> None:
         """tool.start / tool.complete：标题、副标题、计数、正文全部由模型层算（`app/tool_view`）。
@@ -2692,6 +2699,7 @@ def main() -> int:
     wire.interim_text.connect(window.on_interim_text)
     wire.reasoning_done.connect(lambda _t: window.chat_panel and window.chat_panel.flush_reasoning())
     wire.reasoning_block.connect(window.on_reasoning_block)
+    wire.agent_step.connect(window.on_agent_step)
     wire.provider_wait.connect(window.on_provider_wait)
     wire.error.connect(window.on_engine_error)
     wire.setup_needed.connect(window.on_setup_needed)
