@@ -10,10 +10,9 @@
 from __future__ import annotations
 
 import json
-import os
-import threading
 from pathlib import Path
 
+from app.prefs_io import atomic_write_json
 from settings import ConfigError, RESOLVER
 
 PREFS_PATH = "data/settings/voice_input.json"
@@ -35,18 +34,7 @@ _CACHE: dict = {"stamp": None, "data": None}
 
 
 def _write(data: dict) -> None:
-    target = path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(target)
-    except BaseException:
-        try:
-            temp.unlink()
-        except OSError:
-            pass
-        raise
+    atomic_write_json(path(), data)
 
 
 def load() -> dict:

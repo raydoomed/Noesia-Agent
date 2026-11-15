@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-import os
 import threading
 import urllib.error
 import urllib.request
@@ -23,6 +22,7 @@ from pathlib import Path
 
 from app import doubao_voices, env_keys
 from app.doubao_voices import DOUBAO_VOICES as DOUBAO_LIST
+from app.prefs_io import atomic_write_json
 from settings import ConfigError, RESOLVER
 
 PREFS_PATH = "data/settings/speech.json"
@@ -106,23 +106,8 @@ _SAVE_LOCK = threading.Lock()
 
 
 def _write(data: dict) -> None:
-    """整份落盘：先写临时文件再改名。
-
-    引擎随时可能在读这份配置（一按说话就读一次）。直接覆盖时它可能正好读到
-    写了一半的内容——解不开 JSON 就成了「合成失败」，用户只看到一句莫名其妙的错。
-    """
-    target = path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(target)
-    except BaseException:
-        try:
-            temp.unlink()
-        except OSError:
-            pass
-        raise
+    """整份落盘：先写临时文件再改名（引擎随时可能在读，见 `prefs_io`）。"""
+    atomic_write_json(path(), data)
 
 
 def save(**changes) -> dict:

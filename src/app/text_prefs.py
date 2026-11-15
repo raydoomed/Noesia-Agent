@@ -9,10 +9,9 @@
 from __future__ import annotations
 
 import json
-import os
-import threading
 from pathlib import Path
 
+from app.prefs_io import atomic_write_json
 from settings import ConfigError, RESOLVER
 
 PREFS_PATH = "data/settings/text.json"
@@ -41,18 +40,7 @@ def load() -> dict:
 
 def _write(data: dict) -> None:
     """整份落盘：先写临时文件再改名，别让读的一方拿到写了一半的文件。"""
-    target = path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(target)
-    except BaseException:
-        try:
-            temp.unlink()
-        except OSError:
-            pass
-        raise
+    atomic_write_json(path(), data)
 
 
 def remembered(provider: str) -> str:

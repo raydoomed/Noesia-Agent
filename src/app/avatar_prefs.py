@@ -14,12 +14,11 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
-import threading
 from pathlib import Path
 
 from app import env_keys
+from app.prefs_io import atomic_write_json
 from settings import ConfigError, RESOLVER
 
 PREFS_PATH = Path("data/settings/avatar.json")
@@ -41,18 +40,7 @@ DEFAULT_IMAGE = RESOLVER.resolve(Path("assets/greenscreen/noesia_greenscreen.png
 
 def _write(data: dict) -> None:
     """整份写回：`load()` 已经带上了不认识的键（比如 `image_asset`），这里不许筛。"""
-    target = path()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        temp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(target)
-    except BaseException:
-        try:
-            temp.unlink()
-        except OSError:
-            pass
-        raise
+    atomic_write_json(path(), data)
 
 
 def path() -> Path:
