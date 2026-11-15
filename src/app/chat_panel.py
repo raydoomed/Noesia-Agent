@@ -514,25 +514,7 @@ QMenu::indicator { width: 14px; height: 14px; }
     color: #ece6ef;
     font-size: 13px;
 }
-#view QScrollBar:vertical {
-    background: transparent;
-    width: 8px;
-    margin: 0px;
-}
-#view QScrollBar::handle:vertical {
-    background: rgba(236, 230, 239, 38);
-    border-radius: 4px;
-    min-height: 28px;
-}
-#view QScrollBar::handle:vertical:hover {
-    background: rgba(236, 230, 239, 72);
-}
-#view QScrollBar::add-line:vertical, #view QScrollBar::sub-line:vertical {
-    height: 0px;
-}
-#view QScrollBar::add-page:vertical, #view QScrollBar::sub-page:vertical {
-    background: transparent;
-}
+
 /* 输入框外壳：审批/思考两个图标在框里面，窗口拉窄也不会把输入框挤没 */
 #inputbox {
     background-color: rgba(255, 255, 255, 22);
@@ -563,22 +545,6 @@ QMenu::indicator { width: 14px; height: 14px; }
     font-size: 13px;
 }
 #input:focus { border: none; }
-/* 输入框长到 5 行以上才冒出来的细滚动条：低调些，别把字挤窄 */
-#input QScrollBar:vertical {
-    background: transparent;
-    width: 5px;
-    margin: 2px 0;
-}
-#input QScrollBar::handle:vertical {
-    background: rgba(255, 255, 255, 55);
-    border-radius: 2px;
-    min-height: 18px;
-}
-#input QScrollBar::handle:vertical:hover { background: rgba(255, 255, 255, 95); }
-#input QScrollBar::add-line:vertical,
-#input QScrollBar::sub-line:vertical { height: 0; }
-#input QScrollBar::add-page:vertical,
-#input QScrollBar::sub-page:vertical { background: transparent; }
 #send {
     background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f7b6d2, stop:1 #c37ba6);
     border: none;

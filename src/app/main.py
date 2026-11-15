@@ -42,7 +42,7 @@ QMenu::item:selected { background-color: rgba(240, 178, 210, 52); color: #ffffff
 QMenu::separator { height: 1px; background: rgba(255, 255, 255, 20); margin: 5px 10px; }
 """
 
-_TIP_QSS = """
+_APP_QSS = """
 QToolTip {
     background-color: #241f2e;
     color: #f2e6ee;
@@ -51,6 +51,37 @@ QToolTip {
     padding: 3px 7px;
     font-size: 11px;
 }
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background: rgba(240, 178, 210, 85);
+    border-radius: 4px;
+    min-height: 28px;
+}
+QScrollBar::handle:vertical:hover { background: rgba(240, 178, 210, 145); }
+QScrollBar::handle:vertical:pressed { background: rgba(240, 178, 210, 190); }
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 0px;
+}
+QScrollBar::handle:horizontal {
+    background: rgba(240, 178, 210, 85);
+    border-radius: 4px;
+    min-width: 28px;
+}
+QScrollBar::handle:horizontal:hover { background: rgba(240, 178, 210, 145); }
+QScrollBar::handle:horizontal:pressed { background: rgba(240, 178, 210, 190); }
+QScrollBar::add-line, QScrollBar::sub-line {
+    width: 0px;
+    height: 0px;
+    background: none;
+    border: none;
+}
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 """
 
 def say(message: str) -> None:
@@ -2650,7 +2681,7 @@ def main() -> int:
     _setup_gui_log(resolver.root)
 
     app = QtWidgets.QApplication(sys.argv)
-    app.setStyleSheet(_TIP_QSS)
+    app.setStyleSheet(_APP_QSS)
     app.setQuitOnLastWindowClosed(False)
     if not claim_instance():
         if notify_existing_instance("show"):
