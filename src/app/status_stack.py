@@ -381,7 +381,10 @@ class StatusStack(QtWidgets.QFrame):
         for extra in (self._bg, self._activity):
             if extra is not None and extra.isVisible():
                 need += extra.sizeHint().height() + spacing
-        cap = int(self.window().height() * 0.45) if self.window() else 400
+        window = self.window()
+        # 窗口还没显示（或最小化）时 height() 是 0：这时候按 0 算会把上限压成 0，
+        # 状态条被固定成 24px 一条缝。拿不到高度就按 400 兜着，等真显示出来再算。
+        cap = int(window.height() * 0.45) if window is not None and window.height() > 0 else 400
         height = max(24, min(need, cap))
         inner.setMinimumHeight(need)
         self._note.setFixedHeight(height)

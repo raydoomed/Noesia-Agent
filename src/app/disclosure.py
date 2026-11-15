@@ -64,6 +64,21 @@ def _inherit_clean(fmt: QtGui.QTextBlockFormat) -> QtGui.QTextBlockFormat:
     return fmt
 
 
+def _flip_visible(block: QtGui.QTextBlock, want: bool) -> bool:
+    """可见性真变了才动块：没变就不碰，省掉一次重排版。返回是否变过。"""
+    if block.isVisible() == want:
+        return False
+    block.setVisible(want)
+    return True
+
+
+def _widen(low: int, high: int, block: QtGui.QTextBlock) -> tuple[int, int]:
+    """把这一块并进要重排的字符区间（`low < 0` 表示还没开张）。"""
+    start = block.position()
+    end = start + block.length()
+    return (start if low < 0 else min(low, start)), (end if high < 0 else max(high, end))
+
+
 @dataclass
 class Fold:
     key: int
@@ -574,18 +589,33 @@ class Folds:
         """按「自己 + 所有外层都展开」重算每个折叠段的可见性。
 
         抬头的可见性只看外层：里层套着时，外层一收起，里层的抬头也得跟着消失。
+
+        文档整篇只走一遍、按块自带归属键分桶：`body_blocks()` 那种「每个折叠段扫一遍全篇」
+        是 folds × blocks（2000 块 / 150 段实测 238ms，4000 / 300 到 916ms）。真变了的块才改，
+        重排版范围也只标这一段，不再整篇 `markContentsDirty`。
         """
-        show = {fold.key: self._effective_open(fold) for fold in self._items.values()}
+        bodies: dict[int, list[QtGui.QTextBlock]] = {}
+        block = self._doc.begin()
+        while block.isValid():
+            mark = block.userData()
+            if isinstance(mark, _BodyMark):
+                bodies.setdefault(mark.key, []).append(block)
+            block = block.next()
+        low = high = -1
         for fold in self._items.values():
             head = fold.head_block
             if head is not None and head.isValid():
-                head.setVisible(self._parents_open(fold))
+                if _flip_visible(head, self._parents_open(fold)):
+                    low, high = _widen(low, high, head)
+            want = self._effective_open(fold)
             if fold.has_body:
-                for block in self.body_blocks(fold):
-                    block.setVisible(show[fold.key])
+                for body in bodies.get(fold.key, ()):
+                    if _flip_visible(body, want):
+                        low, high = _widen(low, high, body)
             if fold.scroll is not None:
-                fold.scroll.setVisible(show[fold.key])
-        self._doc.markContentsDirty(0, self._doc.characterCount())
+                fold.scroll.setVisible(want)
+        if low >= 0:
+            self._doc.markContentsDirty(low, high - low)
 
     def adopt(self, fold: Fold, parent: Fold | None) -> None:
         """这层套在哪一层下面：外层一收起，里层整段跟着消失，抬头和正文也往里缩一层。"""

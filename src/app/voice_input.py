@@ -46,6 +46,7 @@ EVENT_MAX_WAIT_SECONDS = 2.0
 REOPEN_WINDOW_SECONDS = 10.0
 MAX_REOPEN_IN_WINDOW = 3
 OPEN_STABLE_SECONDS = 5.0
+WATCHDOG_POLL_MS = 5000
 
 
 class VoiceRecorder(QtCore.QObject):
@@ -84,7 +85,14 @@ class VoiceRecorder(QtCore.QObject):
         self._reopening = False
         self._closing = False
         self._watcher = audio_devices.EndpointWatcher(self._on_os_event)
-        self._watcher.start()
+        if not self._watcher.start():
+            # 注册端点通知失败（系统拒绝、被安全软件拦）时事件永远不来：改自己慢轮询设备表，
+            # 不然拔插设备后「自动换设备」「自动重开」这两条路全哑着，只有重启才能恢复。
+            logger.warning("[录音] 端点通知没起来，改用 %d 秒轮询设备表", WATCHDOG_POLL_MS // 1000)
+            self._watchdog = QtCore.QTimer(self)
+            self._watchdog.setInterval(WATCHDOG_POLL_MS)
+            self._watchdog.timeout.connect(self._poll_devices)
+            self._watchdog.start()
 
         self._pump = QtCore.QTimer(self)
         self._pump.setInterval(16)
@@ -407,8 +415,35 @@ class VoiceRecorder(QtCore.QObject):
         if not relevant:
             return
 
+        self._check_devices(now)
+
+    @QtCore.Slot()
+    def _poll_devices(self) -> None:
+        """端点通知没起来时的兜底：自己隔一会儿看一眼设备表（不吃重开预算）。"""
+        if self._reopening:
+            return
+        self._check_devices(time.monotonic(), from_poll=True)
+
+    def _check_devices(self, now: float, *, from_poll: bool = False) -> None:
+        """设备表还认不认手里的这条流：没了就换、在但流没了就重开。
+
+        `from_poll=True` 是轮询兜底那条路：它只负责把流和真实设备对上，
+        不占 `_reopen_times` 的预算（那是给「反复断线」判认输用的，两笔账不能混）。
+        """
+        if not self._wanted:
+            # 不是语音模式（或麦克风已经关了）：事件照旧清掉——
+            # 留着的话切回语音时那批旧事件会立刻触发一轮假的「设备断开」。
+            with self._events_lock:
+                self._events.clear()
+            self._events_first_at = 0.0
+            return
+
         endpoints = self.devices()
         alive = {e.guid.lower() for e in endpoints}
+        if from_poll and not alive:
+            # 轮询兜底时一只设备都没有：没有可换的目标，硬重开会每 5 秒弹一次「没找到可用的麦克风」。
+            # 等设备回来再说（事件路那边有自己的提示与预算）。
+            return
 
         if self._endpoint is not None and self._endpoint.guid.lower() not in alive:
             lost_name = self._endpoint.name
@@ -417,22 +452,22 @@ class VoiceRecorder(QtCore.QObject):
                 self.failed.emit(f"「{lost_name}」断开了；已经录到的会照样发出去")
             logger.info("[录音] 设备没了：%s", self._endpoint.name)
 
-            if not self._may_retry(
+            if not from_poll and not self._may_retry(
                 now, "麦克风反复断开，先停一下；插好或重新连上之后再点一下麦克风"
             ):
                 self.close_stream(keep_open_intent=True)
                 return
 
-            replacement = self.current()
             if not self._wanted:
                 self._endpoint = None
                 return
+            replacement = self.current()
             self.device_lost.emit(replacement.name if replacement else "")
             self.reopen()
             return
 
-        if self._wanted and self._capture is None and not self._opening and endpoints:
-            if not self._may_retry(
+        if self._capture is None and not self._opening and endpoints:
+            if not from_poll and not self._may_retry(
                 now, "麦克风一直打不开，先停一下；关掉占用它的程序或重新连接之后再点一下麦克风"
             ):
                 return

@@ -134,6 +134,8 @@ class _StreamPlayback(QtCore.QObject):
         sink.setBufferSize(max(self._format.bytesForDuration(250_000), 8192))
         io = sink.start()
         if io is None:
+            # 打不开就把这个 sink 收掉：留着它每片都会再建一个（`feed` 每次重试 `_open`），越堆越多。
+            sink.deleteLater()
             self.failed.emit("打不开音频输出设备（可能被别的程序占用）")
             return False
         self._sink = sink

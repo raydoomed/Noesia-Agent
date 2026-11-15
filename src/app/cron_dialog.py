@@ -12,12 +12,16 @@ from datetime import datetime, timedelta
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from app.approval_dialog import ConfirmDialog
 from app.model_dialog import STYLE, _apply_dark_palette
 
 FIRE_POLL_MS = 1000
 RUNS_POLL_MS = 8000
 QUEUE_SETTLE_TIMEOUT_S = 90.0
 QUEUE_START_SLACK_S = 2.0
+# 手动触发要等这一趟真跑完才回包（`cron.trigger` 是 long_lived），跑几分钟很正常，
+# 所以这个上限只用来兜「回包永远不来」：明显大于常规运行，超了就把按钮放开、说清结果未知。
+FIRE_GIVE_UP_S = 1800.0
 
 EXTRA_STYLE = """
 #cron-search, #cron-custom {
@@ -624,7 +628,11 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 if str(record.get("id") or self._current) == self._current:
                     self._paint_detail(record)
             return
-        if tag == "cron.runs":
+        if tag.startswith("cron.runs"):
+            asked = tag.partition(":")[2]
+            if asked and asked != self._current:
+                # 回的是别的任务的运行记录（切任务时后发先回）：丢掉，别画到当前这条头上。
+                return
             rows = (payload.get("runs") or []) if ok else []
             self._paint_runs(rows)
             # 有活着的运行（比如别处刚点过触发、或这条正在跑）就把这条当「运行中」；
@@ -870,7 +878,19 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._engine.cron_trigger(job_id)
 
     def _poll_tick(self) -> None:
-        """平时 8 秒、等触发回包时 1 秒重读一次：排程跑和手动触发都能及时落到界面上。"""
+        """平时 8 秒、等触发回包时 1 秒重读一次：排程跑和手动触发都能及时落到界面上。
+
+        触发回包可能永远不来（引擎那一趟被掐掉、连接换了），所以给 `_firing` 一个墙钟上限：
+        超了就把按钮放开、写「结果未知」——不能让人对着四个灰键等下去。
+        """
+        if self._firing and time.monotonic() - self._firing_at > FIRE_GIVE_UP_S:
+            self._firing = ""
+            self._queued_expired = False
+            self._poll.setInterval(RUNS_POLL_MS)
+            self._apply_busy()
+            self._status.setText("已在跑，结果未知（超过 30 分钟没等到回包）")
+            self._status.setStyleSheet(self.NOTE_ERROR)
+            self._rebuild_list()
         if self._firing and time.monotonic() - self._firing_at > QUEUE_SETTLE_TIMEOUT_S and not self._queued_expired:
             self._queued_expired = True
             for index in range(self._runs.count() - 1, -1, -1):
@@ -900,15 +920,15 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if not job_id:
             return
         name = self._row_name(job_id)
-        answer = QtWidgets.QMessageBox.question(
+        # 用仓库里的置顶确认框：`QMessageBox` 会被置顶的面板压住，看不见却把面板卡在 exec() 里。
+        if not ConfirmDialog.ask(
             self,
             "删除定时任务？",
             f"这会永久移除「{name}」，它会立刻停止触发。",
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No,
-            QtWidgets.QMessageBox.StandardButton.No,
-        )
-        if answer == QtWidgets.QMessageBox.StandardButton.Yes:
-            self._engine.cron_delete(job_id)
+            "删除",
+        ):
+            return
+        self._engine.cron_delete(job_id)
 
     def _start_create(self) -> None:
         self._editing = ""

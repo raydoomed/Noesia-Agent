@@ -207,7 +207,20 @@ class StreamSpeaker(QtCore.QObject):
     def _on_pull_done(self, seq: int) -> None:
         if seq == self._seq and self._active:
             self._pulling = False
+            self._flush_carry()
             self._pump()
+
+    def _flush_carry(self) -> None:
+        """合成流收尾：不足一帧的尾巴用静音补齐发掉。
+
+        不补的话每句末尾会剩 0–639 字节（最多 20ms），数字人的口型就比声音早一点归位。
+        只在结束口补；`_forward` 里按整帧切是故意的，那里不动。
+        """
+        if not self._carry:
+            return
+        tail, self._carry = self._carry, b""
+        if self._on_chunk is not None:
+            self._on_chunk(tail + b"\x00" * (FRAME_BYTES - len(tail)))
 
     def _fail_local(self, message: str) -> None:
         """写完不进去这类本地故障：收干净资源，把原因说出去（不能让调用方一直等）。"""

@@ -1046,7 +1046,10 @@ class EngineWire(QtCore.QObject):
         self._call("cron.manage", {"action": "detail", "job_id": job_id}, tag="cron.detail")
 
     def cron_runs(self, job_id: str, limit: int = 20) -> None:
-        self._call("cron.manage", {"action": "runs", "job_id": job_id, "limit": limit}, tag="cron.runs")
+        # tag 带上 job：连点两条任务、回包先后颠倒时，面板得知道这份运行记录属于哪条，
+        # 不能把 A 的「运行中」画到 B 头上。
+        self._call("cron.manage", {"action": "runs", "job_id": job_id, "limit": limit},
+                   tag=f"cron.runs:{job_id}")
 
     def cron_save(self, job_id: str, fields: dict) -> None:
         """新建走 `add`（原样转发给 cronjob 工具），改走面板的 `update`（原样写回记录字段）。"""
