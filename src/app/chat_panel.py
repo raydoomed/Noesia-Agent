@@ -6540,46 +6540,37 @@ class ChatPanel(QtWidgets.QWidget):
             logger.debug("[语音] 删不掉临时录音 %s", path, exc_info=True)
 
 
-    def _ptt_sequence(self) -> QtGui.QKeySequence:
-        """按住说话用的键；没配过或配坏了就当空格。"""
+    def _ptt_sequence(self, *, global_: bool = False) -> QtGui.QKeySequence:
+        """按住说话用的键；没配过或配坏了就当空格。
+
+        `global_` 选的是「窗口在后台也生效」那把：读 `global_hotkey()`，兜底 Shift+空格。
+        """
         stored = ""
         if self._voice_prefs is not None:
             try:
-                stored = self._voice_prefs.hotkey()
+                stored = (
+                    self._voice_prefs.global_hotkey() if global_ else self._voice_prefs.hotkey()
+                )
             except Exception:  # noqa: BLE001
                 stored = ""
         if stored:
             sequence = QtGui.QKeySequence(stored)
             if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.SequenceFormat.PortableText):
                 return sequence
-        return QtGui.QKeySequence(QtCore.Qt.Key.Key_Space)
+        return QtGui.QKeySequence("Shift+Space" if global_ else QtCore.Qt.Key.Key_Space)
 
     def _ptt_label(self) -> str:
         """给人看的键名：空格 / F2 / Ctrl+空格。"""
         return _key_name(self._ptt_sequence())
 
 
-    def _global_ptt_sequence(self) -> QtGui.QKeySequence:
-        """系统级按住说话的键；没配过或配坏了就用 Shift+空格。"""
-        stored = ""
-        if self._voice_prefs is not None:
-            try:
-                stored = self._voice_prefs.global_hotkey()
-            except Exception:  # noqa: BLE001
-                stored = ""
-        if stored:
-            sequence = QtGui.QKeySequence(stored)
-            if sequence.count() == 1 and sequence.toString(QtGui.QKeySequence.SequenceFormat.PortableText):
-                return sequence
-        return QtGui.QKeySequence("Shift+Space")
-
     def _global_ptt_label(self) -> str:
-        return _key_name(self._global_ptt_sequence())
+        return _key_name(self._ptt_sequence(global_=True))
 
     def _apply_global_ptt(self) -> None:
         """把配置里的系统级键装进钩子。窗口在后台也生效。"""
         self._global_ptt.stop()
-        native = _to_native(self._global_ptt_sequence())
+        native = _to_native(self._ptt_sequence(global_=True))
         if native is None:
             return
         mods, vk = native
@@ -6628,13 +6619,13 @@ class ChatPanel(QtWidgets.QWidget):
         key = event.keyCombination().key()
         return any(
             seq.count() == 1 and seq[0].key() == key  # pyright: ignore[reportIndexIssue]
-            for seq in (self._ptt_sequence(), self._global_ptt_sequence())
+            for seq in (self._ptt_sequence(), self._ptt_sequence(global_=True))
         )
 
     def _hold_key_down(self) -> bool:
         """按住说话那个组合现在还完整按着吗——问系统键态，不问事件。"""
         return _sequence_down(self._ptt_sequence()) or _sequence_down(
-            self._global_ptt_sequence()
+            self._ptt_sequence(global_=True)
         )
 
     def _hold_begin(self) -> None:
@@ -6688,7 +6679,7 @@ class ChatPanel(QtWidgets.QWidget):
     def _ask_ptt_key(self) -> None:
         """改按住说话的键：窗口内和系统级都在这个小窗里，点哪条改哪条。"""
         dialog = _PttKeyDialog(
-            self._ptt_sequence(), self._global_ptt_sequence(), self.window()
+            self._ptt_sequence(), self._ptt_sequence(global_=True), self.window()
         )
         accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
         window_sequence = dialog.window_sequence()
