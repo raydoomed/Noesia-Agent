@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 from PySide6 import QtCore, QtGui, QtWidgets
 
 PINK = "#ffd7e6"
@@ -128,6 +130,7 @@ class ClarifyCard(QtWidgets.QWidget):
         self._field: dict[int, QtWidgets.QLineEdit] = {}
         self._ok: dict[int, QtWidgets.QPushButton] = {}
         self._answered: set[int] = set()
+        self._settled = False
         self._done = QtWidgets.QLabel("")
         self._done.setStyleSheet(f"color:{DONE_COLOR};font-size:10.5px;background:transparent;")
         self._done.setMinimumHeight(self._done.fontMetrics().height())
@@ -180,7 +183,7 @@ class ClarifyCard(QtWidgets.QWidget):
 
     def _submit_field(self, index: int) -> None:
         field = self._field.get(index)
-        if field is None or index in self._answered:
+        if field is None or self._settled or index in self._answered:
             return
         text = field.text().strip()
         if not text:
@@ -269,6 +272,26 @@ class ClarifyCard(QtWidgets.QWidget):
                 continue
             self._set_hot(button, position in picks)
 
+    @staticmethod
+    def _answer_items(answer: str) -> list[str]:
+        """答案回读成「我选了哪几项」：多选是 JSON 数组字面量，单选和手打就是原话本身。
+
+        不能按逗号硬拆——选项自己可能带逗号（「苹果,脆的那种」），拆开就谁也对不上药丸，
+        选中态丢了、碎片还会被拼进输入框当凭据。
+        """
+        text = str(answer or "").strip()
+        if not text:
+            return []
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                parsed = json.loads(text)
+            except ValueError:
+                return [text]
+            if isinstance(parsed, list):
+                items = [str(item).strip() for item in parsed]
+                return [item for item in items if item]
+        return [text]
+
     def mark_answered(self, index: int, answer: str) -> None:
         """这一题答完了：选中的那颗留粉，其余按下去；那一行原地留着，高度一点不动。
 
@@ -276,8 +299,7 @@ class ClarifyCard(QtWidgets.QWidget):
         手打的那句答案填回输入框里，当「我答的是什么」留个凭据。
         """
         self._answered.add(index)
-        shown = {self._bare(item) for item in answer.replace("[", "").replace("]", "").replace('"', "").split(",")}
-        shown = {item.strip() for item in shown if item.strip()}
+        shown = self._answer_items(answer)
         chosen = False
         for button in self._pills.get(index, []):
             if button.text() in _NON_CHOICE:
@@ -289,7 +311,7 @@ class ClarifyCard(QtWidgets.QWidget):
             self._mute(button)
         field = self._field.get(index)
         if field is not None and not chosen:
-            typed = "、".join(sorted(shown))
+            typed = "、".join(shown)
             if typed:
                 field.setText(typed)
         self._dim_row(index)
@@ -306,11 +328,17 @@ class ClarifyCard(QtWidgets.QWidget):
         self._done.setText(label)
 
     def settle(self, label: str) -> None:
-        """这张卡结束了（超时 / 没人答）：选项全部按下去，底下给一句交代，同样不改高度。"""
+        """这张卡结束了（超时 / 没人答）：整张卡按下去，底下给一句交代，同样不改高度。
+
+        每一题的输入行也要一起停（`_dim_row` 会连输入框、确认、跳过一起禁用）——
+        只停药丸的话，卡看着还能答、字打进去却落进一张已经作废的卡里，回车也没人接。
+        """
+        for index in range(len(self._questions)):
+            self._dim_row(index)
+        self._settled = True
         for buttons in self._pills.values():
             for button in buttons:
-                button.setEnabled(False)
-                button.setCursor(QtCore.Qt.CursorShape.ArrowCursor)
+                self._mute(button)
         for tags in self._tags.values():
             for tag in tags:
                 tag.setEnabled(False)
