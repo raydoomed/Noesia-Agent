@@ -49,14 +49,11 @@ add.set_rows([("first", None, GREEN)])
 add.add_rows([("after", None, None)])
 print("   add_rows:", " / ".join(block_backgrounds(add)))
 
-print("== 2. 悬停按钮：基础样式在 set_backdrop 之后是否还在 ==")
+print("== 2. 悬停按钮：基础样式 ==")
 button = hover_actions.HoverActionButton(host, "copy", "复制", lambda: None)
 base = button.styleSheet()
-button.set_backdrop(True)
-on_qss = button.styleSheet()
-button.set_backdrop(False)
-print(f"   border/padding 在 backdrop=True 里: {'border: none' in on_qss} / {'padding: 0' in on_qss}")
-print(f"   backdrop=False 恢复成基础样式: {button.styleSheet() == base}")
+print(f"   border: none / padding: 0 在基础样式里: "
+      f"{'border: none' in button.styleSheet()} / {'padding: 0' in button.styleSheet()}")
 
 
 def pixels(qss: str) -> tuple[int, tuple[int, int]]:

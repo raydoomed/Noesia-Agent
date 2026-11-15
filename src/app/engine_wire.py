@@ -389,8 +389,6 @@ class EngineWire(QtCore.QObject):
         self._onboarding_started = False
         self._stored_id = ""
         self._revision = 0
-        # 已经有一页在路上了：顶上连着滚不重复发请。
-        self._history_busy = False
         self._generation = 0
         self._paused: dict | None = None
         self._paused_sending = False
@@ -562,15 +560,12 @@ class EngineWire(QtCore.QObject):
         sid = self._session_id or self._stored_id
         base = str(getattr(self._link, "api_origin", "") or "")
         if not sid or not base:
-            self._history_busy = False
             self.history_failed.emit("引擎还没连上，历史没取到", tag)
             return
         page = int(limit) if limit else 0
         if page <= 0 or page > int(self.HISTORY_PAGE):
             # 0/没给 = 一整页；要得比一整页多也按一整页来（页大小只在这里定）。
             page = int(self.HISTORY_PAGE)
-        # 从发请到回页之间都算「在路上」：这期间顶上的滚动不再发请。
-        self._history_busy = True
         threading.Thread(target=self._fetch_history_job, args=(base, sid, int(offset), page, tag),
                          name=f"history-page-{tag}", daemon=True).start()
 
@@ -589,7 +584,6 @@ class EngineWire(QtCore.QObject):
         except Exception as exc:  # noqa: BLE001 — 取不到就报给界面，别把开窗卡在这儿
             code = getattr(exc, "code", "")
             logger.warning("[历史] 第 %s 页没取到（%s）：%s", offset, tag, exc)
-            self._history_busy = False
             self.history_failed.emit(
                 f"历史没取到：{type(exc).__name__}{f' {code}' if code else ''}", tag
             )
@@ -601,7 +595,6 @@ class EngineWire(QtCore.QObject):
         limit = int(pagination.get("limit") or page)
         logger.info("[历史] 取回 offset=%s（%s），%s 条", offset, tag, len(rows))
         # 够不够一页由服务端说：回来的条数少于这一页的 limit，就是再往前没有了。
-        self._history_busy = False
         self.history_page.emit(rows, returned >= limit, tag)
 
     @staticmethod

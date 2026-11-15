@@ -275,7 +275,6 @@ _SELF_BLOCK_TAGS = ("<ul", "<ol", "<table", "<hr", "<blockquote")
 _HEADING_RE = re.compile(r"^\s*<h([1-6])[^>]*>(.*)</h\1>\s*$", re.S | re.I)
 _HEADING_PX = {1: 20, 2: 18, 3: 16, 4: 15, 5: 14, 6: 14}
 _DETAILS_LABEL = "详情"
-LINK_COLOR = "#8ab4ff"
 # 折叠块层数上限。桌面端（`lib/markdown-html-depth.ts`）的规矩是「只数没闭合的开标签、到顶就把后面的 `<`
 # 转成可见文字」——上界管的是递归，不是内容：超了照样画出来、看得见，只是不再往里套折叠段。
 _DETAILS_MAX_DEPTH = 32
@@ -1040,7 +1039,6 @@ _NAMED_KEYS = {
     "Print": 0x2C, "Pause": 0x13,
 }
 _VK_TO_QT_NAME = {vk: name for name, vk in {**_OEM_KEYS, **_NAMED_KEYS}.items()}
-_VK_TO_QT_NAME[0x0D] = "Return"
 
 
 _HOLD_MAX_SECONDS = 120.0
@@ -1660,7 +1658,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._icon_registered: set[str] = set()
         self._fence_cache: dict[tuple[int, int], str] = {}
         self._image_seq = 0
-        self._clarify_gen = 0
         self._show_reasoning = True
         self._tool_progress = "all"
         self._provider_wait = ""
@@ -3997,7 +3994,6 @@ class ChatPanel(QtWidgets.QWidget):
         head = fold.head_block
         if head is not None and head.isValid():
             head.setVisible(False)
-        self._clarify_gen += 1
         card = ClarifyCard(questions, self.view.viewport())
         card.wheel_target = self.view
         card.picked.connect(self._on_card_pick)
@@ -4005,7 +4001,6 @@ class ChatPanel(QtWidgets.QWidget):
         card.skipped.connect(self._on_card_skip)
         self._folds.attach_widget(fold, card)
         self._clarify = {
-            "gen": self._clarify_gen,
             "request_id": str(payload.get("request_id") or ""),
             "fold": fold,
             "card": card,

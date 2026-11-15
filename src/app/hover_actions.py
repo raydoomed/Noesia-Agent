@@ -98,12 +98,6 @@ class HoverActionButton(QtWidgets.QToolButton):
     IDLE_COLOR = "#8b8492"
     HOVER_COLOR = "#f6dfea"
     DONE_COLOR = "#98c379"
-    BACKDROP_QSS = """
-QToolButton {
-    background: rgba(62, 47, 62, 245);
-    border-radius: 6px;
-}
-"""
 
     def __init__(
         self,
@@ -156,10 +150,6 @@ QToolButton {
         QtWidgets.QToolTip.hideText()
         self._reset.stop()
         self._back_to_idle()
-
-    def set_backdrop(self, on: bool) -> None:
-        """要不要垫一层底。摆进气泡里的那颗要——它压在最后一行字上，得把字尾盖住。"""
-        self.setStyleSheet(self.BACKDROP_QSS if on else "")
 
     def place_at(self, rect: QtCore.QRect, offset_x: int = 0, margin: int = 4) -> None:
         """贴在这块内容的右上角；`offset_x` 往左让位。"""
