@@ -7886,42 +7886,37 @@ class ChatPanel(QtWidgets.QWidget):
         if text:
             self._copy_to_clipboard(text)
 
+    def _rewind_to(self, user_msg: dict, text: str, refresh: bool) -> None:
+        """重跑这条提示：先确认，忙时排队，否则直接发 rewind。
+
+        刷新（`refresh=True`）只在后面确实还有问答时才问一句；重新发送一律先确认。
+        排队三元组的第三位就是 `refresh`，回来时照原样重放。
+        """
+        if (not refresh or self._rewind_later_users(user_msg) > 0) and not ConfirmDialog.ask(
+            self.window(),
+            "恢复到此检查点？",
+            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
+            "恢复并重新运行",
+        ):
+            return
+        if self._busy:
+            self._rewind_after_stop = (user_msg, text, refresh)
+            self._stop_turn()
+            return
+        self._emit_rewind(user_msg, text, refresh)
+
     def _refresh_message(self, msg: dict) -> None:
         """刷新：拿这条回答前面那句原话重跑；后面还有问答就先问一句再删。"""
         user_msg = self._previous_user(msg)
         if user_msg is None or user_msg.get("row_id") is None:
             return
-        if self._rewind_later_users(user_msg) > 0 and not ConfirmDialog.ask(
-            self.window(),
-            "恢复到此检查点？",
-            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
-            "恢复并重新运行",
-        ):
-            return
-        text = str(user_msg.get("text") or "")
-        if self._busy:
-            self._rewind_after_stop = (user_msg, text, True)
-            self._stop_turn()
-            return
-        self._emit_rewind(user_msg, text, True)
+        self._rewind_to(user_msg, str(user_msg.get("text") or ""), True)
 
     def _resend_message(self, msg: dict) -> None:
         """重新发送：从这条起把后面的删掉，按原话重跑。"""
         if msg.get("row_id") is None:
             return
-        if not ConfirmDialog.ask(
-            self.window(),
-            "恢复到此检查点？",
-            "此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。",
-            "恢复并重新运行",
-        ):
-            return
-        text = str(msg.get("text") or "")
-        if self._busy:
-            self._rewind_after_stop = (msg, text, False)
-            self._stop_turn()
-            return
-        self._emit_rewind(msg, text, False)
+        self._rewind_to(msg, str(msg.get("text") or ""), False)
 
     def _hide_hover(self) -> None:
         self._hide_elements()
