@@ -3031,7 +3031,9 @@ class ChatPanel(QtWidgets.QWidget):
             at = msg.get("at")
             label = time.strftime("%H:%M", time.localtime(at)) if isinstance(at, (int, float)) else ""
             if msg is now_msg:
+                # 最新那条的红点写「现在」：它是活的，写钟点反倒像已经过去了。
                 kind = "now"
+                label = "现在"
             else:
                 kind = "you" if msg.get("role") == "user" else "her"
             rows.append((block, label if label != shown else "", kind))
