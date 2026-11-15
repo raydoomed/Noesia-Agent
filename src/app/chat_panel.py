@@ -6868,6 +6868,11 @@ class ChatPanel(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._refit_user_lines)
         QtCore.QTimer.singleShot(0, self._place_msg_bars)
         QtCore.QTimer.singleShot(0, self._place_sticky)
+        # 拖窄时正文重排变长、滚动范围跟着变大，但滚动值一格没变，`valueChanged` 不发，
+        # 「跟着到底」整条链没人进：视口停在旧位置，底部被截、旧字还留在屏上（重影）。
+        if self._follow:
+            self._scroll_to_end()
+        self.view.viewport().update()
 
     def _refit_user_lines(self) -> None:
         """窗口宽度变了：只重截眼前这几条，其余滚到时再补（见 `_fit_visible_user_lines`）。"""
