@@ -262,8 +262,8 @@ class EngineWire(QtCore.QObject):
     session_ready = QtCore.Signal(dict)
     # 历史走 REST 分页：resume 只报条数（`defer_history` 回 `messages=[]`），界面按页取。
     history_count = QtCore.Signal(int)
-    history_page = QtCore.Signal(list, bool)
-    history_failed = QtCore.Signal(str)
+    history_page = QtCore.Signal(list, bool, str)
+    history_failed = QtCore.Signal(str, str)
     user_row_stamped = QtCore.Signal(int)
     sessions_listed = QtCore.Signal(list)
     config_value = QtCore.Signal(str, str)
@@ -342,8 +342,8 @@ class EngineWire(QtCore.QObject):
         self._onboarding_started = False
         self._stored_id = ""
         self._revision = 0
-        # 历史分页的游标：已经从服务端取回多少条。resume 一开窗就从 0 算。
-        self._history_offset = 0
+        # 已经有一页在路上了：顶上连着滚不重复发请。
+        self._history_busy = False
         self._generation = 0
         self._paused: dict | None = None
         self._paused_sending = False
@@ -476,7 +476,6 @@ class EngineWire(QtCore.QObject):
         self._stored_id = session_id or self._stored_id
         self._attaching = True
         self._attach_since = time.monotonic()
-        self._history_offset = 0
         self.reasoning_pending.emit(True)
         rid = self._call("session.resume", {"session_id": session_id, "source": SESSION_SOURCE,
                                             "omit_messages": True, "defer_history": True},
@@ -485,23 +484,37 @@ class EngineWire(QtCore.QObject):
             self._attaching = False
             self._attach_since = 0.0
 
-    def fetch_history(self, offset: int = 0) -> None:
+    def fetch_history(self, offset: int = 0, limit: int | None = None, tag: str = "older") -> None:
         """取一页历史（REST）：`offset` 从最新一条往前数，和桌面端 `getOlderSessionMessages` 同义。
 
         resume 不再背整份 transcript（`omit_messages`），历史由界面按页要——这样开窗成本跟
         会话多长无关，滚到顶再往前取。
+
+        `limit` 给 `None`/0 就取一整页（`HISTORY_PAGE`）；补洞时界面按「还差几条」给，
+        这里再夹到一整页以内——洞只有几条就不白取一整页。
+
+        `tag` 原样跟着这一页回来：`"older"` 是往上翻的下一页，`"fill"` 是补洞要的那一段。
+        界面上两条路要的处理完全不同（接在最前面 / 接在窗口尾巴上再判够没够到洞底），
+        靠位置猜不可靠，就让它自己说。
         """
         sid = self._session_id or self._stored_id
         base = str(getattr(self._link, "api_origin", "") or "")
         if not sid or not base:
-            self.history_failed.emit("引擎还没连上，历史没取到")
+            self._history_busy = False
+            self.history_failed.emit("引擎还没连上，历史没取到", tag)
             return
-        threading.Thread(target=self._fetch_history_job, args=(base, sid, int(offset)),
-                         name="history-page", daemon=True).start()
+        page = int(limit) if limit else 0
+        if page <= 0 or page > int(self.HISTORY_PAGE):
+            # 0/没给 = 一整页；要得比一整页多也按一整页来（页大小只在这里定）。
+            page = int(self.HISTORY_PAGE)
+        # 从发请到回页之间都算「在路上」：这期间顶上的滚动不再发请。
+        self._history_busy = True
+        threading.Thread(target=self._fetch_history_job, args=(base, sid, int(offset), page, tag),
+                         name=f"history-page-{tag}", daemon=True).start()
 
-    def _fetch_history_job(self, base: str, session_id: str, offset: int) -> None:
+    def _fetch_history_job(self, base: str, session_id: str, offset: int, page: int, tag: str) -> None:
         url = (f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
-               f"?limit={self.HISTORY_PAGE}&offset={offset}&order=latest&include_compacted=true")
+               f"?limit={int(page)}&offset={offset}&order=latest&include_compacted=true")
         try:
             ticket = self._link.native_http_ticket()
             headers = {"Accept": "application/json"}
@@ -513,20 +526,21 @@ class EngineWire(QtCore.QObject):
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001 — 取不到就报给界面，别把开窗卡在这儿
             code = getattr(exc, "code", "")
-            logger.warning("[历史] 第 %s 页没取到：%s", offset, exc)
+            logger.warning("[历史] 第 %s 页没取到（%s）：%s", offset, tag, exc)
+            self._history_busy = False
             self.history_failed.emit(
-                f"历史没取到：{type(exc).__name__}{f' {code}' if code else ''}"
+                f"历史没取到：{type(exc).__name__}{f' {code}' if code else ''}", tag
             )
             return
         raw = payload.get("messages") or []
         rows = self._page_rows(raw)
-        self._history_offset = offset + len(raw)
-        logger.info("[历史] 取回 offset=%s，%s 条", offset, len(rows))
-        self.history_page.emit(rows, len(raw) >= self.HISTORY_PAGE)
-
-    def fetch_next_history(self) -> None:
-        """再往前一页：`offset` 就是已经取回的条数（从最新一条往前数）。"""
-        self.fetch_history(self._history_offset)
+        pagination = payload.get("pagination") or {}
+        returned = int(pagination.get("returned") or len(raw))
+        limit = int(pagination.get("limit") or page)
+        logger.info("[历史] 取回 offset=%s（%s），%s 条", offset, tag, len(rows))
+        # 够不够一页由服务端说：回来的条数少于这一页的 limit，就是再往前没有了。
+        self._history_busy = False
+        self.history_page.emit(rows, returned >= limit, tag)
 
     @staticmethod
     def _page_rows(raw: list) -> list:

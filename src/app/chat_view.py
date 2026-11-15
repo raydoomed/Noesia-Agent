@@ -39,6 +39,8 @@ class ChatView(QtWidgets.QTextBrowser):
     """排字的那一层：装饰交给文档，位置交给排版。"""
 
     scrolled = QtCore.Signal()
+    # 已经贴着顶上还继续往上滚：这时滚动值不会再变，`scrolled` 不响，往上翻页只能靠这一声。
+    wheel_at_top = QtCore.Signal()
 
     BUBBLE_PAD_Y = BUBBLE_PAD_Y
     SCAFFOLD_IDLE = SCAFFOLD_IDLE
@@ -60,6 +62,12 @@ class ChatView(QtWidgets.QTextBrowser):
     def attach_folds(self, folds) -> None:
         """把折叠段登记表接进来：长内容要按它们占的空位摆。"""
         self._folds = folds
+
+    def wheelEvent(self, event: QtGui.QWheelEvent) -> None:  # noqa: N802
+        """贴着顶上往上滚时补发一声 `wheel_at_top`（滚动值不变，`scrolled` 不会来）。"""
+        if event.angleDelta().y() > 0 and self.verticalScrollBar().value() <= 0:
+            self.wheel_at_top.emit()
+        super().wheelEvent(event)
 
     def attach_rail(self, provider) -> None:
         """接上时间轴：`provider()` 给 [(开头块, 刻度字, 'you'|'her'|'now'), …]。"""

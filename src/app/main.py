@@ -1192,6 +1192,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.speech_stop_requested.connect(self._stop_voice)
             self.chat_panel.paused_discard_requested.connect(self._discard_paused_turn)
             self.chat_panel.history_more_requested.connect(self._fetch_more_history)
+            self.chat_panel.history_fill_requested.connect(self._fetch_fill_history)
             self.chat_panel.voice_mode_changed.connect(lambda _mode: self._voice_ok())
             self.speaker.preparing.connect(self.chat_panel.speech_preparing)
             panel = self.chat_panel
@@ -1964,10 +1965,14 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self.client is not None:
             self.client.fetch_history(0)
 
-    def on_history_page(self, rows: list, more: bool) -> None:
-        """引擎回了一页历史：第一页铺出来，之后的都接在更早的位置。"""
+    def on_history_page(self, rows: list, more: bool, tag: str = "older") -> None:
+        """引擎回了一页历史：`older` 是第一/下一页更早的，`fill` 是补洞要的那一段。"""
         panel = self.chat_panel
         if panel is None:
+            return
+        if tag == "fill":
+            panel.add_fill_page(rows)
+            say(f"[历史] 补洞取回 {len(rows)} 条")
             return
         if not self._history_initial_done:
             self._history_initial_done = True
@@ -1978,16 +1983,22 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         panel.add_history_page(rows, more)
         say(f"[历史] 补回更早的 {len(rows)} 条" + ("，还有更早的" if more else ""))
 
-    def on_history_failed(self, reason: str) -> None:
+    def on_history_failed(self, reason: str, tag: str = "older") -> None:
         """历史没取到：说一声，别让往上滚一直重试。"""
         self._history_initial_done = True
         if self.chat_panel is not None:
-            self.chat_panel.history_fetch_failed()
+            self.chat_panel.history_fetch_failed(tag)
             self.chat_panel.show_notice("history", reason, level="warn", ttl_ms=4000)
 
     def _fetch_more_history(self) -> None:
+        """再往前取一页更早的：从第几条要由窗口当场给（`older_offset`），引擎不另记游标。"""
+        if self.client is not None and self.chat_panel is not None:
+            self.client.fetch_history(self.chat_panel.older_offset())
+
+    def _fetch_fill_history(self, offset: int, limit: int) -> None:
+        """补洞：缺的那一段按界面算出来的 offset / 条数取，回来后走 `add_fill_page`。"""
         if self.client is not None:
-            self.client.fetch_next_history()
+            self.client.fetch_history(int(offset), int(limit), tag="fill")
 
     def on_user_row_stamped(self, row_id: int) -> None:
         """引擎回报这次提交落在历史的第几行：记在那条消息上，重新生成/编辑重发靠它定位。"""

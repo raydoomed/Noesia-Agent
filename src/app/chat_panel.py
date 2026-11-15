@@ -34,6 +34,7 @@ from app import (
 )
 from app.chat_view import ChatView
 from app.clarify_card import ClarifyCard
+from app.history_window import HistoryWindow, text_key
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap, svg_icon
 from app.approval_dialog import ConfirmDialog
 from app.photo_view import PhotoView
@@ -1469,6 +1470,9 @@ class ChatPanel(QtWidgets.QWidget):
     paused_discard_requested = QtCore.Signal()
     # 本地取回的历史画完了、服务端还有更早的：让引擎再取一页（REST）。
     history_more_requested = QtCore.Signal()
+    # 补洞：窗口和刚接上的那页之间缺了一段，按这个 offset（从最新一条往前数）、这个条数再取一页。
+    # 条数按「还差几条」给（`min(缺口, PAGE)`）：洞只有几条时别白取一整页回来再靠去重丢。
+    history_fill_requested = QtCore.Signal(int, int)
     voice_mode_changed = QtCore.Signal(str)
     voice_transcribe_requested = QtCore.Signal(str)
     voice_record_started = QtCore.Signal()
@@ -1584,14 +1588,40 @@ class ChatPanel(QtWidgets.QWidget):
         self._busy = False
         self._interrupted = False
         self._assistant_pending = ""
-        self._history_older: list = []
-        self._history_rendered: list = []
-        # 服务端还有没有更早的历史（判定用）：本地画完了就按页去取。
-        self._history_more = False
-        # 这一窗的历史是不是走分页铺起来的：不是的话，晚到的页一律丢掉（重连时别把同段重复接上）。
-        self._history_paged = False
-        self._history_loading = False
-        self._history_page_pending = False
+        self._window = HistoryWindow()
+        # 屏上画着的历史行数（窗口里的 item 数）：补页接进来几条，单子上的位置就整体挪几条。
+        self._window_painted = 0
+        # 开窗时并进窗口头的屏上行数：重铺时跳过这几条，别画第二遍。只活一拍（见 `_lay_history`）。
+        self._live_skip = 0
+        self._older_loading = False
+        self._older_pending = False
+        # 补洞：窗口和刚接上的那页之间缺的几段，每条 `[L, at]`——`L` 是缺口下面那一条的库行号，
+        # `at` 是缓冲页在屏上第几条。同一时间只补一条（`L` 降序），`_fill_base` 是它的临时量：
+        # 已经握在手上的、比 `L` 新的条数（补回来的几段），offset 就用它加缓冲页里比 `L` 新的条数。
+        self._holes: list[list[int]] = []
+        self._hole_at: int | None = None
+        self._fill_pending = False
+        self._fill_base = 0
+        # 这一轮补洞缺口的封口（缺段靠后那侧的行号）：整轮用这一个值，别每轮从窗口重新取。
+        self._hole_l: int | None = None
+        # 这一轮开始时缺口大概几条（只用来定「这一页要几条」）与已经补回来几条。
+        self._fill_gap = 0
+        self._fill_done = 0
+        # 这一轮补回来的几段（从旧到新攒着，够到 `L` 才和缓冲页一起拼上）。
+        self._fill_rows: list = []
+        # 上限裁掉的条数（丢的是最新那头）：裁过之后再来最新页时，判「接得上接不上窗口」要用它。
+        self._dropped_newest = 0
+        # 补洞期间又来了新的最新页：先压着，这一轮补完再走 `_merge_newest_page`。
+        self._refresh_pending: tuple | None = None
+        # 窗口变了但这一拍不能重铺（半截回答还在流、问题卡等着答）：记下当时要不要让回视野。
+        self._lay_pending: bool | None = None
+        # 动作条的摆放攒到这一轮事件过完再跑一次：铺一条消息就摆一次纯属白干（实测 240 条
+        # 重铺里真摆 240 次、排队 2098 次）。`_bars_dirty` 是「还有活没干」，`_bars_queued`
+        # 是「已经排在下一拍了」；flush 期间又被标脏就再排一拍，收敛为止。
+        self._bars_dirty = False
+        self._bars_queued = False
+        # 空段落一行的高度：同一份文档里所有动作条的空块同格式，量一次就够（见 `_mount_msg_bar`）。
+        self._bar_line_h = 0.0
         self._flush_timer = QtCore.QTimer(self)
         self._flush_timer.setSingleShot(True)
         self._flush_timer.setInterval(self.FLUSH_SLICE_MS)
@@ -1675,7 +1705,8 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.anchorClicked.connect(self._on_anchor)
         self.view.scrolled.connect(self._hide_hover)
         self.view.scrolled.connect(self._fit_visible_user_lines)
-        self.view.scrolled.connect(self._maybe_load_older_history)
+        self.view.scrolled.connect(self._maybe_page_older)
+        self.view.wheel_at_top.connect(self._page_in_older)
         self.view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.view.setViewportMargins(ChatView.RAIL_WIDTH, 0, 0, 0)
@@ -1721,6 +1752,9 @@ class ChatPanel(QtWidgets.QWidget):
         self._sticky: _StickyPrompt | None = None
         self._sticky_busy = False
         self._sticky_dirty = False
+        # 黏顶判据的缓存：`(滚动值, 带子高, 文档高, 视口高, 条数)` 没变就是同一个答案。
+        self._sticky_key: tuple | None = None
+        self._sticky_pick: dict | None = None
         self._band_freeze = False
         self._restoring = False
         self._diff_texts: dict[int, tuple[str | None, str]] = {}
@@ -2124,20 +2158,55 @@ class ChatPanel(QtWidgets.QWidget):
         `reason` 只进日志：窗口被清空时屏幕上东西都没了，事后只能靠这行日志判断是谁清的。
         """
         logger.info("[界面] 清空窗口（%s）", reason or "未说明")
+        self._clear_transcript()
+        self._window = HistoryWindow()
+        self._older_loading = False
+        self._older_pending = False
+        self._lay_pending = None
+        self._live_skip = 0
+        self._holes = []
+        self._hole_at = None
+        self._fill_pending = False
+        self._fill_base = 0
+        self._fill_gap = 0
+        self._fill_done = 0
+        self._hole_l = None
+        self._fill_rows = []
+        self._dropped_newest = 0
+        self._refresh_pending = None
+        self._fold_log = []
+        self._fold_entries = {}
+        self._rewind_waiting = False
+        self._rewind_after_stop = None
+        self._clarify = None
+        self._clear_queue()
+        self.stack.clear_all()
+        self.paused_bar.set_paused(None)
+        self._voice_orb.set_state(STATE_IDLE)
+        self._provider_wait = ""
+        self._interrupted = False
+        self._follow = True
+        self._sync_send_button()
+        self.speech_bar.dismiss()
+        self._hide_jump()
+
+    def _clear_transcript(self, reason: str = "") -> None:
+        """只清屏上的对话内容。
+
+        补页重铺走这里：队列、问题卡、语音、黏顶带都不该跟着动——那是面板的状态，
+        不是这一屏的字。`clear_conversation` 在这之上再清那些。
+        """
         self._destroy_msg_bars()
         self._destroy_elements()
         self._msgs = []
-        self._history_older = []
-        self._history_rendered = []
-        self._history_more = False
-        self._history_paged = False
+        self._window_painted = 0
+        # 字号/皮肤换了行高就变：下次挂动条重新量一次。
+        self._bar_line_h = 0.0
+        self._sticky_key = None
         self.view.clear()
         self._streaming = False
         self._row_stamp_pending = None
         self._stream_msg = None
-        self._rewind_waiting = False
-        self._rewind_after_stop = None
-        self._row_stamp_pending = None
         self._flush_timer.stop()
         self._reason_timer.stop()
         self._assistant_pending = ""
@@ -2155,17 +2224,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._state_text = ""
         self._reason_clock.stop()
         self._answer_shown = ""
-
         self._tool_folds = {}
-        self._clarify = None
-        self._clear_queue()
-        self.stack.clear_all()
-        self.paused_bar.set_paused(None)
-        self._voice_orb.set_state(STATE_IDLE)
         self._tool_started.clear()
         self._tool_clock.stop()
         self._spin_timer.stop()
-        self._provider_wait = ""
         self._folds.reset()
         self._diff_texts = {}
         self._tool_payloads = {}
@@ -2174,7 +2236,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._tool_detail_seen = {}
         self._delegate_cards = {}
         self._delegate_latest = ""
-        self._interrupted = False
         self._icon_registered.clear()
         self._photos.clear()
         self._photo_keys.clear()
@@ -2188,158 +2249,369 @@ class ChatPanel(QtWidgets.QWidget):
         self._review_pending = []
         self._bubble_has_text = False
         self._last_error_key = ""
-        self._follow = True
-        self._sync_send_button()
-        self.speech_bar.dismiss()
         self._hide_hover()
-        self._hide_jump()
 
     def has_transcript(self) -> bool:
-        """屏幕上有没有真东西（正文或工具行）。铺历史前用它判断要不要动这个窗口。"""
+        """屏幕上有没有真东西（正文或工具行）：开新会话时用它判断要不要清这个窗口。"""
         if self._folds.all():
             return True
         if self._streaming:
             return True
         return bool(self.view.toPlainText().strip())
 
-    # 一屏画多少：≤60 条的会话一次画全（真实内容实测 60 条约 200ms，开窗等得起）；
-    # 更长的先画最近 30 条（≈100ms），往上滚再按 30 条一段从已取回的那页里补。
-    # 取页粒度归引擎（`EngineWire.HISTORY_PAGE = 120`），界面只管画。
-    HISTORY_FULL = 60
-    HISTORY_RENDER_TICK = 30
-
     def set_history(self, messages, more: bool = False) -> None:
-        """界面打开：把引擎给的第一页历史铺出来（不是让用户去输入什么）。
+        """开窗/重连：把引擎给的最新一页装进窗口，屏上铺一遍，然后落到真底。
 
-        内容来自引擎的会话库，界面只负责显示。一页是服务端按 `offset` 取的最近 120 条，
-        这里只画其中够看的：≤`HISTORY_FULL` 条一次画全，更多就先画最近 `HISTORY_RENDER_TICK`
-        条、剩下的排进「还没画的那截」，往上滚再补（`load_older_history`）；本地画完了，
-        还有更早的就按页问引擎要（`history_more_requested`）。开窗成本因此只看这一段，
-        跟会话多长无关。
+        屏上已经有东西不算异常：`session.resume` 会先把最近几轮画上去，那几条并进窗口的
+        尾巴一起铺。以前这里见到屏上有字就直接 return，于是窗口一直是空的，往上滚永远
+        取不到更早的——分页整个是死的。
 
-        但这个窗口里已经铺了正文/工具行时**绝不能**重画：引擎的 `session.resume` 会在
-        开窗、重连、切模型之后陆续回来，一旦重画，刚显示出来的工具行（历史里没有它们，
-        历史只有 role/text）就整片消失——屏幕上只剩用户和回答，工具痕迹全没了。
+        重连时同一页会再来：`refresh` 靠行身份接上旧的尾巴，更早那截留着，既不铺两遍，
+        也不会把已经翻出来的历史丢掉。
         """
-        if self.has_transcript():
-            # 屏上已经有这一场的内容了：这一窗不归分页管，晚到的页要丢掉（否则重连会把同一段重复接上）。
-            self._history_paged = False
-            self._history_more = False
+        rows = self._history_items(messages)
+        self._older_loading = False
+        if not rows and not self._window.loaded:
             return
-        items = self._history_items(messages)
-        if len(items) <= self.HISTORY_FULL:
-            tail, older = items, []
+        was_at_bottom = self._follow or self._at_true_end()
+        if not self._window.loaded:
+            # 屏上那几条全都进了窗口（并进历史或接在尾巴），重铺时按条数跳过——它们已经在这批
+            # 行里了，再画一遍就是重影。
+            live = self._live_rows()
+            self._window.reset(rows, more, live)
+            self._live_skip = len(live)
+            self._dropped_newest = 0
+            self._holes = []
+            self._hole_at = None
+            self._lay_history(keep_position=not was_at_bottom)
+            return
+        if self._fill_pending:
+            # 这一轮补洞还没完：新的最新页先存着（不能当场 refresh，`_fill_base` 只有一个值）。
+            # 丢了它的话，这一轮补完屏上就少了最新那段。
+            self._refresh_pending = (rows, more)
+            return
+        self._merge_newest_page(rows, more, was_at_bottom)
+
+    def _merge_newest_page(self, rows, more: bool, was_at_bottom: bool) -> None:
+        """窗口已经有内容，又来了一页**最新**的（重连、切模型、压缩轮换）：三行判据。
+
+        判据只用行号答一个布尔：这页和窗口**相邻**还是**中间缺一段**。行号是大是小不拿来算条数
+        （期间新进来的那几条不在 `next_offset` 里，按 offset 空间推 `g` 会推成 0，
+        于是把「缺一段」误判成「有重叠」，交给 `refresh` 又一行都对不上，整段旧块就没了）。
+
+        * `page_min <= window_max`：两段有重叠（或首尾相接）→ 锚点拼接，更早那截留住；
+        * `page_min == window_max + 1`：严丝合缝接在尾巴上，**不记洞**；
+        * `page_min > window_max + 1`：中间有缺段 → 缓冲这一页，再补洞，补完一次拼接。
+
+        整页都比窗口更早（`page_max < window_min`）就忽略：那不是最新页，接进来只会把屏上内容换掉。
+        两边有一条没行号（全是助手行）时退回 offset 空间的旧判据，别把页丢了。
+        """
+        if not rows:
+            return
+        returned = len(rows)
+        window_min, window_max = self._window.row_id_bounds()
+        page_ids = [int(row["row_id"]) for row in rows if isinstance(row.get("row_id"), int)]
+        page_min = min(page_ids) if page_ids else None
+        page_max = max(page_ids) if page_ids else None
+        if (
+            page_max is not None
+            and window_min is not None
+            and page_max < window_min
+        ):
+            # 这页整体更早：不是最新那一页，接进来只会把屏上的换掉。
+            return
+        if page_min is not None and window_max is not None:
+            overlap = page_min <= window_max
+            adjacent = page_min == window_max + 1
+            gap = page_min > window_max + 1
         else:
-            tail, older = items[-self.HISTORY_RENDER_TICK:], items[: -self.HISTORY_RENDER_TICK]
-        self._history_loading = True
-        try:
-            self.clear_conversation("历史重铺")
-            # 新开窗：折叠卡单子跟着作废（这是上一段的痕迹，不是这一窗的）。
-            self._fold_log = []
-            self._fold_entries = {}
-            self._history_more = bool(more)
-            self._history_paged = True
-            self._history_older = older
-            self._history_rendered = list(tail)
-            self._paint_history(tail)
-        finally:
-            self._history_loading = False
-        self._follow = True
-        self._scroll_to_end()
+            # 没有行号可判（整页助手行 / 窗口里一条带号的都没有）：退回 offset 空间。
+            gap_start = int(self._window.next_offset) - int(self._window.hist_count)
+            overlap = returned > gap_start
+            adjacent = returned == gap_start
+            gap = returned < gap_start
+        if gap and self._dropped_newest:
+            # 上限裁过尾巴（丢的是最新那头），这一页又够不到窗口：当开窗重来。
+            # 硬接只会把最新那页拼在一段旧内容后面，中间那截正是我们自己丢掉的。
+            live = self._live_rows()
+            self._window.reset(rows, more, live)
+            self._dropped_newest = 0
+            self._holes = []
+            self._hole_at = None
+            self._live_skip = len(live)
+            self._lay_history(keep_position=not was_at_bottom)
+            return
+        if overlap:
+            before = len(self._window.items)
+            prefix = self._window.refresh(rows, more)
+            # 锚点之后那截被换掉了：那里的单子坐标不再对。整页原样（换了等于没换）就别动单子。
+            if len(self._window.items) - prefix != before - prefix:
+                self._trim_marks(prefix)
+            # refresh 不并屏上行：屏上那几条要么已被新页覆盖，要么原样留在窗口尾，天然不用跳。
+            self._live_skip = 0
+            self._dropped_newest = 0
+            # 窗口刚和最新那页对齐：旧洞的锚点是按旧窗口算的，一律作废（还缺就下一轮重新记）。
+            self._holes = []
+            self._hole_at = None
+            self._lay_history(keep_position=not was_at_bottom)
+            return
+        if adjacent:
+            fresh = self._append_newest_rows(rows)
+            self._live_skip = 0
+            if fresh:
+                self._lay_history(keep_position=not was_at_bottom)
+            self._window.older_available = bool(more) or self._window.older_available
+            return
+        # 中间缺一段：缓冲这一页，开始补洞（同一时间只补一条）。
+        self._refresh_pending = (rows, more)
+        self._begin_fill()
+
+    # ---------- 补洞 ----------
+
+    def _begin_fill(self) -> None:
+        """把缓冲着的那页接到窗口后面，然后从最新的缺口开始往回补。"""
+        pending = self._refresh_pending
+        if pending is None or self._fill_pending:
+            return
+        # `L` 是**缺段靠后那侧的封口**：缓冲页还没接进窗口，窗口最靠后那条就是它。
+        # 拿窗口最老那条（`bounds[0]`）当 L 就错了——那条是几页以前翻出来的，缺段根本不在它后面。
+        bounds = self._window.row_id_bounds()
+        hole_l = bounds[1]
+        if hole_l is None:
+            # 窗口里一条带行号的都没有：算不出缺口，直接接上（当一段新内容）。
+            rows, more = pending
+            self._refresh_pending = None
+            self._append_newest_rows(rows)
+            self._live_skip = 0
+            self._lay_history(keep_position=False)
+            return
+        self._hole_l = int(hole_l)
+        # `_fill_base`：已经握在手上的、比 L 新的条数（缓冲页 + 补回来的几段）。
+        # 只数带 `_hist` 的——按行号数会两头错（并进的用户行有号、助手行永远没有）。
+        self._fill_base = 0
+        self._fill_done = 0
+        # 缺口总数只是「这一页要几条」的提示：拿 L 和缓冲页最老那条的行号跨度估，估多不会估少
+        # （行号被删出空档时跨度比实际条数大），取回来少了会被服务端自己截短，多了也照样收敛。
+        buffer_ids = [
+            int(row["row_id"]) for row in pending[0] if isinstance(row.get("row_id"), int)
+        ]
+        self._fill_gap = max(0, min(buffer_ids) - self._hole_l - 1) if buffer_ids else 0
+        self._fill_rows = []
+        self._fill_pending = True
+        self._hole_at = self._window.hist_count
+        self._ask_fill_page()
+
+    def _ask_fill_page(self) -> None:
+        """按 `offset = base + 比 L 新的已有条数` 再要一段：不用 gap 推 offset。
+
+        兜底接上之后 `next_offset - 历史条数` 是「窗口缺的总数」，不是「离最新端还差几条」，
+        拿它推 offset 会转回来取同一块、一条新的都没有的死循环。
+
+        条数按「缺口 - 已经补回来几条」给：洞只有几条时就要几条，别白取一整页再靠去重丢。
+        缺口估不出来的（0 或负数）就按一整页要——宁可多取，不能少取。
+        """
+        if self._hole_l is None:
+            self._end_fill()
+            return
+        newer = int(self._fill_base)
+        for row in self._refresh_pending[0] if self._refresh_pending else ():
+            if isinstance(row.get("row_id"), int) and int(row["row_id"]) > int(self._hole_l):
+                newer += 1
+        limit = int(self._fill_gap) - int(self._fill_done)
+        # 给「还差几条」，夹到一整页以内由引擎做（页大小只在那一边定义，界面不复制这个数）。
+        self.history_fill_requested.emit(newer, limit if limit > 0 else 0)
+
+    def add_fill_page(self, messages) -> None:
+        """补洞回来的一段：接在窗口后面；够到 `L` 就一次拼接铺一遍，不够就再要一段。"""
+        if not self._fill_pending:
+            return
+        rows = self._history_items(messages)
+        hole_l = self._hole_l
+        if not rows:
+            self._finish_fill_failed()
+            return
+        ids = [int(row["row_id"]) for row in rows if isinstance(row.get("row_id"), int)]
+        # 判齐按「贴到 L 上」：`<= L + 1` 才算封口，`<= L` 会多要一页（那页全是窗口里已有的）。
+        if hole_l is not None and ids and min(ids) <= int(hole_l) + 1:
+            # 够到窗口最老那条了：窗口 + 补回这几段 + 缓冲页，一次拼好，铺一遍。
+            buffer_rows = list(self._refresh_pending[0]) if self._refresh_pending else []
+            more = bool(self._refresh_pending[1]) if self._refresh_pending else False
+            # 补回来的几段越补越旧：每段自己从旧到新，所以新段要接在最前面（攒的时候就前插）。
+            filled_rows = rows + self._fill_rows
+            self._refresh_pending = None
+            self._fill_rows = []
+            self._fill_pending = False
+            self._fill_base = 0
+            self._fill_done = 0
+            self._fill_gap = 0
+            self._holes = [h for h in self._holes if int(h[0]) != int(hole_l)]
+            self._hole_at = None
+            self._hole_l = None
+            self._append_newest_rows(filled_rows + buffer_rows)
+            self._window.older_available = more or self._window.older_available
+            self._live_skip = 0
+            self._lay_history(keep_position=False)
+            self._finish_refresh_pending()
+            return
+        # 还没够到：这一段攒起来（前插：越补越旧），基数记账，接着要下一段。
+        held = {text_key(row) for row in self._fill_rows}
+        fresh = [row for row in rows if text_key(row) not in held]
+        if not fresh:
+            # 这一段一条新的都没带来（服务端来回就那几行）：再来也是白转，收尾。
+            self._finish_fill_failed()
+            return
+        self._fill_rows = fresh + self._fill_rows
+        self._fill_base += len(fresh)
+        self._fill_done += len(fresh)
+        self._fill_pending = True
+        self._ask_fill_page()
+
+    def _finish_fill_failed(self) -> None:
+        """这一段没取到/没进展：整轮停下，缓冲页照样接上，缺口记进洞表等下次回底再补。
+
+        不在失败时当场重试、也不跳洞：上面还有洞没补完时，`count(比 L 新)` 必偏小，
+        取回来的是已有那段、零进展，跳过去只会把洞越攒越乱。
+        """
+        buffer_rows = list(self._refresh_pending[0]) if self._refresh_pending else []
+        more = bool(self._refresh_pending[1]) if self._refresh_pending else False
+        self._refresh_pending = None
+        self._fill_pending = False
+        self._fill_base = 0
+        self._fill_done = 0
+        self._fill_gap = 0
+        gathered = self._fill_rows + buffer_rows
+        self._fill_rows = []
+        hole_l = self._hole_l
+        self._hole_l = None
+        if gathered:
+            anchor = len(self._window.items)
+            self._append_newest_rows(gathered)
+            if hole_l is not None:
+                # 洞记在插入前那个位置上（`_append_newest_rows` 挪过锚点后的条目，这条是新的）。
+                self._holes.append([int(hole_l), int(anchor)])
+                self._hole_at = int(anchor) + len(gathered)
+            self._window.older_available = more or self._window.older_available
+            self._live_skip = 0
+            self._lay_history(keep_position=False)
+        self._finish_refresh_pending()
+
+    def _end_fill(self) -> None:
+        """这一轮补洞收尾：标志全放下，顺手把「正在取更早一页」也清掉。"""
+        self._fill_pending = False
+        self._fill_base = 0
+        self._fill_done = 0
+        self._fill_gap = 0
+        self._fill_rows = []
+        self._hole_l = None
+        self._older_loading = False
+
+    def _finish_refresh_pending(self) -> None:
+        """补洞期间压着的最新页：现在处理它。"""
+        pending = self._refresh_pending
+        if pending is None or self._fill_pending:
+            return
+        self._refresh_pending = None
+        self._older_loading = False
+        self._merge_newest_page(pending[0], bool(pending[1]), False)
 
     @staticmethod
     def _history_items(messages) -> list:
-        """引擎回来的行里挑出要画的：有正文、有工具名、或有思考段。"""
-        return [
-            item
-            for item in (messages or ())
-            if str(item.get("text") or "").strip()
-            or str(item.get("name") or "").strip()
-            or str(item.get("reasoning") or "").strip()
-        ]
+        """引擎回来的行里挑出要画的：有正文、有工具名、或有思考段。
+
+        每条打上 `_hist`：补洞/上限/页与页接缝全按这个标记数「手里已经有多少条历史」。
+        按行号数会两头错——`reset` 并进来的本场用户行带行号、助手行永远没有。
+        """
+        out = []
+        for item in messages or ():
+            if not (
+                str(item.get("text") or "").strip()
+                or str(item.get("name") or "").strip()
+                or str(item.get("reasoning") or "").strip()
+            ):
+                continue
+            row = dict(item)
+            row["_hist"] = True
+            out.append(row)
+        return out
 
     def add_history_page(self, messages, more: bool = False) -> None:
-        """引擎回过一页更早的历史（服务端按 `offset` 取的）：接到队列前面，接着补画一段。
+        """引擎回过一页更早的历史：接到窗口最前面，重铺一次并让回视野（`_lay_history`）。
 
-        界面不自己切页：`offset` 由引擎按「已取回几条」算，这里只把这一页排到更早的位置，
-        然后按 `HISTORY_RENDER_TICK` 往前画——滚一下补一段，不会一次把整页重排完。
+        页序、偏移、去重全在 `HistoryWindow` 里算：界面不切页、不认 offset，只把窗口里
+        这一批行铺出来。这一页要是一条新的都没有（offset 漂移），就把「还有更早的」收掉，
+        否则会在顶上一直问同一页。
+
+        单子（折叠卡位置）和洞表只跟着**前插的条数**挪：`len(rows) - 上次铺的条数` 里混着
+        裁尾丢掉的，用它挪单子会把位置算歪。
         """
-        items = self._history_items(messages)
-        self._history_loading = False
-        if not self._history_paged:
-            # 这一窗不是分页铺的（屏上已有内容）：晚到的页丢掉，别把同一段重复接上去。
+        self._older_loading = False
+        front_added = self._window.prepend(self._history_items(messages), more)
+        if not front_added:
             return
-        self._history_more = bool(more)
-        if not items:
+        self._shift_marks(front_added)
+        back_dropped = self._window.trim_newest(self.WINDOW_MAX)
+        if back_dropped:
+            self._dropped_newest += back_dropped
+            self._trim_marks(len(self._window.items))
+        self._lay_history(keep_position=True)
+
+    # ---------- 单子与洞表的坐标 ----------
+
+    def _shift_marks(self, front_added: int) -> None:
+        """前插了 `front_added` 条：折叠卡的位置、洞的锚点一起往后挪这么多。"""
+        if front_added <= 0:
             return
-        self._history_older = items + self._history_older
-        self.load_older_history()
+        for entry in self._fold_log:
+            entry["at"] = int(entry.get("at") or 0) + front_added
+        for hole in self._holes:
+            hole[1] = int(hole[1]) + front_added
+        if self._hole_at is not None:
+            self._hole_at = int(self._hole_at) + front_added
 
-    def load_older_history(self) -> None:
-        """翻到顶：往前补一页更早的消息，铺完把滚动位置按新增高度让回来。
+    def _trim_marks(self, rows_len: int) -> None:
+        """裁尾后窗口只剩 `rows_len` 条：坐标落在它之后的一律作废（只裁不移）。"""
+        rows_len = max(0, int(rows_len))
+        self._fold_log = [e for e in self._fold_log if int(e.get("at") or 0) < rows_len]
+        keep = {id(e) for e in self._fold_log}
+        self._fold_entries = {k: e for k, e in self._fold_entries.items() if id(e) in keep}
+        self._holes = [h for h in self._holes if int(h[1]) < rows_len]
+        if self._hole_at is not None and int(self._hole_at) >= rows_len:
+            self._hole_at = None
 
-        重铺的那份 = 这页更早的 + 开窗快照 + 屏上后加的。少了最后那截，你刚发的一问一答
-        会在补页这一拍里从屏上消失——引擎和库里都还在，只是没画回来。
+    def _insert_marks(self, anchor: int, added: int) -> None:
+        """在第 `anchor` 条之后插进 `added` 条（接尾/补洞拼上）：锚点之后的坐标一起往后让。
+
+        锚点固定用插入前窗口的条数（`+r`）——补回来的几段长度不齐，不能拿它反推。
         """
-        if self._restoring or self._history_loading:
+        if added <= 0:
             return
-        if not self._history_older:
-            # 本地取回的都画完了：再往前得问引擎要一页（服务端按 offset 取，界面不切片）。
-            if self._history_more:
-                self._history_loading = True
-                self.history_more_requested.emit()
-            return
-        if self._stream_msg is not None or self._clarify is not None:
-            # 流式回答还没落地、或者有个问题卡等你点：这拍不重画。重画会把半截回答画成成品、
-            # 把问题卡抹掉（引擎还等着那个回答，卡没了就再也答不了）。
-            self._history_page_pending = True
-            return
-        self._history_loading = True
-        more = self._history_more
-        try:
-            self._follow = False
-            take = self._history_older[-self.HISTORY_RENDER_TICK:]
-            older = self._history_older[: -self.HISTORY_RENDER_TICK]
-            rendered = take + self._history_rendered + self._live_rows()
-            layout = self.view.document().documentLayout()
-            old_height = layout.documentSize().height()
-            old_value = self.view.verticalScrollBar().value()
-            self._snapshot_fold_state()
-            self.clear_conversation("历史补页")
-            # 清窗会把这几个标记一起清掉：补页要的是同一场的继续，标记得原样带回来，
-            # 否则「服务端还有更早的」会被这一次重画抹成 false，往上滚就再也取不到了。
-            self._history_more = more
-            self._history_paged = True
-            self._follow = False
-            self._history_older = older
-            self._history_rendered = rendered
-            shifted = [
-                dict(entry, at=int(entry.get("at") or 0) + len(take)) for entry in self._fold_log
-            ]
-            self._paint_history(rendered, shifted)
-            for entry in self._fold_log:
-                entry["at"] = int(entry.get("at") or 0) + len(take)
-            QtCore.QTimer.singleShot(0, lambda: self._restore_scroll(old_height, old_value))
-            QtCore.QTimer.singleShot(0, self._ask_more_if_at_top)
-        finally:
-            self._history_loading = False
+        for entry in self._fold_log:
+            if int(entry.get("at") or 0) >= anchor:
+                entry["at"] = int(entry["at"]) + added
+        for hole in self._holes:
+            if int(hole[1]) >= anchor:
+                hole[1] = int(hole[1]) + added
+        if self._hole_at is not None and int(self._hole_at) >= anchor:
+            self._hole_at = int(self._hole_at) + added
 
-    def _ask_more_if_at_top(self) -> None:
-        """这一页画完了、人还停在顶：顺手把下一页要过来，别等他再滚一下。"""
-        bar = self.view.verticalScrollBar()
-        if (
-            not self._history_older
-            and self._history_more
-            and not self._history_loading
-            and not self._restoring
-            and bar.value() <= 0
-        ):
-            self._history_loading = True
-            self.history_more_requested.emit()
+    def _append_newest_rows(self, rows) -> int:
+        """接一页更晚的：窗口尾巴上接几条，锚点后的单子和洞跟着挪几条。"""
+        anchor = len(self._window.items)
+        fresh = self._window.append_newest(rows)
+        if fresh:
+            self._insert_marks(anchor, fresh)
+        return fresh
 
-    def history_fetch_failed(self) -> None:
-        """这一页没取到：把「正在取」的标记放下，别让往上滚卡在这一页。"""
-        self._history_loading = False
+    def history_fetch_failed(self, tag: str = "older") -> None:
+        """这一页没取到：放下「正在取」；补洞这一路还要把缓冲页接上、缺口记进洞表。
+
+        人在顶上不动，再往上滚会重试；补洞失败不跳洞、不立刻重试（`count(比 L 新)` 会偏小，
+        取回同一段、零进展）。
+        """
+        if tag == "fill":
+            self._finish_fill_failed()
+            return
+        self._older_loading = False
 
     def _live_rows(self) -> list[dict]:
         """屏上这些条里开窗快照没有的那部分：本场新发的，补页重铺时要连它一起带上。"""
@@ -2354,36 +2626,126 @@ class ChatPanel(QtWidgets.QWidget):
             if not msg.get("hist")
         ]
 
-    def _restore_scroll(self, old_height: float, old_value: int) -> None:
+    def _restore_view(self, old_height: float, old_value: int) -> None:
         """按新增高度把视野让回来：正在看的那行停在原位。
 
-        滚动值就是「内容区顶上是哪一行」：补页铺了多少高度就把值让多少，刚补出来的那页
-        正好顶到内容区顶、贴着带子下沿，跟补页前贴着带子下沿一致。这拍里带子若正好让位，
-        `_set_band` 的值补偿会把顶上的行裁进带子底下——恢复是有意重定位，不是无感换带，
-        这里的补偿冻住不认。
+        滚动值就是「内容区顶上是哪一行」：补页铺了多少高度就把值让多少。桌面端补页也是
+        这一条——`scrollTop = scrollHeight - restoreFromBottom`，补的是顶上，看的不动。
+        这拍里带子若正好让位，`_set_band` 的值补偿会把顶上的行裁进带子底下：恢复是有意
+        重定位，不是无感换带，这里的补偿冻住不认。
         """
         new_height = self.view.document().documentLayout().documentSize().height()
         bar = self.view.verticalScrollBar()
         frozen = self._band_freeze
+        outer_code = self._self_scroll
         self._band_freeze = True
+        self._self_scroll = True
         try:
             bar.setValue(int(old_value + (new_height - old_height)))
         finally:
             self._band_freeze = frozen
+            self._self_scroll = outer_code
 
-    def _maybe_load_older_history(self) -> None:
-        """滚到顶就往前补一页。"""
+    def _settle_bottom(self, attempt: int = 0) -> None:
+        """落到真底：插完字当拍排版还没落，`maximum()` 还是旧的，一次滚动到不了底。
+
+        到不了就下一拍接着来，最多几拍——「到底」只有一个判据：`value == maximum`。
+        桌面端 `requestScrollToBottom` 也是这套 settle，不是滚一次就当成了。
+        """
+        self._scroll_to_end()
+        bar = self.view.verticalScrollBar()
+        if bar.value() < bar.maximum() and attempt < 5:
+            QtCore.QTimer.singleShot(0, lambda: self._settle_bottom(attempt + 1))
+            return
+        self._follow = True
+        self._hide_jump()
+
+    def older_offset(self) -> int:
+        """取下一页更早的那页该从第几条要（从最新一条往前数）：窗口自己记着。
+
+        以前引擎那边另存一个 `_history_offset` 按 `offset + returned` 自己累加，界面和引擎
+        各记一份，两边一漂就重复取同一页。现在只有一个真源，取页时当场问窗口。
+        """
+        return int(self._window.next_offset)
+
+    def _page_in_older(self) -> None:
+        """到顶了：问引擎要下一页更早的（取回来的都画在屏上，本地没有可再露的）。
+
+        两个前提缺一不可：**人真的在顶上**（`value() <= 0`）、**没在跟随底**。
+        少了位置这一条，`_lay_history` 铺完的下一拍就会接着要下一页——用户一动不动，
+        一路自动翻到底（实测一次滚顶连要 6 页）。
+        """
+        if self._restoring or self._older_loading or not self._window.need_page:
+            return
+        if self._fill_pending:
+            # 补洞还没完：`_fill_base` 只有一个值，这拍再要一页更早的会把它算乱。
+            return
+        if self.view.verticalScrollBar().value() > 0 or self._follow:
+            return
+        if self._stream_msg is not None or self._clarify is not None:
+            # 半截回答没落地、或者问题卡等你点：这拍不重铺——重铺会把半截回答画成成品，
+            # 把问题卡抹掉（引擎还等着那个回答，卡没了就再也答不了）。等这一轮收尾再来。
+            self._older_pending = True
+            return
+        self._older_loading = True
+        self.history_more_requested.emit()
+
+    def _maybe_page_older(self) -> None:
+        """滚到顶就往前取一页。"""
         if self.view.verticalScrollBar().value() <= 0:
-            self.load_older_history()
+            self._page_in_older()
 
-    def _paint_history(self, items, folds=()) -> None:
-        """把一批历史消息按顺序铺出来；只管画，清窗与分页状态由调用方处理。
+    def _lay_history(self, keep_position: bool) -> None:
+        """把窗口里那批行重铺一遍——**唯一的重铺入口**。
 
-        铺下来的每条都记成「历史」：补页重铺时，历史那一截照快照来、后加的照屏幕来，
-        两边靠这个标记分，不会把同一场对话的尾巴丢掉或铺两遍。
+        `keep_position` 为真（往上翻着看）：铺完按新增高度把视野让回来，正在看的那行停在
+        原处；为假（开窗、回到屏底）：落到真底。折叠卡的位置是「铺到第几条」，顶上接进来
+        几条就整体挪几条，挪完照原位摆回去。
+        """
+        if self._restoring:
+            return
+        if self._stream_msg is not None or self._clarify is not None:
+            # 半截回答还在流、或者问题卡等你点：这拍不重铺——重铺会把半截回答画成成品，
+            # 把问题卡抹掉（引擎还等着那个回答，卡没了就再也答不了）。这一轮收尾时补铺。
+            self._lay_pending = bool(keep_position)
+            return
+        # 铺这一段要先把滚动范围清成 0/0：`_follow` 若在中间那一拍被翻成 True，铺完就会
+        # 自己拽到底。进门记下来、铺完还原；清屏到铺完之间 `_self_scroll` 也打开，中途的
+        # 滚动事件一律不算用户滚的。
+        was_follow = self._follow
+        rows = list(self._window.items)
+        # 开窗时并进窗口头的那几条已经在这批行里了：跳过它们，否则同一条画两遍。
+        # 只活这一拍——铺完屏上那几条就带 `hist`，下一次重铺再跳过就成了漏画。
+        skip = max(0, int(self._live_skip or 0))
+        self._live_skip = 0
+        live = self._live_rows()[skip:]
+        layout = self.view.document().documentLayout()
+        old_height = layout.documentSize().height()
+        old_value = self.view.verticalScrollBar().value()
+        self._snapshot_fold_state()
+        outer_code = self._self_scroll
+        self._self_scroll = True
+        try:
+            self._clear_transcript("历史重铺")
+            self._paint_history(rows, live)
+        finally:
+            self._self_scroll = outer_code
+        # 整篇重铺期间这两样一律没摆（位置每插一条就变一次）：铺完按真位置各摆一次。
+        self._place_sticky()
+        self._place_msg_bars()
+        if keep_position:
+            self._follow = was_follow
+            QtCore.QTimer.singleShot(0, lambda: self._restore_view(old_height, old_value))
+            QtCore.QTimer.singleShot(0, self._page_in_older)
+        else:
+            QtCore.QTimer.singleShot(0, self._settle_bottom)
 
-        `folds` 是这一场画过的折叠卡（工具行、思考段）和它们的位置（`at`＝当时已铺了几条）。
-        历史行里没有这些，重铺后必须按原位摆回去。
+    def _paint_history(self, items, live) -> None:
+        """把窗口里这批行铺出来，末尾接上本场新发的那几条，折叠卡按单子摆回原位。
+
+        历史行记成「历史」、后加的不记：下次重铺靠这个标记把两边分开，本场新发的既不会
+        被当成历史再画一遍，也不会丢。单子的位置是「铺到第几条」，所以摆卡和铺行共用一套
+        计数，补页把顶上接长之后照样对得上。
         """
         self._restoring = True
         # 旧卡都随清屏作废了：`id()` 会被后建的卡复用，登记表跟着清，免得记到别人名下。
@@ -2393,16 +2755,20 @@ class ChatPanel(QtWidgets.QWidget):
         was_replaying = self._replaying_fold
         self._replaying_fold = True
         try:
-            pending = sorted((dict(entry) for entry in folds), key=lambda e: int(e.get("at") or 0))
-            for item in items:
-                while pending and int(pending[0].get("at") or 0) <= len(self._msgs):
+            rows = list(items)
+            # 排序用单子里的原对象、不复制：`_replay_fold` 会把重画出来的卡重新挂到这条单子上，
+            # 后面追加的输出才写得回日志（复制一份的话，下一次重铺就只剩当初那截）。
+            pending = sorted(self._fold_log, key=lambda e: int(e.get("at") or 0))
+            for index, item in enumerate(rows + list(live)):
+                while pending and int(pending[0].get("at") or 0) <= index:
                     self._replay_fold(pending.pop(0))
                 before = len(self._msgs)
                 self._paint_history_item(item)
                 for msg in self._msgs[before:]:
-                    msg["hist"] = True
+                    msg["hist"] = index < len(rows)
             while pending:
                 self._replay_fold(pending.pop(0))
+            self._window_painted = len(rows)
         finally:
             self._replaying_fold = was_replaying
             self._restoring = False
@@ -2416,10 +2782,18 @@ class ChatPanel(QtWidgets.QWidget):
             return
         entry = self._fold_entries.get(id(fold))
         if entry is None:
-            entry = {"at": len(self._msgs), "kind": kind, "body": []}
+            entry = {"at": self._plan_mark(), "kind": kind, "body": []}
             self._fold_log.append(entry)
             self._fold_entries[id(fold)] = entry
         entry.update({key: value for key, value in fields.items() if value is not None})
+
+    def _plan_mark(self) -> int:
+        """单子的坐标：**屏上**铺到第几条（窗口里的历史行在前，本场新发的在后）。
+
+        用 `_window_painted` 而不是 `len(self._window.items)`：窗口可能已经接进来几条、这一拍
+        还没来得及重铺（半截回答在流），单子的坐标得跟着屏上那份走；重铺时按增量整体平移。
+        """
+        return self._window_painted + sum(1 for msg in self._msgs if not msg.get("hist"))
 
     def _note_line(self, markup: str) -> None:
         """记一行不进历史的灰字（状态/回顾/已停止/报错）：补页重铺时照原位补回来。
@@ -2428,7 +2802,7 @@ class ChatPanel(QtWidgets.QWidget):
         """
         if self._replaying_fold:
             return
-        self._fold_log.append({"at": len(self._msgs), "kind": "line", "html": markup})
+        self._fold_log.append({"at": self._plan_mark(), "kind": "line", "html": markup})
 
     def _note_fold_body(self, fold, chunk: str) -> None:
         """记一段正文：只有纯文本的卡（`show_tool` / 思考段）走这里。"""
@@ -2801,9 +3175,12 @@ class ChatPanel(QtWidgets.QWidget):
         self._assistant_pending = ""
         self._streaming = False
         self._stream_msg = None
-        if self._history_page_pending:
-            self._history_page_pending = False
-            self._maybe_load_older_history()
+        if self._lay_pending is not None:
+            keep, self._lay_pending = self._lay_pending, None
+            self._lay_history(keep_position=keep)
+        elif self._older_pending:
+            self._older_pending = False
+            self._page_in_older()
         pending, self._review_pending = self._review_pending, []
         for text in pending:
             self.append_review_summary(text)
@@ -4839,9 +5216,14 @@ class ChatPanel(QtWidgets.QWidget):
         return bar.value() >= bar.maximum() - 4 - self._trailing_bar_px()
 
     def _at_true_end(self) -> bool:
-        """真的滚到底了：一格都不剩，用户自己翻到这里才算数。"""
+        """真的滚到底了：一格都不剩，用户自己翻到这里才算数。
+
+        `maximum() == 0` 不算：清屏/重铺中间文档是空的，滚动范围塌成 0/0，这时候
+        `0 >= 0` 成立，会被当成「用户就在真底」，把 `_follow` 翻成 True——补页铺完就
+        自己拽到底了。空文档不是任何人的底部。
+        """
         bar = self.view.verticalScrollBar()
-        return bar.value() >= bar.maximum()
+        return bar.maximum() > 0 and bar.value() >= bar.maximum()
 
     def _trailing_bar_px(self) -> int:
         """文末动作条占的那截高（没有就是 0）。见 `_at_end`。
@@ -4943,9 +5325,9 @@ class ChatPanel(QtWidgets.QWidget):
             self._jump.hide()
 
     def _jump_to_end(self) -> None:
-        """点了就回最新那一行，并重新跟随新内容。"""
+        """点了就回最新那一行，并重新跟随新内容（判据是滚动条真到底，见 `_settle_bottom`）。"""
         self._follow = True
-        self._scroll_to_end_later()
+        QtCore.QTimer.singleShot(0, self._settle_bottom)
         self._hide_jump()
 
     def _user_scroll_now(self, *_args) -> None:
@@ -5029,36 +5411,38 @@ class ChatPanel(QtWidgets.QWidget):
         pad = self.FRAME_PAD + _StickyPrompt.EDGE_PX
         return stick + line + 2 * pad + MSG_GAP
 
-    def _sticky_target(self) -> tuple[dict | None, float]:
-        """该钉哪一条：`(这一条, 这一轮底边在视口里的位置)`，没有就是 `(None, 0.0)`。
+    def _sticky_target(self) -> dict | None:
+        """该钉哪一条；没有就是 `None`。
 
-        判据照桌面端 `use-sticky-prompt-clip` 抄：气泡顶翻过 `视口顶 + stickyTop + 1px`
-        这条线、且这一轮还没翻出窗口顶（`promptRect.bottom > viewportTop`）才候选，
-        文档序靠后那条接手（activePrompt 取 FOLLOWING）。桌面端的提示词是 sticky 的，
-        钉住后 rect.top 恒等于钉线、rect.bottom 跟着这一轮的底边走；这边段框不能真
-        sticky，就用「框外沿顶 ≤ 钉线」加「这一轮底边 > 0」两件事等价地判，从新到旧
-        走到头一个候选即止。
+        判据照桌面端 `use-sticky-prompt-clip` + `user-message.tsx` 里 `group/user-message sticky`
+        那一套：提问气泡是**粘在它那一轮里的**，只要这一轮还占着视口就钉在顶上。判「这一轮还在
+        不在视口里」要看**再新一条提问的气泡顶**（一轮的底下一条提问），不能看这个气泡自己的
+        底边——本轮性能改写把前者换成了后者，长回答（尤其回答还在流时）一滚出去就判 None，
+        顶上那条整条消失。这一轮怎么算只跟「气泡顶翻过钉线」有关，所以这里就只判这一件事，
+        文档序靠后那条接手。
+
+        从**视口顶上那一块**反查是哪条消息、再往上走，而不是从最新那条倒着扫一遍：
+        整场扫一遍在 480 条重铺里被叫 2132 次、走了 51 万次框查询，占掉 settle 三秒。
+        往上走最多碰到一轮里的几十块，只有碰到用户气泡才量框。
         """
         layout = self.view.document().documentLayout()
         offset = float(self.view.verticalScrollBar().value())
         margin_top = float(self.view.viewportMargins().top())
         stick = float(int(round(self.view.document().documentMargin())))
         pin_line = stick + 1.0
-        later = float(self.view.document().size().height())
-        for msg in reversed(self._msgs):
-            if msg.get("role") != "user":
-                continue
-            head = msg.get("head_block")
-            frame = msg.get("frame")
-            if head is None or not head.isValid() or frame is None:
-                continue
-            fmt = frame.frameFormat()
-            border_top = layout.frameBoundingRect(frame).top() + float(fmt.topMargin())
-            turn_end = later - offset + margin_top
-            if border_top - offset + margin_top <= pin_line and turn_end > 0:
-                return msg, turn_end
-            later = border_top
-        return None, 0.0
+        # 视口顶在文档坐标里的位置：滑过的部分是 offset，黏顶带占的是 margin_top。
+        top_y = offset - margin_top
+        block = self.view.cursorForPosition(QtCore.QPoint(2, 2)).block()
+        while block.isValid():
+            msg = self._msg_of_block(block)
+            frame = msg.get("frame") if msg is not None else None
+            if msg is not None and msg.get("role") == "user" and frame is not None:
+                box = layout.frameBoundingRect(frame)
+                border_top = box.top() + float(frame.frameFormat().topMargin())
+                if border_top <= top_y + pin_line:
+                    return msg
+            block = block.previous()
+        return None
 
     def _place_sticky(self) -> None:
         """顶上那条：重算一遍钉没钉住（带子高度固定，钉住时只换显示哪一条）。
@@ -5068,6 +5452,11 @@ class ChatPanel(QtWidgets.QWidget):
         重算里自己改滚动值引发的嵌套调用只记脏，值由外层这一次补回去。
         """
         if self._sticky_busy:
+            self._sticky_dirty = True
+            return
+        if self._restoring:
+            # 重铺期间不钉：这一屏的字正在重画，算出来的位置一会儿就全变。铺完
+            # `_lay_history` 会叫一次，那时才是真位置。
             self._sticky_dirty = True
             return
         self._sticky_busy = True
@@ -5083,10 +5472,21 @@ class ChatPanel(QtWidgets.QWidget):
     def _place_sticky_once(self) -> None:
         px = self._sticky_px()
         target = None
-        bottom = 0.0
         if self.view.height() - px >= 80:
-            target, bottom = self._sticky_target()
-        strip = max(0, min(px, int(bottom))) if target is not None else 0
+            # 同一拍里滚动值、带子高、文档高都没动，就是同一个答案：`_sticky_target` 要从视口
+            # 顶上反查块（`cursorForPosition` 在长文档上一次 0.26ms），重算一遍纯属白干。
+            key = (
+                self.view.verticalScrollBar().value(),
+                self.view.viewportMargins().top(),
+                int(self.view.document().size().height()),
+                self.view.viewport().height(),
+                len(self._msgs),
+            )
+            if key != self._sticky_key:
+                self._sticky_key = key
+                self._sticky_pick = self._sticky_target()
+            target = self._sticky_pick
+        strip = max(0, int(px)) if target is not None else 0
         self._set_band(strip)
         if target is None:
             if self._sticky is not None:
@@ -5255,10 +5655,12 @@ class ChatPanel(QtWidgets.QWidget):
         if not (self._busy or self._streaming or self._assistant_pending or self._tool_started):
             return
         already_stopped = self._interrupted
+        # 先收掉问题卡再收尾这一轮：`end_assistant` 会顺手补上等着的更早一页，
+        # 那时卡还挂着的话这页又会被推回 pending，下一轮才开始前都不再补了。
+        self._clarify = None
         if self._streaming:
             self.end_assistant()
         self._interrupted = True
-        self._clarify = None
         self._settle_running_tools("已停止")
         if already_stopped:
             return
@@ -5308,8 +5710,8 @@ class ChatPanel(QtWidgets.QWidget):
             return
         if self._interrupted:
             return
-        self._interrupted = True
         self._clarify = None
+        self._interrupted = True
         if self._streaming:
             self.end_assistant()
         self.set_provider_wait("")
@@ -6937,12 +7339,27 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _truncate_from(self, msg: dict) -> None:
         """把这个窗口从某条消息起的内容抹掉（引擎侧已经截断，界面跟上）。"""
+        if isinstance(msg.get("row_id"), int):
+            self._window.drop_from_row(int(msg["row_id"]))
         self._destroy_msg_bars(msg)
         self._destroy_elements()
         for index, item in enumerate(self._msgs):
             if item is msg:
                 self._msgs = self._msgs[:index]
                 break
+        # 屏上的历史行少了：窗口里补页的坐标跟着退回来，被抹掉那几轮的单子（工具行、灰字）
+        # 也一起作废——重铺时它们不该再出现。
+        self._window_painted = sum(1 for item in self._msgs if item.get("hist"))
+        # 屏上少了几条，开窗那拍的「跳过几条」跟着夹回来（截断前记的数可能已经超过现在的屏上行数）。
+        self._live_skip = min(int(self._live_skip or 0), len(self._live_rows()))
+        cut = self._plan_mark()
+        kept = [entry for entry in self._fold_log if int(entry.get("at") or 0) <= cut]
+        if len(kept) != len(self._fold_log):
+            alive = {id(entry) for entry in kept}
+            self._fold_log = kept
+            self._fold_entries = {
+                key: entry for key, entry in self._fold_entries.items() if id(entry) in alive
+            }
         mark = msg.get("mark")
         document = self.view.document()
         target = None
@@ -7067,6 +7484,9 @@ class ChatPanel(QtWidgets.QWidget):
         button.show()
         button.raise_()
 
+    # 窗口最多留多少条历史：再往上翻就把**最新那头**丢掉（人在顶上读的是最旧那端）。
+    # 600 条是实测出来的：480 条整篇重铺 0.72s，600 条还在一秒内，再多就明显拖手。
+    WINDOW_MAX = 600
     BAR_PX = 24
     BAR_GAP = 8
 
@@ -7075,19 +7495,17 @@ class ChatPanel(QtWidgets.QWidget):
 
         桌面端把按钮条写在气泡里、靠排版占位；这里同样插一个空段落把动作条那一段占住，
         按钮贴着这一块摆——位置由排版给，不用再去算「最后一行在哪」。
+
+        这里只记「该摆哪几个按钮」（`bar_specs`），控件等鼠标真的落到这条上才建
+        （`_ensure_msg_bar`）：整篇重铺时 480 条各建两个按钮，建完一次都没露脸过。
         """
         if msg.get("role") == "user":
-            if "bar_buttons" in msg:
+            if "bar_specs" in msg:
                 return
-            buttons = [
-                HoverActionButton(self.view.viewport(), icon, tip, slot)
-                for icon, tip, slot in self._bar_specs(msg)
-            ]
-            msg["bar_buttons"] = buttons
+            msg["bar_specs"] = self._bar_specs(msg)
+            msg["bar_buttons"] = []
             msg["bar_block"] = None
-            self._bar_buttons.extend(buttons)
             self._show_msg_bar(None)
-            self._place_msg_bars()
             return
         if msg.get("bar_block") is not None:
             return
@@ -7099,20 +7517,36 @@ class ChatPanel(QtWidgets.QWidget):
         cursor.insertBlock(fmt)
         block = cursor.block()
         block.setUserData(_BarMark(msg))
-        line = self.view.document().documentLayout().blockBoundingRect(block).height()
+        line = self._bar_line_h
+        if line <= 0:
+            # 空段落一行的高度：同一份文档里所有动作条的空块同格式同样高，量一次就够——
+            # 每挂一条都量一次，整篇重铺时光这一句就是几百次排版查询。
+            line = self.view.document().documentLayout().blockBoundingRect(block).height()
+            self._bar_line_h = line
         fmt.setBottomMargin(max(0.0, self.BAR_PX - line) + self.BAR_GAP)
         cursor.setBlockFormat(fmt)
         msg["bar_block"] = block
+        msg["bar_specs"] = self._bar_specs(msg)
+        msg["bar_buttons"] = []
+        self._show_msg_bar(None)
+        if (self._follow or self._at_end()) and not self._restoring:
+            self._scroll_to_end_later()
+
+    def _ensure_msg_bar(self, msg: dict) -> list:
+        """鼠标落到这条上了：这一刻才把按钮建出来，位置照样由排版给。"""
+        buttons = msg.get("bar_buttons") or []
+        if buttons:
+            return buttons
+        specs = msg.get("bar_specs")
+        if not specs:
+            return []
         buttons = [
             HoverActionButton(self.view.viewport(), icon, tip, slot)
-            for icon, tip, slot in self._bar_specs(msg)
+            for icon, tip, slot in specs
         ]
         msg["bar_buttons"] = buttons
         self._bar_buttons.extend(buttons)
-        self._show_msg_bar(None)
-        self._place_msg_bars()
-        if (self._follow or self._at_end()) and not self._restoring:
-            self._scroll_to_end_later()
+        return buttons
 
     def _bar_specs(self, msg: dict) -> list[tuple[str, str, Callable[[], None]]]:
         """一条回答上摆「复制 + 刷新」，你发的那条摆「复制 + 重新发送」。"""
@@ -7127,6 +7561,31 @@ class ChatPanel(QtWidgets.QWidget):
         ]
 
     def _place_msg_bars(self) -> None:
+        """请求摆一次动作条（入口）：同一拍里叫多少次都攒成一次。
+
+        铺一条消息就叫一次的话，整篇重铺时这条会跑上千次（`rangeChanged`、`valueChanged`、
+        每次挂条都会叫），每次都要问一遍可见块。这里只标脏 + 排一拍，真正干活的是
+        `_flush_msg_bars`；flush 期间又被标脏（带子让位挪了视口、又插了一条）就再排一拍。
+        """
+        self._bars_dirty = True
+        if self._bars_queued or self._restoring:
+            # 重铺期间不摆：位置一会儿就全变，铺完 `_lay_history` 会叫一次。
+            return
+        self._bars_queued = True
+        QtCore.QTimer.singleShot(0, self._flush_msg_bars)
+
+    def _flush_msg_bars(self) -> None:
+        self._bars_queued = False
+        if self._restoring:
+            return
+        self._bars_dirty = False
+        try:
+            self._place_msg_bars_now()
+        finally:
+            if self._bars_dirty:
+                self._place_msg_bars()
+
+    def _place_msg_bars_now(self) -> None:
         """按钮贴着各自那条消息的动作块：只摆眼前这几块。
 
         光标问出可见块之后，谁带消息标记就摆谁——不再拿整张消息表去对位置。
@@ -7287,18 +7746,24 @@ class ChatPanel(QtWidgets.QWidget):
         return None
 
     def _show_msg_bar(self, msg: dict | None) -> None:
-        """只亮鼠标所在那条的动作条，其余收起来。"""
+        """只亮鼠标所在那条的动作条，其余收起来（按钮也是这一刻才建，见 `_mount_msg_bar`）。"""
         if msg is self._bar_msg:
             return
         self._bar_msg = msg
         for item in self._msgs:
-            for button in item.get("bar_buttons") or []:
-                if item is msg:
+            if item is msg:
+                for button in self._ensure_msg_bar(item):
                     button.show()
                     button.raise_()
-                else:
-                    button.hide()
-        self._place_msg_bars()
+                continue
+            for button in item.get("bar_buttons") or []:
+                button.hide()
+        if msg is not None:
+            # 鼠标正指着：立刻摆到位。排到下一拍的话，这一帧按钮会先在老位置闪一下。
+            if self._restoring:
+                self._place_msg_bars()
+            else:
+                self._place_msg_bars_now()
 
     def _drop_msg_bar(self, msg: dict) -> None:
         for button in msg.get("bar_buttons") or []:
@@ -7306,6 +7771,7 @@ class ChatPanel(QtWidgets.QWidget):
             button.deleteLater()
         msg.pop("bar_buttons", None)
         msg.pop("bar_block", None)
+        msg.pop("bar_specs", None)
         self._bar_buttons = [b for item in self._msgs for b in (item.get("bar_buttons") or [])]
         self._bar_msg = None
 
