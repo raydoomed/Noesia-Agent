@@ -14,8 +14,8 @@ using System.Windows.Forms;
 [assembly: AssemblyProduct("Noesia")]
 [assembly: AssemblyDescription("Noesia 桌面数字人")]
 [assembly: AssemblyCompany("Noesia")]
-[assembly: AssemblyVersion("0.4.10.0")]
-[assembly: AssemblyFileVersion("0.4.10.0")]
+[assembly: AssemblyVersion("0.4.11.0")]
+[assembly: AssemblyFileVersion("0.4.11.0")]
 
 internal static class Launcher
 {
