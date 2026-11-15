@@ -158,6 +158,48 @@ class HistoryWindow:
             self.items = self.items + fresh
         return len(fresh)
 
+    def graft(self, rows) -> tuple[int, int]:
+        """把补回来的几条插进窗口**中间**它们该在的地方（按行号），返回 `(插进几条, 头一条落在第几位)`。
+
+        补洞跟接页方向相反：窗口新旧两头都在手上，缺的是中间那一段。按行号归位；本场新发、
+        没有行号的那几条留在尾巴上不动。`next_offset` 不动——它数的是「比窗口最老那条更新的
+        行有多少」，往中间插几条不改变这个数。
+
+        返回的位次是**插入前**的计数（单子和洞的坐标都按那一套记）。
+        """
+        fresh: list[dict] = []
+        seen = {row_key(item) for item in self.items}
+        for row in rows or ():
+            if not isinstance(row.get("row_id"), int):
+                continue
+            key = row_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            fresh.append(row)
+        if not fresh:
+            return 0, 0
+        fresh.sort(key=lambda row: int(row["row_id"]))
+        merged: list[dict] = []
+        pending = list(fresh)
+        anchor: int | None = None
+        old_seen = 0
+        for item in self.items:
+            row_id = item.get("row_id")
+            if isinstance(row_id, int):
+                while pending and int(pending[0]["row_id"]) < int(row_id):
+                    if anchor is None:
+                        anchor = old_seen
+                    merged.append(pending.pop(0))
+            merged.append(item)
+            old_seen += 1
+        if pending:
+            if anchor is None:
+                anchor = old_seen
+            merged.extend(pending)
+        self.items = merged
+        return len(fresh), int(anchor or 0)
+
     def trim_newest(self, keep: int) -> int:
         """上限：条数超了就从**最新那头**丢（人在顶上读的是最旧那端），返回丢了几条。
 

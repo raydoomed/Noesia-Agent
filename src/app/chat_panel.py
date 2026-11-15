@@ -1596,17 +1596,17 @@ class ChatPanel(QtWidgets.QWidget):
         self._older_loading = False
         self._older_pending = False
         # 补洞：窗口和刚接上的那页之间缺的几段，每条 `[L, at]`——`L` 是缺口下面那一条的库行号，
-        # `at` 是缓冲页在屏上第几条。同一时间只补一条（`L` 降序），`_fill_base` 是它的临时量：
-        # 已经握在手上的、比 `L` 新的条数（补回来的几段），offset 就用它加缓冲页里比 `L` 新的条数。
+        # `at` 是缺段上方那一段在屏上第几条。同一时间只补一条（先补 `L` 最大的，见 `_maybe_heal_hole`）。
         self._holes: list[list[int]] = []
-        self._hole_at: int | None = None
         self._fill_pending = False
-        self._fill_base = 0
+        # 这一轮补的是「回到屏底才补的洞」而不是接页时顺手补的缺口（两条路插的位置不同）。
+        self._fill_heal = False
+        # 这趟回底已经试过的 `L`：试过没成才留下洞，落底那一拍不许立刻重发同一个请求。
+        self._heal_blocked: set[int] = set()
         # 这一轮补洞缺口的封口（缺段靠后那侧的行号）：整轮用这一个值，别每轮从窗口重新取。
         self._hole_l: int | None = None
-        # 这一轮开始时缺口大概几条（只用来定「这一页要几条」）与已经补回来几条。
+        # 这一轮开始时缺口大概几条（只用来定「这一页要几条」）。
         self._fill_gap = 0
-        self._fill_done = 0
         # 这一轮补回来的几段（从旧到新攒着，够到 `L` 才和缓冲页一起拼上）。
         self._fill_rows: list = []
         # 上限裁掉的条数（丢的是最新那头）：裁过之后再来最新页时，判「接得上接不上窗口」要用它。
@@ -2165,11 +2165,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._lay_pending = None
         self._live_skip = 0
         self._holes = []
-        self._hole_at = None
         self._fill_pending = False
-        self._fill_base = 0
+        self._fill_heal = False
+        self._heal_blocked.clear()
         self._fill_gap = 0
-        self._fill_done = 0
         self._hole_l = None
         self._fill_rows = []
         self._dropped_newest = 0
@@ -2282,11 +2281,11 @@ class ChatPanel(QtWidgets.QWidget):
             self._live_skip = len(live)
             self._dropped_newest = 0
             self._holes = []
-            self._hole_at = None
+            self._heal_blocked.clear()
             self._lay_history(keep_position=not was_at_bottom)
             return
         if self._fill_pending:
-            # 这一轮补洞还没完：新的最新页先存着（不能当场 refresh，`_fill_base` 只有一个值）。
+            # 这一轮补洞还没完：新的最新页先存着（不能当场 refresh，这一轮的 offset 和封口都是按当前窗口算的）。
             # 丢了它的话，这一轮补完屏上就少了最新那段。
             self._refresh_pending = (rows, more)
             return
@@ -2337,7 +2336,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._window.reset(rows, more, live)
             self._dropped_newest = 0
             self._holes = []
-            self._hole_at = None
+            self._heal_blocked.clear()
             self._live_skip = len(live)
             self._lay_history(keep_position=not was_at_bottom)
             return
@@ -2352,7 +2351,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._dropped_newest = 0
             # 窗口刚和最新那页对齐：旧洞的锚点是按旧窗口算的，一律作废（还缺就下一轮重新记）。
             self._holes = []
-            self._hole_at = None
+            self._heal_blocked.clear()
             self._lay_history(keep_position=not was_at_bottom)
             return
         if adjacent:
@@ -2386,10 +2385,7 @@ class ChatPanel(QtWidgets.QWidget):
             self._lay_history(keep_position=False)
             return
         self._hole_l = int(hole_l)
-        # `_fill_base`：已经握在手上的、比 L 新的条数（缓冲页 + 补回来的几段）。
-        # 只数带 `_hist` 的——按行号数会两头错（并进的用户行有号、助手行永远没有）。
-        self._fill_base = 0
-        self._fill_done = 0
+        self._fill_heal = False
         # 缺口总数只是「这一页要几条」的提示：拿 L 和缓冲页最老那条的行号跨度估，估多不会估少
         # （行号被删出空档时跨度比实际条数大），取回来少了会被服务端自己截短，多了也照样收敛。
         buffer_ids = [
@@ -2398,7 +2394,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._fill_gap = max(0, min(buffer_ids) - self._hole_l - 1) if buffer_ids else 0
         self._fill_rows = []
         self._fill_pending = True
-        self._hole_at = self._window.hist_count
         self._ask_fill_page()
 
     def _ask_fill_page(self) -> None:
@@ -2413,23 +2408,45 @@ class ChatPanel(QtWidgets.QWidget):
         if self._hole_l is None:
             self._end_fill()
             return
-        newer = int(self._fill_base)
-        for row in self._refresh_pending[0] if self._refresh_pending else ():
-            if isinstance(row.get("row_id"), int) and int(row["row_id"]) > int(self._hole_l):
-                newer += 1
-        limit = int(self._fill_gap) - int(self._fill_done)
+        newer = self._newer_than_hole(int(self._hole_l))
+        limit = int(self._fill_gap) - len(self._fill_rows)
         # 给「还差几条」，夹到一整页以内由引擎做（页大小只在那一边定义，界面不复制这个数）。
         self.history_fill_requested.emit(newer, limit if limit > 0 else 0)
 
+    def _newer_than_hole(self, hole_l: int) -> int:
+        """手上握着的、比 `L` 新的条数——补洞要的 offset 就是这个数。
+
+        接页时握着的是「补回来的几段 + 缓冲那一页」，窗口里条条都不比 L 新；补洞时窗口
+        自己就带着 L 往上那一整段，于是这里要连窗口一起数——两种情形同一套算法。
+        只数带 `_hist` 的：并进窗口的用户行有行号但服务端那边当新消息发过，数进去 offset 就偏大。
+        """
+        newer = len(self._fill_rows)
+        for item in self._window.items:
+            row_id = item.get("row_id")
+            if item.get("_hist") and isinstance(row_id, int) and int(row_id) > hole_l:
+                newer += 1
+        for row in self._refresh_pending[0] if self._refresh_pending else ():
+            row_id = row.get("row_id")
+            if isinstance(row_id, int) and int(row_id) > hole_l:
+                newer += 1
+        return newer
+
     def add_fill_page(self, messages) -> None:
-        """补洞回来的一段：接在窗口后面；够到 `L` 就一次拼接铺一遍，不够就再要一段。"""
+        """补洞回来的一段：接在窗口后面；够到 `L` 就一次拼接铺一遍，不够就再要一段。
+
+        回底自动补洞走的是另一条路（`_add_heal_page`）：窗口新旧两头都在手上，补回来的几段
+        插在中间，不是接在尾巴上。
+        """
         if not self._fill_pending:
             return
         rows = self._history_items(messages)
-        hole_l = self._hole_l
         if not rows:
             self._finish_fill_failed()
             return
+        if self._fill_heal:
+            self._add_heal_page(rows)
+            return
+        hole_l = self._hole_l
         ids = [int(row["row_id"]) for row in rows if isinstance(row.get("row_id"), int)]
         # 判齐按「贴到 L 上」：`<= L + 1` 才算封口，`<= L` 会多要一页（那页全是窗口里已有的）。
         if hole_l is not None and ids and min(ids) <= int(hole_l) + 1:
@@ -2441,11 +2458,8 @@ class ChatPanel(QtWidgets.QWidget):
             self._refresh_pending = None
             self._fill_rows = []
             self._fill_pending = False
-            self._fill_base = 0
-            self._fill_done = 0
             self._fill_gap = 0
             self._holes = [h for h in self._holes if int(h[0]) != int(hole_l)]
-            self._hole_at = None
             self._hole_l = None
             self._append_newest_rows(filled_rows + buffer_rows)
             self._window.older_available = more or self._window.older_available
@@ -2461,8 +2475,6 @@ class ChatPanel(QtWidgets.QWidget):
             self._finish_fill_failed()
             return
         self._fill_rows = fresh + self._fill_rows
-        self._fill_base += len(fresh)
-        self._fill_done += len(fresh)
         self._fill_pending = True
         self._ask_fill_page()
 
@@ -2471,13 +2483,19 @@ class ChatPanel(QtWidgets.QWidget):
 
         不在失败时当场重试、也不跳洞：上面还有洞没补完时，`count(比 L 新)` 必偏小，
         取回来的是已有那段、零进展，跳过去只会把洞越攒越乱。
+
+        补洞那一路（`_fill_heal`）没有缓冲页可接：洞本来就记在表里，留着下回再补，
+        只记下「这个 L 这趟已经试过」——不然落底那一拍会立刻重发一模一样的请求。
         """
+        if self._fill_heal:
+            if self._hole_l is not None:
+                self._heal_blocked.add(int(self._hole_l))
+            self._end_fill()
+            return
         buffer_rows = list(self._refresh_pending[0]) if self._refresh_pending else []
         more = bool(self._refresh_pending[1]) if self._refresh_pending else False
         self._refresh_pending = None
         self._fill_pending = False
-        self._fill_base = 0
-        self._fill_done = 0
         self._fill_gap = 0
         gathered = self._fill_rows + buffer_rows
         self._fill_rows = []
@@ -2489,17 +2507,99 @@ class ChatPanel(QtWidgets.QWidget):
             if hole_l is not None:
                 # 洞记在插入前那个位置上（`_append_newest_rows` 挪过锚点后的条目，这条是新的）。
                 self._holes.append([int(hole_l), int(anchor)])
-                self._hole_at = int(anchor) + len(gathered)
+                self._heal_blocked.add(int(hole_l))
             self._window.older_available = more or self._window.older_available
             self._live_skip = 0
             self._lay_history(keep_position=False)
         self._finish_refresh_pending()
 
+    # ---------- 回底补洞 ----------
+
+    def _maybe_heal_hole(self) -> None:
+        """回到屏底、手上又没别的活：挑最新那个洞补一轮。
+
+        洞是接页时没补上留下的，不会自己回好。补回来的几段要插在窗口**中间**，所以等人
+        回到屏底再补：视野让回底，正在读的东西不被打断。一次只补一个、先补 L 最大的——
+        上面还有洞没补完时 `count(比 L 新)` 偏小，offset 会算回窗口里已有的那一段。
+        """
+        if not self._holes or self._fill_pending or self._refresh_pending is not None:
+            return
+        if self._older_loading or self._restoring:
+            return
+        open_holes = [int(h[0]) for h in self._holes if int(h[0]) not in self._heal_blocked]
+        if not open_holes:
+            return
+        hole_l = max(open_holes)
+        self._hole_l = hole_l
+        self._fill_heal = True
+        self._fill_rows = []
+        self._fill_gap = self._hole_gap(hole_l)
+        self._fill_pending = True
+        self._ask_fill_page()
+
+    def _hole_gap(self, hole_l: int) -> int:
+        """这个洞大概缺几条：`L` 和它上方最近一条的行号跨度（删出来的空档也算进来，只会估多）。"""
+        newer = [
+            int(item["row_id"])
+            for item in self._window.items
+            if item.get("_hist")
+            and isinstance(item.get("row_id"), int)
+            and int(item["row_id"]) > hole_l
+        ]
+        return max(0, min(newer) - int(hole_l) - 1) if newer else 0
+
+    def _add_heal_page(self, rows) -> None:
+        """补洞回来的一段：够到 `L` 就把缺的那几条插进窗口中段，铺一遍。
+
+        这里的 offset 是按「比 L 新」算的，服务端连着窗口里已有的行一起给回来，所以只认
+        行号大于 `L` 的那几条；出现 `<= L + 1` 就是摸到封口了。
+        """
+        if self._hole_l is None:
+            self._end_fill()
+            return
+        hole_l = int(self._hole_l)
+        ids = [int(row["row_id"]) for row in rows if isinstance(row.get("row_id"), int)]
+        sealed = bool(ids) and min(ids) <= hole_l + 1
+        held = {text_key(row) for row in self._fill_rows}
+        fresh = [
+            row
+            for row in rows
+            if isinstance(row.get("row_id"), int)
+            and int(row["row_id"]) > hole_l
+            and text_key(row) not in held
+        ]
+        if not sealed:
+            if not fresh:
+                # 这一段一条缺的都没有：这段在服务端那边也是空的（行删干净了），这个洞作废。
+                self._drop_hole(hole_l)
+                self._end_fill()
+                return
+            self._fill_rows = fresh + self._fill_rows
+            self._ask_fill_page()
+            return
+        gathered = fresh + self._fill_rows
+        self._drop_hole(hole_l)
+        self._end_fill()
+        if not gathered:
+            return
+        added, anchor = self._window.graft(gathered)
+        if added:
+            self._insert_marks(anchor, added)
+            self._live_skip = 0
+            self._lay_history(keep_position=not self._at_true_end())
+        self._finish_refresh_pending()
+        # 补完一个再看下一个：几个洞挨着的时候一趟就能补完，不用等下一次回底。
+        QtCore.QTimer.singleShot(0, self._maybe_heal_hole)
+
+    def _drop_hole(self, hole_l: int) -> None:
+        """这个洞补上了（或者根本补不了）：从洞表里划掉。"""
+        self._holes = [h for h in self._holes if int(h[0]) != int(hole_l)]
+        self._heal_blocked.discard(int(hole_l))
+
     def _end_fill(self) -> None:
         """这一轮补洞收尾：标志全放下，顺手把「正在取更早一页」也清掉。"""
         self._fill_pending = False
-        self._fill_base = 0
-        self._fill_done = 0
+        self._fill_heal = False
         self._fill_gap = 0
         self._fill_rows = []
         self._hole_l = None
@@ -2565,8 +2665,6 @@ class ChatPanel(QtWidgets.QWidget):
             entry["at"] = int(entry.get("at") or 0) + front_added
         for hole in self._holes:
             hole[1] = int(hole[1]) + front_added
-        if self._hole_at is not None:
-            self._hole_at = int(self._hole_at) + front_added
 
     def _trim_marks(self, rows_len: int) -> None:
         """裁尾后窗口只剩 `rows_len` 条：坐标落在它之后的一律作废（只裁不移）。"""
@@ -2575,8 +2673,6 @@ class ChatPanel(QtWidgets.QWidget):
         keep = {id(e) for e in self._fold_log}
         self._fold_entries = {k: e for k, e in self._fold_entries.items() if id(e) in keep}
         self._holes = [h for h in self._holes if int(h[1]) < rows_len]
-        if self._hole_at is not None and int(self._hole_at) >= rows_len:
-            self._hole_at = None
 
     def _insert_marks(self, anchor: int, added: int) -> None:
         """在第 `anchor` 条之后插进 `added` 条（接尾/补洞拼上）：锚点之后的坐标一起往后让。
@@ -2591,8 +2687,6 @@ class ChatPanel(QtWidgets.QWidget):
         for hole in self._holes:
             if int(hole[1]) >= anchor:
                 hole[1] = int(hole[1]) + added
-        if self._hole_at is not None and int(self._hole_at) >= anchor:
-            self._hole_at = int(self._hole_at) + added
 
     def _append_newest_rows(self, rows) -> int:
         """接一页更晚的：窗口尾巴上接几条，锚点后的单子和洞跟着挪几条。"""
@@ -2659,6 +2753,7 @@ class ChatPanel(QtWidgets.QWidget):
             return
         self._follow = True
         self._hide_jump()
+        self._maybe_heal_hole()
 
     def older_offset(self) -> int:
         """取下一页更早的那页该从第几条要（从最新一条往前数）：窗口自己记着。
@@ -2678,7 +2773,7 @@ class ChatPanel(QtWidgets.QWidget):
         if self._restoring or self._older_loading or not self._window.need_page:
             return
         if self._fill_pending:
-            # 补洞还没完：`_fill_base` 只有一个值，这拍再要一页更早的会把它算乱。
+            # 补洞还没完：这一轮的 offset 和封口都按当前窗口算，这拍再要一页更早的会把窗口动掉。
             return
         if self.view.verticalScrollBar().value() > 0 or self._follow:
             return
@@ -3001,15 +3096,19 @@ class ChatPanel(QtWidgets.QWidget):
         QtGui.QTextCursor(block).setBlockFormat(fmt)
 
     def _fit_user_line(self, msg: dict) -> None:
-        """一行装不下就把显示截断：原文不动，仍留在 msg["text"] 里。"""
+        """一行装不下就把显示截断：原文不动，仍留在 msg["text"] 里。
+
+        正文里的换行先拍平成空格：`insertText` 碰到 `\\n` 会当场断段，一条消息就变成两行、
+        气泡跟着长高。这条气泡只许一行——装不下才截，段落留白不该漏到显示上来。
+        """
         block = msg.get("head_block")
         text = str(msg.get("text") or "")
         if block is None or not block.isValid():
             return
+        flat = " ".join(text.split())
         shown = QtGui.QFontMetricsF(self._user_text_font()).elidedText(
-            text, QtCore.Qt.TextElideMode.ElideRight, self._user_line_room()
+            flat, QtCore.Qt.TextElideMode.ElideRight, self._user_line_room()
         )
-        msg["ellipsis"] = shown != text
         msg["fit_width"] = self.view.viewport().width()
         self._write_user_line(block, shown)
         self._apply_head_format(block)
@@ -5526,6 +5625,7 @@ class ChatPanel(QtWidgets.QWidget):
             # 错过了就再也收不起来。
             self._follow = True
             self._hide_jump()
+            self._maybe_heal_hole()
             return
         if by_code:
             return
@@ -5547,6 +5647,8 @@ class ChatPanel(QtWidgets.QWidget):
                 self._scroll_to_end_later()
             return
         self._follow = False
+        # 人离开屏底了：这次回底没补成的洞，下回再回底时再试一遍。
+        self._heal_blocked.clear()
         self._show_jump()
 
 
