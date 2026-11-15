@@ -734,7 +734,7 @@ def _setup_math_fonts() -> None:
 
 
 @lru_cache(maxsize=256)
-def _math_png(tex: str, display: bool) -> tuple[str, bytes, int, int]:
+def _render_math_png(tex: str, display: bool) -> tuple[str, bytes, int, int]:
     """公式 →（资源名，PNG 字节，显示宽，显示高）。按 2 倍密度渲、显示尺寸折半，高分屏不糊。
 
     mathtext 不认 `\\displaystyle`，显示/行内只差字号；不认得的命令按报错剔除重试，
@@ -772,11 +772,28 @@ def _math_png(tex: str, display: bool) -> tuple[str, bytes, int, int]:
     data = _transparent_png(buffer.getvalue())
     width, height = struct.unpack(">II", data[16:24])
     src = MATH_SRC + hashlib.sha1(f"{display}|{tex}".encode("utf-8")).hexdigest()[:12]
-    if len(_PNG_BYTES) >= _PNG_CACHE_MAX:
-        for stale in list(_PNG_BYTES)[: _PNG_CACHE_MAX // 4]:
-            _PNG_BYTES.pop(stale, None)
-    _PNG_BYTES[src] = data
     return src, data, width // 2, height // 2
+
+
+def _math_png(tex: str, display: bool) -> tuple[str, bytes, int, int]:
+    """`_render_math_png` 外面那层：**命中 lru 也要把字节登记回 `_PNG_BYTES`**。
+
+    lru 按**访问顺序**留（回看老公式会续命），`_PNG_BYTES` 按**插入顺序**删；只在函数体里登记一次的话，
+    一条反复回看的老公式会「lru 里在、表里没了」，`math_png()` 回 `b""`、`loadFromData` 失败，
+    那几张图整块消失（不占位、不报错）。一场超过 512 个不同公式后必然出现。
+    """
+    src, data, width, height = _render_math_png(tex, display)
+    if src not in _PNG_BYTES:
+        if len(_PNG_BYTES) >= _PNG_CACHE_MAX:
+            for stale in list(_PNG_BYTES)[: _PNG_CACHE_MAX // 4]:
+                _PNG_BYTES.pop(stale, None)
+        _PNG_BYTES[src] = data
+    return src, data, width, height
+
+
+# 缓存在里层，外面这层照样把 lru 的那套自省挂出来，免得按老名字看命中率的代码全断。
+_math_png.cache_info = _render_math_png.cache_info  # type: ignore[attr-defined]
+_math_png.cache_clear = _render_math_png.cache_clear  # type: ignore[attr-defined]
 
 
 def _transparent_png(raw: bytes) -> bytes:

@@ -4007,7 +4007,6 @@ class ChatPanel(QtWidgets.QWidget):
         self._clarify = {
             "gen": self._clarify_gen,
             "request_id": str(payload.get("request_id") or ""),
-            "reply_id": payload.get("reply_id"),
             "fold": fold,
             "card": card,
             "questions": questions,

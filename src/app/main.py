@@ -1516,8 +1516,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 self._approval_dialogs.remove(dialog)
             self._approval_dialog = self._approval_dialogs[-1] if self._approval_dialogs else None
             if self.client is not None:
-                reply_id = getattr(ask, "reply_id", None) or getattr(ask, "request_id", "")
-                self.client.answer_approval(reply_id, choice)
+                self.client.answer_approval(ask.request_id, choice)
             if self.chat_panel is not None:
                 label = {
                     "once": "允许一次",
@@ -2172,7 +2171,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
 
         ask = SimpleNamespace(
             request_id=str(params.get("request_id") or ""),
-            reply_id=params.get("reply_id"),
             command=str(params.get("command") or ""),
             description=str(params.get("description") or ""),
             allow_session=params.get("allow_session", True),

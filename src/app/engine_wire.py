@@ -142,7 +142,6 @@ def _approval_from_event(params: dict, payload: dict) -> dict:
     return {
         "request_id": prompt_id,
         "prompt_id": prompt_id,
-        "reply_id": "",
         "command": str(payload.get("command") or ""),
         "description": str(payload.get("description") or ""),
         "allow_session": "session" in choices,
@@ -158,12 +157,12 @@ def _clarify_from_event(params: dict, payload: dict) -> dict:
 
     事件里一个 prompt 只带**一个**问题：`question` / `choices` / `multi_select` 是平铺字段，
     没有 question_id；回票走 `clarify.respond`（`{session_id, execution_generation, prompt_id,
-    answer}`，实测回 `{"status": "resolved"}`），不是 `clarify.lock`。
+    answer}`，实测回 `{"status": "resolved"}`）。
     """
     question = str(payload.get("question") or "").strip()
     prompt_id = str(payload.get("prompt_id") or "")
     questions = [{
-        "question_id": str(payload.get("question_id") or ""),
+        "qid": "",
         "question": question,
         "choices": [str(item) for item in (payload.get("choices") or []) if isinstance(item, str)],
         "multi_select": bool(payload.get("multi_select")),
@@ -171,7 +170,6 @@ def _clarify_from_event(params: dict, payload: dict) -> dict:
     return {
         "request_id": prompt_id,
         "prompt_id": prompt_id,
-        "reply_id": "",
         "questions": questions,
         "execution_generation": payload.get("execution_generation"),
         "timeout_s": payload.get("timeout_s"),
@@ -850,38 +848,25 @@ class EngineWire(QtCore.QObject):
                                          "execution_generation": int(self._generation or 0)},
                    tag="session.interrupt")
 
-    def answer_approval(self, reply_id, choice: str) -> None:
-        """审批走帧 id 那条路时用**帧 id** 回帧（`srq-...`），不走方法表。
-
-        `ApprovalResult` 只有 `choice`（`once` / `session` / `always` / `deny`）和可选的 `all`；
-        回多一个 `decision` 字段没有用，回错 id 则等于没回——引擎会等到超时然后把命令撤回，
-        模型只能看到「审批被撤回」，于是转头教用户手动执行。
-
-        这一版引擎把审批当**会话事件**推（`approval.request`），那条路没有帧 id，回票走
-        `respond_approval`。
-        """
-        if not reply_id:
-            return
-        request_id = str(reply_id)
-        if request_id in self._event_approvals:
-            event_ask = self._event_approvals.pop(request_id)
-            if event_ask is None:  # 引擎已经收走（超时 / 别处答了）：不发帧
-                return
-            self.respond_approval(request_id, choice, event_ask.get("generation"))
-            return
-        self._reply(reply_id, {"choice": choice})
-
-    def respond_approval(self, prompt_id: str, choice: str, generation=None) -> None:
-        """审批事件那条路的回票：`approval.respond` 的 params 必须**正好**这四个字段。
+    def answer_approval(self, prompt_id, choice: str) -> None:
+        """回一张审批卡：`approval.respond` 的 params 必须**正好**这四个字段。
 
         引擎 `session_controls.respond` 拿 `set(params)` 跟
         `{session_id, execution_generation, prompt_id, choice}` 比，多一个少一个都判
         `invalid_params`；`choice` 还得在引擎给的那几个档里（`once`/`session`/`always`/`deny`）。
+        回错 `prompt_id` 等于没回——引擎会等到超时把命令撤回，模型只能看到「审批被撤回」，
+        于是转头教用户手动执行。
         """
         prompt_id = str(prompt_id or "")
         if not prompt_id or not self._session_id:
             return
-        gen = generation if isinstance(generation, int) and generation >= 0 else int(self._generation or 0)
+        event_ask = self._event_approvals.get(prompt_id)
+        if event_ask is None:  # 没收过这张卡，或已经答过 / 被引擎收走：再点也不发帧
+            return
+        self._event_approvals[prompt_id] = None
+        gen = event_ask.get("generation")
+        if not isinstance(gen, int) or gen < 0:
+            gen = int(self._generation or 0)
         self._call("approval.respond", {
             "session_id": self._session_id,
             "execution_generation": gen,
@@ -1237,36 +1222,42 @@ class EngineWire(QtCore.QObject):
                    tag="session.resume")
 
     def answer_clarify(self, request_id: str, question_id: str, answer) -> None:
-        """答掉引擎那一个问题：一次锁一个，全部锁完引擎自己结束这次提问。None = 这题跳过。
+        """答掉一个问题：两条路，按 `request_id` 认。
 
-        引擎当事件推过来的那一份（`clarify.request`）没有 question_id、也不认 `clarify.lock`，
-        只认 `clarify.respond` 的一个 `answer` 字符串——按 request_id 认出是哪条路。
+        - **批量**（引擎当 srq `clarify` 请求发过来的，`request_id` 是帧 id `srq-...`）：
+          逐题 `clarify.lock` `{request_id, question_id, answer}`，回 `{status:"ok", remaining:[...]}`；
+          最后一题锁完引擎才收尾。`expired`＝问已经结束（超时/被撤），不算错。
+        - **单问**（引擎当事件推过来的 `clarify.request`）：`clarify.respond` 正好
+          `{session_id, execution_generation, prompt_id, answer}`（实测回 `{"status": "resolved"}`），
+          一个 prompt 只带一个问题，没有 question_id 可锁。
+
+        `answer=None`＝跳过。已经答过 / 被引擎收走的卡再点不发帧。
         """
         request_id = str(request_id or "")
+        if not request_id:
+            return
         if request_id in self._event_clarifies:
-            event_ask = self._event_clarifies.pop(request_id)
-            if event_ask is not None:  # None = 引擎已经收走，不再回票
-                self.respond_clarify(request_id, "" if answer is None else str(answer),
-                                     event_ask.get("generation"))
+            event_ask = self._event_clarifies[request_id]
+            if event_ask is None:  # 已答过，或引擎已经收走：再点也不回票
+                return
+            if not self._session_id:
+                return
+            self._event_clarifies[request_id] = None
+            gen = event_ask.get("generation")
+            if not isinstance(gen, int) or gen < 0:
+                gen = int(self._generation or 0)
+            self._call("clarify.respond", {
+                "session_id": self._session_id,
+                "execution_generation": gen,
+                "prompt_id": request_id,
+                "answer": "" if answer is None else str(answer),
+            }, tag="clarify.respond")
             return
         self._call(
             "clarify.lock",
-            {"answer": answer, "question_id": question_id, "request_id": request_id},
+            {"answer": answer, "question_id": str(question_id or ""), "request_id": request_id},
             tag="clarify.lock",
         )
-
-    def respond_clarify(self, prompt_id: str, answer: str, generation=None) -> None:
-        """澄清事件那条路的回票：正好 `{session_id, execution_generation, prompt_id, answer}`。"""
-        prompt_id = str(prompt_id or "")
-        if not prompt_id or not self._session_id:
-            return
-        gen = generation if isinstance(generation, int) and generation >= 0 else int(self._generation or 0)
-        self._call("clarify.respond", {
-            "session_id": self._session_id,
-            "execution_generation": gen,
-            "prompt_id": prompt_id,
-            "answer": str(answer or ""),
-        }, tag="clarify.respond")
 
     def answer_secret(self, reply_id, value: str) -> None:
         """密钥 / sudo 密码：`value` 是字符串，空串等于跳过。"""
@@ -1369,24 +1360,22 @@ class EngineWire(QtCore.QObject):
         method = frame.get("method")
         params = dict(frame.get("params") or {})
         params["reply_id"] = frame.get("id")
-        if method == "approval":
-            self.approval.emit(params)
-            return
         if method == "setup_beat":
             if str(params.get("beat") or "") == "name":
                 self.setup_beat.emit(params)
             else:
                 self._reply(frame.get("id"), {})
             return
-        if method == "clarify":
-            params["reply_id"] = frame.get("id")
-            params["request_id"] = str(frame.get("id") or "")
-            self.clarify.emit(params)
-            return
         if method in {"secret", "sudo"}:
             params["method"] = method
             params["reply_id"] = frame.get("id")
             self.secret_prompt.emit(params)
+            return
+        if method == "clarify":
+            # 批量提问：桌面自己提交时带 `clarify_batch: True`，引擎就把整批问题当**一个** srq 请求发，
+            # 逐题用 `clarify.lock` 回（`{request_id, question_id, answer}`）。
+            params["request_id"] = str(frame.get("id") or "")
+            self.clarify.emit(params)
             return
         self._reply_unsupported(frame.get("id"), str(method))
 
@@ -1819,7 +1808,11 @@ class EngineWire(QtCore.QObject):
             self.request_cancelled.emit("clarify", prompt_id)
         elif kind == "approval.cancelled":
             ids = payload.get("request_ids")
-            self.approvals_cancelled.emit([str(item) for item in ids] if isinstance(ids, list) else [])
+            request_ids = [str(item) for item in ids] if isinstance(ids, list) else []
+            for request_id in request_ids:
+                if request_id in self._event_approvals:
+                    self._event_approvals[request_id] = None  # 会话收走了：再点也不发帧
+            self.approvals_cancelled.emit(request_ids)
         elif kind == "request.cancel":
             self.request_cancelled.emit(str(payload.get("method") or ""), str(payload.get("id") or ""))
         elif kind == "session.reclaimed":

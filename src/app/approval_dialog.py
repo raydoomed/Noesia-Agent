@@ -178,7 +178,7 @@ class ApprovalDialog(QtWidgets.QDialog):
     def dismiss(self) -> None:
         """引擎自己撤了这张卡：关掉，但**不回任何选择**（不是用户拒绝）。
 
-        走 `close()` 会触发 closeEvent 里的兜底拒绝，等于替用户回了一个已经失效的 reply_id。
+        走 `close()` 会触发 closeEvent 里的兜底拒绝，等于替用户回了一个已经失效的答复。
         """
         self._answered = True
         self.close()
