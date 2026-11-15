@@ -112,6 +112,9 @@ class _MsgMark(QtGui.QTextBlockUserData):
     """「这一块是一条消息的开头」——悬停时靠它从光标所在块往上找回整条消息。
 
     存的是消息字典本身（不是副本）：流式回答还在往里加字，复制拿到的就是最后的样子。
+
+    纯图片消息只有这一块：图占着消息开头，但开头这个身份不能丢（切历史、悬停分组全靠它），
+    图的存在记在消息上——`msg["has_photo"]`。
     """
 
     def __init__(self, msg: dict) -> None:
@@ -1874,7 +1877,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_button.setMenu(self._voice_menu)
         self._voice_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
         box_row.addWidget(self._voice_button)
-        self.set_voice_mode(_voice_mode())
+        self.refresh_voice_state()
 
         self._mic_button = QtWidgets.QToolButton(box)
         self._mic_button.setObjectName("icon")
@@ -2454,9 +2457,13 @@ class ChatPanel(QtWidgets.QWidget):
         只记下「这个 L 这趟已经试过」——不然落底那一拍会立刻重发一模一样的请求。
         """
         if self._fill_heal:
-            if self._hole_l is not None:
-                self._heal_blocked.add(int(self._hole_l))
+            hole_l = self._hole_l
             self._end_fill()
+            # 补洞这一趟放弃了，压着的最新页照样得接上——不接就一直挂着，下个洞永远轮不到。
+            # 先接页再记「这个洞试过了」：接页那条会重排洞表，先记会被冲掉。
+            self._finish_refresh_pending()
+            if hole_l is not None:
+                self._heal_blocked.add(int(hole_l))
             return
         buffer_rows = list(self._refresh_pending[0]) if self._refresh_pending else []
         more = bool(self._refresh_pending[1]) if self._refresh_pending else False
@@ -2488,8 +2495,11 @@ class ChatPanel(QtWidgets.QWidget):
         回到屏底再补：视野让回底，正在读的东西不被打断。一次只补一个、先补 L 最大的——
         上面还有洞没补完时 `count(比 L 新)` 偏小，offset 会算回窗口里已有的那一段。
         """
-        if not self._holes or self._fill_pending or self._refresh_pending is not None:
+        if not self._holes or self._fill_pending:
             return
+        # 压着的最新页（`_refresh_pending`）不挡补洞：补洞往窗口中段插，两件事不抢同一段位置；
+        # 反过来挡，就会卡死——收尾那条路（空页放弃、失败）不一定吃掉它，压着的页一直挂着，
+        # 洞就永远补不上。补洞这一轮收尾时 `_finish_refresh_pending()` 会把它接上。
         if self._older_loading or self._restoring:
             return
         open_holes = [int(h[0]) for h in self._holes if int(h[0]) not in self._heal_blocked]
@@ -2539,6 +2549,7 @@ class ChatPanel(QtWidgets.QWidget):
                 # 这一段一条缺的都没有：这段在服务端那边也是空的（行删干净了），这个洞作废。
                 self._drop_hole(hole_l)
                 self._end_fill()
+                self._finish_refresh_pending()
                 return
             self._fill_rows = fresh + self._fill_rows
             self._ask_fill_page()
@@ -2969,7 +2980,7 @@ class ChatPanel(QtWidgets.QWidget):
             row_id = item.get("row_id")
             self.append_user(text, row_id=row_id if isinstance(row_id, int) else None)
         else:
-            self.append_chunk(text)
+            self.append_chunk(text, replay=True)
             self.end_assistant()
 
     def _take_stamp(self) -> float:
@@ -3200,7 +3211,12 @@ class ChatPanel(QtWidgets.QWidget):
             cursor.insertBlock(fmt)
             block = cursor.block()
         if self._msgs:
-            block.setUserData(_PhotoMark(self._msgs[-1]))
+            if isinstance(block.userData(), _MsgMark):
+                # 纯图片消息：这一块就是消息开头。`_MsgMark` 不能换成 `_PhotoMark`——换了这条消息
+                # 就没有「开头」了，切历史找不到切点、悬停也认不出属于哪条。图的存在记在消息上。
+                self._msgs[-1]["has_photo"] = True
+            else:
+                block.setUserData(_PhotoMark(self._msgs[-1]))
         image = QtGui.QTextImageFormat()
         image.setName(key)
         image.setWidth(width)
@@ -3217,8 +3233,14 @@ class ChatPanel(QtWidgets.QWidget):
 
     FLUSH_SLICE_MS = 40
 
-    def append_chunk(self, chunk: str) -> None:
-        if self._interrupted:
+    def append_chunk(self, chunk: str, *, replay: bool = False) -> None:
+        """往助手气泡里再落一段字。
+
+        `replay=True` 是重铺历史（`_paint_history_item`）：这些字来自引擎已经存下的正文，不是
+        「按停之后还飘在半路的残片」。`_interrupted` 拦的只是后者——混在一起拦，按停之后翻历史、
+        改窗口、换宽度，整段回答就从屏幕上消失（数据还在 `_msgs` 里，重开又好了）。
+        """
+        if self._interrupted and not replay:
             return
         if not self._streaming:
             self.begin_assistant()
@@ -5831,9 +5853,12 @@ class ChatPanel(QtWidgets.QWidget):
         网关这条链上引擎只发 `message.complete`，没有 TUI 那条路的 `turn.done`；排队原先
         只在 `settle_turn` 里抽，那一帧永远不来，于是排队的第二句就一直挂着没人发。
         桌面端是这轮一完就把下一句递过去、让引擎自己按序跑，这里照同一条路走。
+
+        `_rewind_after_stop` 挂着时也一样：收尾这一帧就是那个「重跑」该落地的界线，先把它交出去
+        再抽队列——重跑在等，不该连带把后面排队的话一起堵死（否则重跑永远不发，队列也永远不动）。
         """
         if self._rewind_after_stop is not None:
-            return
+            self.settle_turn()
         self._drain_queue()
 
     def _send_label(self) -> str:

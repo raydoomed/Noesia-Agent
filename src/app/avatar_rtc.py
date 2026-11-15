@@ -267,11 +267,15 @@ class AvatarRtc(QtCore.QObject):
             pending_hash, retry_at = self._asset_pending
             if pending_hash == digest and time.time() < retry_at:
                 return ""
-            got = warm_avatar_asset(image, digest)
-            if not got:
-                self._asset_pending = (digest, time.time() + ASSET_PENDING_SECONDS)
-            return got
-        return ""
+            # 先把「正在传这一张」记上再放锁：上传要等网络（最长 90 秒），锁要是被它占着，
+            # 另一个线程（下句要开播、挂断）就全卡在这儿，界面上看就是「点了没反应」。
+            # 记上之后并发那一头会看到「在传」，不会重复 POST（平台按刷接口判 429）。
+            self._asset_pending = (digest, time.time() + ASSET_PENDING_SECONDS)
+        got = warm_avatar_asset(image, digest)
+        if got:
+            # 传好了：这个「正在传」的占位要撤掉，不然这 60 秒里谁问都拿到空串。
+            self._asset_pending = ("", 0.0)
+        return got
 
     def _warm_asset(self) -> None:
         """预加载后台顺手把形象传上去：真说话时就不用现传了。"""

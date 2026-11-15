@@ -53,24 +53,24 @@ QToolTip {
 }
 QScrollBar:vertical {
     background: transparent;
-    width: 10px;
+    width: 6px;
     margin: 0px;
 }
 QScrollBar::handle:vertical {
     background: rgba(240, 178, 210, 85);
-    border-radius: 4px;
+    border-radius: 3px;
     min-height: 28px;
 }
 QScrollBar::handle:vertical:hover { background: rgba(240, 178, 210, 145); }
 QScrollBar::handle:vertical:pressed { background: rgba(240, 178, 210, 190); }
 QScrollBar:horizontal {
     background: transparent;
-    height: 10px;
+    height: 6px;
     margin: 0px;
 }
 QScrollBar::handle:horizontal {
     background: rgba(240, 178, 210, 85);
-    border-radius: 4px;
+    border-radius: 3px;
     min-width: 28px;
 }
 QScrollBar::handle:horizontal:hover { background: rgba(240, 178, 210, 145); }
@@ -302,6 +302,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._history_initial_done = True
         self._new_session_pending = False
         self._new_session_sent = False
+        self._new_session_refused = False
         self._new_session_queued = 0
         self._new_session_timer = QtCore.QTimer(self)
         self._new_session_timer.setSingleShot(True)
@@ -549,6 +550,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         say("[会话] 请求开新会话")
         self._new_session_pending = True
         self._new_session_sent = False
+        self._new_session_refused = False
         if panel is not None and panel.is_busy():
             panel.set_activity("正在结束这一轮…")
             self.client.interrupt()
@@ -571,6 +573,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         panel = self.chat_panel
         sent = self._new_session_sent
         self._new_session_pending = False
+        self._new_session_refused = False
         self._new_session_queued = 0
         if panel is not None:
             panel.set_activity("")
@@ -596,9 +599,19 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._rewind_pending = None
             panel.clear_status_notice("resubmit")
             panel.cancel_rewind()
-        if self.client is not None:
-            self.client.create_session("")
-            self._new_session_timer.start(8000)
+        if self.client is None:
+            return
+        if not self.client.create_session(""):
+            # 会话正挂在一场 attach 上（启动 / 重连 / rewind 的 resume 还在飞）：这一帧没发出去。
+            # 不能留成「已发出」——那条 attach 的回包会被认成「新会话就绪」，清掉整屏再提示
+            # 一句「已开新会话」，用户其实还在原来那一场。等那一拍落地再补发（见 `on_session_ready`）。
+            self._new_session_sent = False
+            self._new_session_refused = True
+            say("[会话] 会话还在挂载，等这一拍落地再建新会话")
+            if panel is not None:
+                panel.show_notice("session", "正在接上上一场会话，接上就建新会话", ttl_ms=3000)
+            return
+        self._new_session_timer.start(8000)
 
     def open_model_settings(self) -> None:
         """「设置」：打开真正的设置窗口（填密钥 + 选模型），不是把下拉框弹一下。
@@ -1907,6 +1920,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self._new_session_sent:
             self._new_session_pending = False
             self._new_session_sent = False
+            self._new_session_refused = False
             self._new_session_timer.stop()
         if self.chat_panel is not None:
             self.chat_panel.show_error(message)
@@ -1973,6 +1987,13 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             panel.set_busy(True)
         self._turn_stopped = False
         self._reply_text = ""
+        if self._new_session_refused:
+            # 上一次「新会话」因为正在挂载没发出去：这一帧是那条 attach 的回包，不是新会话，
+            # 不能拿它清屏。就把它当成时机，把那条 create 补发出去。
+            self._new_session_refused = False
+            self._new_session_timer.stop()
+            self._send_new_session()
+            return
         requested = self._new_session_pending
         self._new_session_pending = False
         self._new_session_timer.stop()

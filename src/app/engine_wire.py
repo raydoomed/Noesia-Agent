@@ -130,6 +130,55 @@ def provider_wait_text(text: str) -> str:
     return value if _PROVIDER_WAIT_RE.match(value) else ""
 
 
+def _approval_from_event(params: dict, payload: dict) -> dict:
+    """把引擎推的 `approval.request` 事件折成审批卡认得的那一份。
+
+    事件里 `choices` 是引擎允许的档位（`once`/`deny`，可选 `session`/`always`；smart 判死的
+    只有前两个），`prompt_id` 是审批队列自己的 id——回票（`approval.respond`）按它认，
+    不是帧 id。`execution_generation` 也得原样带回去，引擎拿它当栅栏。
+    """
+    choices = [item for item in (payload.get("choices") or []) if isinstance(item, str)]
+    prompt_id = str(payload.get("prompt_id") or "")
+    return {
+        "request_id": prompt_id,
+        "prompt_id": prompt_id,
+        "reply_id": "",
+        "command": str(payload.get("command") or ""),
+        "description": str(payload.get("description") or ""),
+        "allow_session": "session" in choices,
+        "allow_permanent": "always" in choices,
+        "execution_generation": payload.get("execution_generation"),
+        "timeout_s": payload.get("timeout_s"),
+        "session_id": str(params.get("session_id") or ""),
+    }
+
+
+def _clarify_from_event(params: dict, payload: dict) -> dict:
+    """把引擎推的 `clarify.request` 事件折成澄清卡认得的那一份（`questions` 一条）。
+
+    事件里一个 prompt 只带**一个**问题：`question` / `choices` / `multi_select` 是平铺字段，
+    没有 question_id；回票走 `clarify.respond`（`{session_id, execution_generation, prompt_id,
+    answer}`，实测回 `{"status": "resolved"}`），不是 `clarify.lock`。
+    """
+    question = str(payload.get("question") or "").strip()
+    prompt_id = str(payload.get("prompt_id") or "")
+    questions = [{
+        "question_id": str(payload.get("question_id") or ""),
+        "question": question,
+        "choices": [str(item) for item in (payload.get("choices") or []) if isinstance(item, str)],
+        "multi_select": bool(payload.get("multi_select")),
+    }] if question else []
+    return {
+        "request_id": prompt_id,
+        "prompt_id": prompt_id,
+        "reply_id": "",
+        "questions": questions,
+        "execution_generation": payload.get("execution_generation"),
+        "timeout_s": payload.get("timeout_s"),
+        "session_id": str(params.get("session_id") or ""),
+    }
+
+
 def ui_locale() -> str:
     """界面的语言标记，交给引擎挑引导文案。
 
@@ -364,6 +413,10 @@ class EngineWire(QtCore.QObject):
         self._attach_timeouts = 0
         self._pending_text = ""
         self._pending_turns: list[tuple[str, list, bool]] = []
+        # 引擎当「会话事件」推过来的待答项（审批 / 澄清）：prompt_id → 那一代。
+        # 这两类不走帧 id，回票得靠 `approval.respond` / `clarify.respond`，见各自的方法。
+        self._event_approvals: dict[str, dict | None] = {}
+        self._event_clarifies: dict[str, dict | None] = {}
         self._turn: dict | None = None
         self._turn_seq = 0
         self._attach_names: dict[int, tuple[str, bool]] = {}
@@ -453,26 +506,35 @@ class EngineWire(QtCore.QObject):
             raise ValueError("工作目录不能是空字符串")
         self._workspace = Path(text)
 
-    def create_session(self, cwd: str | None = None) -> None:
+    def create_session(self, cwd: str | None = None) -> bool:
+        """发一帧 session.create，返回「这一帧真发出去了没有」。
+
+        False 有两种来源：已经有一场 attach 在飞（启动 / 重连 / rewind 的 resume），或者写不出去。
+        调用方必须看这个返回值——「新会话」那条链上把没发出去的当成发了，那条 attach 的回包就会被
+        认成「新会话就绪」，清掉整屏再提示一句「已开新会话」，用户其实还在原来那一场。
+        """
         if self._attaching:
-            return
+            return False
         self._attaching = True
         self._attach_since = time.monotonic()
         params = {"cwd": cwd or str(self._workspace), "cwd_explicit": True, "source": SESSION_SOURCE}
         if self._reasoning_effort:
             params["reasoning"] = self._reasoning_effort
         rid = self._call("session.create", params, tag="session.create")
-        if rid not in self._sent:
+        sent = rid in self._sent
+        if not sent:
             self._attaching = False
             self._attach_since = 0.0
         self.reasoning_pending.emit(False)
+        return sent
 
     # 一页历史多少条：跟 Hermes 桌面版一个数（`LATEST_SESSION_MESSAGES_LIMIT = 120`）。
     HISTORY_PAGE = 120
 
-    def resume_session(self, session_id: str) -> None:
+    def resume_session(self, session_id: str) -> bool:
+        """挂回一场已有会话；返回「这一帧真发出去了没有」（同 `create_session`）。"""
         if self._attaching:
-            return
+            return False
         self._stored_id = session_id or self._stored_id
         self._attaching = True
         self._attach_since = time.monotonic()
@@ -480,9 +542,11 @@ class EngineWire(QtCore.QObject):
         rid = self._call("session.resume", {"session_id": session_id, "source": SESSION_SOURCE,
                                             "omit_messages": True, "defer_history": True},
                          tag="session.resume")
-        if rid not in self._sent:
+        sent = rid in self._sent
+        if not sent:
             self._attaching = False
             self._attach_since = 0.0
+        return sent
 
     def fetch_history(self, offset: int = 0, limit: int | None = None, tag: str = "older") -> None:
         """取一页历史（REST）：`offset` 从最新一条往前数，和桌面端 `getOlderSessionMessages` 同义。
@@ -787,15 +851,43 @@ class EngineWire(QtCore.QObject):
                    tag="session.interrupt")
 
     def answer_approval(self, reply_id, choice: str) -> None:
-        """审批是引擎的「服务端请求」，用**帧 id** 回帧（`srq-...`），不走方法表。
+        """审批走帧 id 那条路时用**帧 id** 回帧（`srq-...`），不走方法表。
 
         `ApprovalResult` 只有 `choice`（`once` / `session` / `always` / `deny`）和可选的 `all`；
         回多一个 `decision` 字段没有用，回错 id 则等于没回——引擎会等到超时然后把命令撤回，
         模型只能看到「审批被撤回」，于是转头教用户手动执行。
+
+        这一版引擎把审批当**会话事件**推（`approval.request`），那条路没有帧 id，回票走
+        `respond_approval`。
         """
         if not reply_id:
             return
+        request_id = str(reply_id)
+        if request_id in self._event_approvals:
+            event_ask = self._event_approvals.pop(request_id)
+            if event_ask is None:  # 引擎已经收走（超时 / 别处答了）：不发帧
+                return
+            self.respond_approval(request_id, choice, event_ask.get("generation"))
+            return
         self._reply(reply_id, {"choice": choice})
+
+    def respond_approval(self, prompt_id: str, choice: str, generation=None) -> None:
+        """审批事件那条路的回票：`approval.respond` 的 params 必须**正好**这四个字段。
+
+        引擎 `session_controls.respond` 拿 `set(params)` 跟
+        `{session_id, execution_generation, prompt_id, choice}` 比，多一个少一个都判
+        `invalid_params`；`choice` 还得在引擎给的那几个档里（`once`/`session`/`always`/`deny`）。
+        """
+        prompt_id = str(prompt_id or "")
+        if not prompt_id or not self._session_id:
+            return
+        gen = generation if isinstance(generation, int) and generation >= 0 else int(self._generation or 0)
+        self._call("approval.respond", {
+            "session_id": self._session_id,
+            "execution_generation": gen,
+            "prompt_id": prompt_id,
+            "choice": str(choice or "deny"),
+        }, tag="approval.respond")
 
     def answer_setup_beat(self, reply_id, name: str = "") -> None:
         """起名卡的回答，同样是 server 请求，用**帧 id** 回。
@@ -998,8 +1090,13 @@ class EngineWire(QtCore.QObject):
             if frame.get("long_lived"):
                 continue
             if float(frame.get("at") or 0) < cutoff:
-                self._sent.pop(old, None)
-                self._pending.pop(old, None)
+                # 别静默摘掉：走一遍失败回调，让 attach / rewind / submit 的结算路径都跑到。
+                # 静默丢的后果是这些路径永远等不到回包——`_turn["left"]` 不清零，之后每句带附件的
+                # 都在排队、界面一直 busy，一个字也不报。
+                self._on_response({"id": old, "error": {
+                    "code": -32000,
+                    "message": f"引擎超过 {int(self._SENT_TTL_S)} 秒没回这一步，这次操作没完成",
+                }})
         self._next_id += 1
         rid = self._next_id
         if tag:
@@ -1129,7 +1226,7 @@ class EngineWire(QtCore.QObject):
             self._replay.clear()
             self._stored_id = ""
             self._session_id = ""
-            self._attaching = True
+            # 置位是 `create_session` 自己的事：先置就把这一帧吃掉（见 `_ensure_session` 的说明）。
             self.create_session()
             return
         self._recovering = True
@@ -1140,12 +1237,36 @@ class EngineWire(QtCore.QObject):
                    tag="session.resume")
 
     def answer_clarify(self, request_id: str, question_id: str, answer) -> None:
-        """答掉引擎那一个问题：一次锁一个，全部锁完引擎自己结束这次提问。None = 这题跳过。"""
+        """答掉引擎那一个问题：一次锁一个，全部锁完引擎自己结束这次提问。None = 这题跳过。
+
+        引擎当事件推过来的那一份（`clarify.request`）没有 question_id、也不认 `clarify.lock`，
+        只认 `clarify.respond` 的一个 `answer` 字符串——按 request_id 认出是哪条路。
+        """
+        request_id = str(request_id or "")
+        if request_id in self._event_clarifies:
+            event_ask = self._event_clarifies.pop(request_id)
+            if event_ask is not None:  # None = 引擎已经收走，不再回票
+                self.respond_clarify(request_id, "" if answer is None else str(answer),
+                                     event_ask.get("generation"))
+            return
         self._call(
             "clarify.lock",
             {"answer": answer, "question_id": question_id, "request_id": request_id},
             tag="clarify.lock",
         )
+
+    def respond_clarify(self, prompt_id: str, answer: str, generation=None) -> None:
+        """澄清事件那条路的回票：正好 `{session_id, execution_generation, prompt_id, answer}`。"""
+        prompt_id = str(prompt_id or "")
+        if not prompt_id or not self._session_id:
+            return
+        gen = generation if isinstance(generation, int) and generation >= 0 else int(self._generation or 0)
+        self._call("clarify.respond", {
+            "session_id": self._session_id,
+            "execution_generation": gen,
+            "prompt_id": prompt_id,
+            "answer": str(answer or ""),
+        }, tag="clarify.respond")
 
     def answer_secret(self, reply_id, value: str) -> None:
         """密钥 / sudo 密码：`value` 是字符串，空串等于跳过。"""
@@ -1212,10 +1333,15 @@ class EngineWire(QtCore.QObject):
             self._on_response({"id": rid, "error": {"code": -32000, "message": message}})
 
     def _on_frame_text(self, text: str) -> None:
-        """连线上来的一段文本是一帧（服务端也可能一次带多行）。"""
+        """连线上来的一段文本是一帧（服务端也可能一次带多行）。
+
+        只按 `\\n` 切：`splitlines()` 还认 U+2028 / U+2029 / `\\x0b` / `\\x0c` / `\\x85`，
+        而 JSON 允许正文里出现这些字符且 `ensure_ascii=False` 时原样上网——那样一整帧会被劈成
+        几截、每截都不是合法 JSON、全被当「非 JSON 行」丢掉（`session.resume` 一回包就丢历史）。
+        """
         if not self._started:
             return
-        for line in text.splitlines():
+        for line in text.split("\n"):
             line = line.strip()
             if line:
                 self._dispatch(line)
@@ -1439,7 +1565,6 @@ class EngineWire(QtCore.QObject):
                 self.resume_session(sid)
             else:
                 self._recovering = False
-                self._attaching = True
                 self.create_session()
         elif tag == "session.list":
             self.sessions_listed.emit(list(result.get("sessions") or []))
@@ -1449,7 +1574,6 @@ class EngineWire(QtCore.QObject):
             self.session_ready.emit({"session_id": self._session_id,
                                      "stored_session_id": self._stored_id})
             if self._stored_id:
-                self._attaching = True
                 self.resume_session(self._stored_id)
         elif tag == "process.list":
             rows = [row for row in (result.get("processes") or []) if isinstance(row, dict)]
@@ -1671,6 +1795,28 @@ class EngineWire(QtCore.QObject):
                 self.reasoning_reported.emit(str(effort), str(payload.get("reasoning_effort_wire") or ""))
         elif kind == "cron.changed":
             self.cron_changed.emit()
+        elif kind == "approval.request":
+            # 引擎把审批当「会话事件」推给本机查看器（`session_pending_controls.register`），
+            # 不是 srq 服务端请求：只认 `approval.respond` 回票，帧 id 那条路在这版引擎上不会来。
+            ask = _approval_from_event(params, payload)
+            if ask["prompt_id"]:
+                self._event_approvals[ask["prompt_id"]] = {"generation": ask["execution_generation"]}
+            self.approval.emit(ask)
+        elif kind == "approval.settled":
+            prompt_id = str(payload.get("prompt_id") or "")
+            if prompt_id in self._event_approvals:
+                self._event_approvals[prompt_id] = None  # 已经收走了：再点也不该发帧
+            self.approvals_cancelled.emit([prompt_id])
+        elif kind == "clarify.request":
+            ask = _clarify_from_event(params, payload)
+            if ask["prompt_id"]:
+                self._event_clarifies[ask["prompt_id"]] = {"generation": ask["execution_generation"]}
+            self.clarify.emit(ask)
+        elif kind == "clarify.settled":
+            prompt_id = str(payload.get("prompt_id") or "")
+            if prompt_id in self._event_clarifies:
+                self._event_clarifies[prompt_id] = None  # 已经收走了：再点也不该回票
+            self.request_cancelled.emit("clarify", prompt_id)
         elif kind == "approval.cancelled":
             ids = payload.get("request_ids")
             self.approvals_cancelled.emit([str(item) for item in ids] if isinstance(ids, list) else [])
