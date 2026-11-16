@@ -14,8 +14,10 @@ Edge 实测首片 0.48 秒（120 字、20 秒音频），豆包 0.5 秒左右。
 
 from __future__ import annotations
 
+import array
 import re
 import threading
+import time
 
 import PySide6.QtCore as QtCore
 import PySide6.QtMultimedia as QtMultimedia
@@ -28,6 +30,21 @@ _MEDIA_TOKEN = re.compile(r"MEDIA:\S+")
 _LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _URL = re.compile(r"https?://\S+")
 _MARK = re.compile(r"[*_>#|]+")
+
+_PREROLL_MS = 250  # 蓝牙（A2DP）和刚醒的声卡会吞掉最先写进去的 150–300ms，先拿静音喂饱它
+_TAIL_MS = 250  # 声卡排空不代表耳机播完，立刻停会把最后一个字切掉
+_BUFFER_MS = 600  # 声卡缓冲：界面偶尔卡一下（重绘、动画）也不能让声卡饿着断出一截空白
+_SILENCE_CAP_MS = 5000  # 等合成时喂静音的封顶，接口挂了不至于一直往设备里灌
+_FADE_IN_MS = 20  # 从静音直接跳进语音会有“啪”的爆音，前 20ms 拉个斜坡压掉
+
+
+def _fade_in(pcm: bytes, ms: int = _FADE_IN_MS) -> bytes:
+    """给一段 PCM 加线性淡入：静音→语音那个硬跳变就是爆音的来源。只改开头那几个采样，其余原样。"""
+    edge = min(len(pcm) // 2, max(1, int(TARGET_RATE * ms / 1000)))
+    head = array.array("h", pcm[: edge * 2])
+    for i in range(edge):
+        head[i] = int(head[i] * i / edge)
+    return head.tobytes() + pcm[edge * 2 :]
 
 
 def speakable(text: str) -> str:
@@ -89,6 +106,9 @@ class _StreamPlayback(QtCore.QObject):
         self._format.setSampleFormat(QtMultimedia.QAudioFormat.SampleFormat.Int16)
         self._pending = bytearray()
         self._fed_bytes = 0
+        self._preroll_bytes = 0
+        self._drained_at = 0.0
+        self._silent_head = True
         self._synth_done = False
         self._ticker = QtCore.QTimer(self)
         self._ticker.setInterval(30)
@@ -103,9 +123,17 @@ class _StreamPlayback(QtCore.QObject):
             return
         if self._sink is None and not self._open():
             return
+        if self._silent_head:
+            pcm = _fade_in(pcm)
+            self._silent_head = False
         self._pending += pcm
         self._fed_bytes += len(pcm)
         self._pump()
+
+    def arm(self) -> None:
+        """合成还要等半秒：先把声卡开起来让设备醒着，蓝牙起振吃掉的是静音，不是第一句。"""
+        if self._sink is None:
+            self._open(announce=False)
 
     def mark_done(self) -> None:
         self._synth_done = True
@@ -124,28 +152,44 @@ class _StreamPlayback(QtCore.QObject):
         self._io = None
         self._pending.clear()
         self._fed_bytes = 0
+        self._preroll_bytes = 0
+        self._drained_at = 0.0
+        self._silent_head = True
         self._synth_done = False
 
 
-    def _open(self) -> bool:
+    def _open(self, announce: bool = True) -> bool:
         device = QtMultimedia.QMediaDevices.defaultAudioOutput()
         sink = QtMultimedia.QAudioSink(device, self._format, self)
         sink.setVolume(1.0)
-        sink.setBufferSize(max(self._format.bytesForDuration(250_000), 8192))
+        sink.setBufferSize(max(self._format.bytesForDuration(_BUFFER_MS * 1000), 8192))
         io = sink.start()
         if io is None:
             # 打不开就把这个 sink 收掉：留着它每片都会再建一个（`feed` 每次重试 `_open`），越堆越多。
             sink.deleteLater()
-            self.failed.emit("打不开音频输出设备（可能被别的程序占用）")
+            if announce:
+                self.failed.emit("打不开音频输出设备（可能被别的程序占用）")
             return False
         self._sink = sink
         self._io = io
+        silence = bytes(self._format.bytesForDuration(_PREROLL_MS * 1000))
+        self._pending += silence
+        self._preroll_bytes = len(silence)
+        self._fed_bytes += len(silence)
         self._ticker.start()
+        self._pump()
         return True
 
     def _pump(self) -> None:
         if self._sink is None or self._io is None:
             return
+        if not self._pending and not self._synth_done and self._silent_head:
+            cap = self._format.bytesForDuration(_SILENCE_CAP_MS * 1000)
+            if self._preroll_bytes < cap:
+                silence = bytes(self._format.bytesForDuration(30_000))
+                self._pending += silence
+                self._preroll_bytes += len(silence)
+                self._fed_bytes += len(silence)
         if self._pending:
             written = self._io.write(bytes(self._pending))
             if written > 0:
@@ -155,11 +199,16 @@ class _StreamPlayback(QtCore.QObject):
                 self.failed.emit("写不进音频设备，这一句没念出来")
                 return
         played_us = int(self._sink.processedUSecs())
-        self.progress.emit(int(played_us / 1000), 0)
+        preroll_us = int(self._format.durationForBytes(self._preroll_bytes))
+        self.progress.emit(max(0, int((played_us - preroll_us) / 1000)), 0)
         if not self._synth_done or self._pending:
             return
         fed_us = int(self._format.durationForBytes(self._fed_bytes))
-        if played_us >= fed_us - 40_000:
+        if played_us < fed_us - 20_000:
+            self._drained_at = 0.0
+        elif not self._drained_at:
+            self._drained_at = time.monotonic()
+        elif (time.monotonic() - self._drained_at) * 1000.0 >= _TAIL_MS:
             self.stop()
             self.finished.emit()
 
@@ -217,6 +266,7 @@ class Speaker(QtCore.QObject):
         self._text = plain
         self._cancel = threading.Event()
         self.preparing.emit()
+        self._playback.arm()
         self._pool.start(_StreamJob(plain, self, self._seq, self._cancel))
         return True
 
