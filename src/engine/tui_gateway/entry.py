@@ -310,9 +310,9 @@ def _latch_first_install() -> None:
     桌面后端在 `free_tier_bootstrap._settle_install` 里做同一件事（只在桌面后端上做）。
     """
     try:
-        from noesia_cli.process_identity import on_local_desktop_backend
+        from noesia_cli.process_identity import is_desktop_owned_backend
 
-        if not on_local_desktop_backend():
+        if not is_desktop_owned_backend():
             return
         from noesia_cli import onboarding_run
 

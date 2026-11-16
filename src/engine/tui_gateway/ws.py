@@ -357,6 +357,13 @@ def _authority_connection(ws: Any, transport: WSTransport, auth_identity: dict |
 
 async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any, transport: WSTransport) -> Any:
     """One request through the authority when attached, else the legacy dispatcher."""
+    if authority_connection is not None:
+        from tui_gateway import server_requests
+        if server_requests.is_response_frame(req) and server_requests.resolve_response(req, transport):
+            # 卡片（setup_beat / clarify 里 tui 层发的那几种）是 `server_requests.send()` 发出去的，
+            # 它们的 id 只登记在 tui 这一侧的 `_open` 里，authority 自己的登记表里没有。不先问这一边，
+            # 回答就会在 authority 那边被当成「未知请求」丢掉——卡片一直等，300 秒后超时收场。
+            return None
     if authority_connection is None:
         return await asyncio.to_thread(server.dispatch, req, transport)
     resp = await authority_connection.dispatch(req)
@@ -367,7 +374,8 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
         # registers (pet, wake word, connectors) keeps its legacy handler. A legacy
         # session writer keeps the authority's -32601 (ws_legacy_fallback), as does a
         # method neither side knows, which is what the client's version-skew notice keys on.
-        resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor)
+        resp = await asyncio.to_thread(dispatch_legacy, server, req, transport, actor, authority_connection,
+                                       asyncio.get_running_loop())
     return resp
 
 

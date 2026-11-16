@@ -409,11 +409,6 @@ class OnboardingStartParams(Params):
     assume_fresh: bool = False
     facts_source: OnboardingFactsSource = OnboardingFactsSource.local
     locale: str | None = None
-    # What this front end can show. A window with the full card set (accent picker, layout, plugin
-    # picks, tour) leaves these true; one that only asks the name sets them false and the beats it
-    # cannot show settle as skipped — one flow, pruned per front end, never a second one.
-    app_ui: bool = True
-    first_task: bool = True
 
 
 class OnboardingStartResult(Result):

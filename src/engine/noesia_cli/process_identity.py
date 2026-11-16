@@ -14,12 +14,11 @@ import json
 import logging
 import os
 import platform
-import sys
 import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 
 from utils import atomic_json_write
 
@@ -258,35 +257,21 @@ def register_self(purpose: str, *, project_root: Optional[Path] = None, detail: 
     return _append_entry(entry)
 
 
-def is_desktop_owned_backend(argv: Optional[Sequence[str]] = None) -> bool:
-    """Whether this process is the backend Desktop spawned and owns.
+def is_desktop_owned_backend() -> bool:
+    """Whether this process is the backend the desktop app launched.
 
-    ``NOESIA_DESKTOP=1`` is inherited by every shell and agent child the app launches, so the
-    flag alone is not ownership proof (same class as #116107). Desktop hands its backend a
-    per-spawn credential the terminal pane never receives (and the terminal tool's env policy
-    strips from agent children): the local pool spawn mints ``NOESIA_DASHBOARD_SESSION_TOKEN``,
-    the SSH spawn passes a 0600 token FILE on argv and deliberately sets no token env var.
-    ``argv`` defaults to this process's own.
+    ``NOESIA_DESKTOP=1`` is set by the only thing that can set it: the desktop shell, in
+    ``app/gateway_link.py`` before it starts or attaches a gateway. Nothing else in the tree writes
+    it, and the terminal tool's env policy keeps it out of agent children, so the flag alone is
+    ownership proof here.
+
+    The stdio era proved a *process* was the desktop's own backend by handing it a per-spawn
+    ``NOESIA_DASHBOARD_SESSION_TOKEN`` from the local dashboard pool. A gateway is long-lived and
+    shared by every client (desktop, CLI, cron), so "which client is this" is a per-connection
+    question now — answered by ``server_requests.answers_requests(transport)``, never by process
+    env. Only the process-level flag survives.
     """
-    if os.environ.get("NOESIA_DESKTOP") != "1":
-        return False
-    if os.environ.get("NOESIA_DASHBOARD_SESSION_TOKEN"):
-        return True
-    from noesia_cli._startup_fast import is_desktop_ssh_backend_argv
-
-    return is_desktop_ssh_backend_argv(list(sys.argv[1:] if argv is None else argv))
-
-
-def is_local_desktop_backend() -> bool:
-    """The backend Desktop spawned on this machine: the local pool spawn's credential, never the
-    SSH spawn (its token arrives as a file on argv, and that host is another computer)."""
-    return os.environ.get("NOESIA_DESKTOP") == "1" and os.environ.get("NOESIA_DASHBOARD_SESSION_TOKEN", "") != ""
-
-
-def on_local_desktop_backend() -> bool:
-    """This process is the backend the desktop app spawned on this machine: never an SSH, URL or
-    cloud backend, and never a terminal-pane shell the desktop merely launched."""
-    return is_desktop_owned_backend() and is_local_desktop_backend()
+    return os.environ.get("NOESIA_DESKTOP") == "1"
 
 
 def _desktop_spawner_identity() -> tuple[Optional[int], Optional[float]]:

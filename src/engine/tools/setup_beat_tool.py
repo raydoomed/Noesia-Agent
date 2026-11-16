@@ -23,36 +23,15 @@ logger = logging.getLogger(__name__)
 BEATS = ("next", *flow.BEAT_IDS, "done")
 
 
-def _installed() -> dict:
-    from noesia_cli.plugin_catalog_presence import onboarding_names
-    from noesia_cli.plugins_cmd import _catalog_installed_dir
-
-    return {"installed": [name for name in onboarding_names() if _catalog_installed_dir(name) is not None]}
-
-
-# A card closed without its own answer (words, a value, a skip, the deadline) still reports these.
-_PRESENT = {"plugins": _installed}
-
-
-def _present(beat: str) -> dict | None:
-    if (read := _PRESENT.get(beat)) is None:
-        return None
-    try:
-        return read()
-    except Exception:
-        logger.warning("onboarding: could not read what the %s beat has on this machine", beat, exc_info=True)
-        return None
-
-
 def _direct_event(beat: str, args: Mapping[str, Any]) -> flow.Event | None:
     """An event the call carries in itself (no card): done, a value given in words, or a skip. Only the
     Skip setup button (onboarding.skip) ends onboarding early; the model never decides the user quit."""
     if beat == "done":
         return flow.Done()
     if args.get("skip"):
-        return flow.Skipped(beat, _present(beat))
+        return flow.Skipped(beat)
     value = args.get("value")
-    return flow.Recorded(beat, value.strip(), _present(beat)) if isinstance(value, str) and value.strip() else None
+    return flow.Recorded(beat, value.strip()) if isinstance(value, str) and value.strip() else None
 
 
 def _reply_event(beat: str, reply: Mapping[str, Any] | None) -> flow.Event:
@@ -63,26 +42,14 @@ def _reply_event(beat: str, reply: Mapping[str, Any] | None) -> flow.Event:
         return flow.Answered(beat, {"name": said.strip()}, said.strip())
     if reply.get("wrote_instead"):
         # A message sent instead of answering: the desktop sends it as the user's next turn.
-        return flow.Wrote(beat, _present(beat))
+        return flow.Wrote(beat)
     answer = reply.get("answer")
-    return flow.Answered(beat, answer) if isinstance(answer, dict) and answer else flow.TimedOut(beat, _present(beat))
-
-
-def _skill_resolver() -> Callable[[str], str | None]:
-    """A written first-task skill name -> the name skill_view loads it with here, or None. A plugin skill
-    (``blender:blender``) resolves through the installed catalog plugin to its registered name."""
-    from noesia_cli.plugins_activation_live import catalog_plugin_skill
-    from tools.skills_tool import find_all_skills
-
-    bundled = {skill["name"] for skill in find_all_skills()}
-    return lambda name: catalog_plugin_skill(name) if ":" in name else (name if name in bundled else None)
+    return flow.Answered(beat, answer) if isinstance(answer, dict) and answer else flow.TimedOut(beat)
 
 
 def _result(step: flow.Step, beat: str | None = None, extra: str = "") -> str:
     facts = flow.Facts.from_stored(step.record["facts"])
-    # Only a first task's reminder names skills; the skills scan is skipped for every other result.
-    resolve_skill = _skill_resolver() if step.reminder.startswith("build_") else (lambda name: name)
-    text = reminder(step.reminder, step.record, facts, beat, resolve_skill) + extra
+    text = reminder(step.reminder, step.record, facts, beat) + extra
     return json.dumps({**step.result, **({"reminder": text} if text else {})}, ensure_ascii=False)
 
 
@@ -120,7 +87,7 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
                               else {"error": "Onboarding is over in this chat; it is a normal chat now."})
     if callback is None:
         return tool_error("setup_beat cards show only in the Noesia desktop app.")
-    shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id, args.get("options")))
+    shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id))
     if shown.result:  # refused, or a beat this machine skips
         return _result(shown)
     question = str(args.get("question") or "").strip() or beat_question(beat, (record.get("facts") or {}).get("locale"))
@@ -131,7 +98,12 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
         # Skip setup closed the card (onboarding.skip already wrote the record).
         return _result(flow.Step(after, {"skipped_all": True}, "skip_all"))
     event = _reply_event(beat, reply)
-    result = _result(records.advance(db, session_id, event), beat)
+    step = records.advance(db, session_id, event)
+    if isinstance(event, flow.Answered) and flow.is_active(step.record) and flow.next_beat(step.record) is None:
+        # 答完最后一张卡就没有下一步了（引导只有问名字这一步）：在这一次调用里收尾，
+        # 不用再等模型多调一次 setup_beat(beat="done")。
+        step = records.advance(db, session_id, flow.Done())
+    result = _result(step, beat)
     if isinstance(event, flow.Wrote) and end_turn is not None:
         # Otherwise the model answers a card the user moved past while their message waits for the turn to end.
         end_turn()
@@ -141,12 +113,10 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
 SETUP_BEAT_SCHEMA = {
     "name": "setup_beat",
     "description": (
-        "Run the first-run onboarding in this chat. Shows the card for a beat and waits for the user, then "
-        "returns their answer and what to do next. beat=next shows the next beat. Pass value to record an answer "
-        "they gave in words, skip to record that they skipped a beat. The build card needs options: your picks "
-        "from the list its reminder gives. beat=done ends onboarding after the first "
-        "build is shown and its close card is answered. Nothing here ends it early: a user who wants to stop "
-        "presses Skip setup."
+        "Run the first-run onboarding in this chat. Shows the name card and waits for the user, then "
+        "returns their answer; answering it completes onboarding. beat=next shows the next beat. Pass "
+        "value to record a name they gave in words, skip to record that they skipped it. Nothing here "
+        "ends it early: a user who wants to stop presses Skip setup."
     ),
     "parameters": {
         "type": "object",
@@ -154,12 +124,8 @@ SETUP_BEAT_SCHEMA = {
         "properties": {
             "beat": {"type": "string", "enum": list(BEATS)},
             "question": {"type": "string", "description": "Your line above the card."},
-            "value": {"type": "string", "description": "Record an answer given in words (a name, or an option id). No card."},
+            "value": {"type": "string", "description": "Record a name given in words. No card."},
             "skip": {"type": "boolean", "description": "They skipped this beat in words. No card."},
-            "options": {"type": "array", "maxItems": 4, "description": "build only: up to four picks, ids from the list.",
-                        "items": {"type": "object", "required": ["id", "label"],
-                                  "properties": {"id": {"type": "string"},
-                                                 "label": {"type": "string", "maxLength": 32}}}},
         },
     },
 }

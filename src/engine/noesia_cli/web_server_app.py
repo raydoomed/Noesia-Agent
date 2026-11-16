@@ -156,10 +156,6 @@ async def standalone_lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
-    # The desktop's onboarding due answer, worked out before the first boot asks for it.
-    # Through the server: methods_* functions run with the server's globals (``bind_module``).
-    tui_gateway.server.start_due_boot()
-
     try:
         yield
     finally:

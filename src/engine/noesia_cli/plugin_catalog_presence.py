@@ -124,40 +124,6 @@ def presence(entry: Any) -> Presence:
     return min(found, key=lambda p: rank[p.state]) if found else UNKNOWN
 
 
-def _onboarding_catalog() -> list:
-    """Catalog entries curated for onboarding (``onboarding: true``) that this OS can run."""
-    from noesia_cli.plugin_catalog import load_catalog_live
-    from noesia_cli.plugins_cmd_catalog import normalized_platforms
-    from noesia_platform.host.facts import os_family
-
-    here = os_family()
-    return [entry for entry in load_catalog_live()
-            if entry.onboarding and (not entry.platforms or here in normalized_platforms(entry.platforms))]
-
-
-def onboarding_names() -> list[str]:
-    """The onboarding plugins this OS runs, by catalog name; no presence probe."""
-    return [entry.name for entry in _onboarding_catalog()]
-
-
-def onboarding_entries() -> list[dict[str, Any]]:
-    """Catalog entries curated for the onboarding card (``onboarding: true``) that this OS can run,
-    each with its app state. Platform mismatch is the only exclusion; a missing app is reported."""
-    rows = []
-    for entry in _onboarding_catalog():
-        found = presence(entry)
-        rows.append({
-            "name": entry.name,
-            "title": entry.title or entry.name,
-            "description": _first_sentence(entry.description),
-            "tier": entry.tier,
-            "platforms": list(entry.platforms),
-            "app_state": found.state,
-            "sentence": found.sentence,
-        })
-    return rows
-
-
 def presence_for(names: list[str]) -> list[dict[str, Any]]:
     """The named catalog plugins this OS runs, in the order asked, each with its app state and the
     catalog description's disclosure. A name the live catalog does not carry (unknown or removed) is dropped."""

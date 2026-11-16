@@ -958,7 +958,12 @@ def restore_policy(data):
         if ((not is_forward_policy(policy) and
              (policy.source not in surfaces or policy.platform != surfaces[policy.source]))
                 or not isinstance(policy.cwd, str) or not Path(policy.cwd).is_absolute()
-                or not isinstance(policy.model, str) or not policy.model.strip()
+                # An empty/absent model is the stored state of a session created before the user
+                # chose one (``build_policy`` keeps ``None``, ``session_local`` resolves the profile
+                # default and a profile with no ``model:`` yields ``""``); the field is declared
+                # ``str | None`` and every reader re-resolves the route from config, so only the
+                # type is policed here.
+                or not (policy.model is None or isinstance(policy.model, str))
                 or not isinstance(policy.toolsets, (list, tuple))
                 or any(not isinstance(name, str) for name in policy.toolsets)
                 or type(policy.safe_mode) is not bool or type(policy.ignore_user_config) is not bool

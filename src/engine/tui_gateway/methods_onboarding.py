@@ -28,15 +28,17 @@ def _(rid, params: dict) -> dict:
 
 def _run_state(*, assume_fresh: bool = False) -> dict:
     """``run``: the root config says so, else this OS user never used Noesia (or the unpackaged
-    desktop's ``--fresh-install`` says to assume that). ``eligible``: this is the desktop's local
-    backend and a provider is configured to carry the first chat; remote backends answer at once
-    and run onboarding only from Settings. On the local backend the answer comes from the boot
-    computation (``onboarding_due``); ``--fresh-install`` asks live."""
+    desktop's ``--fresh-install`` says to assume that). ``eligible``: this connection is the
+    desktop app — the client that answers server→client requests — and a provider is configured to
+    carry the first chat; every other client (CLI, TUI, a remote gateway) answers at once and runs
+    onboarding only from Settings. For the desktop the answer comes from the connection's boot
+    computation (``onboarding_due``); ``--fresh-install`` asks live.
+    """
     from noesia_cli import onboarding_due
-    from noesia_cli.process_identity import on_local_desktop_backend
     from noesia_cli.onboarding_run import should_run
+    from tui_gateway import server_requests
 
-    if not on_local_desktop_backend():
+    if not server_requests.answers_requests(_caller_transport()):
         return {"run": should_run(assume_fresh=assume_fresh), "eligible": False, **_active_run()}
     due = _due_now(assume_fresh=True) if assume_fresh else onboarding_due.read(_due_now, stamp=_due_stamp)
     return {**due, **_active_run()}
@@ -75,13 +77,12 @@ def _stat(path):
 
 
 def start_due_boot() -> None:
-    """Serve boot, desktop's local backend: work out the due answer off the RPC path."""
+    """A desktop client just connected (``client.capabilities {server_requests: true}``): work out
+    the due answer off the RPC path, so the first ``onboarding.state`` reads a computed one instead
+    of competing with every other provider read on its arrival."""
     from agent.memory_provider import spawn_context_thread
     from noesia_cli import onboarding_due
-    from noesia_cli.process_identity import on_local_desktop_backend
 
-    if not on_local_desktop_backend():
-        return
     finish = onboarding_due.begin_boot(_due_stamp)
 
     def compute() -> dict[str, bool]:
@@ -131,6 +132,49 @@ def _provider_configured(scope: dict) -> bool:
         return bool(chosen or os.environ.get("NOESIA_MODEL", "").strip())
 
 
+def _open_chat(db) -> str:
+    """Open the first chat in the connection's authority store.
+
+    A bare ``db.create_session`` row is not the authority's session: the window's
+    ``session.resume`` then has to migrate a local row, the live onboarding run keeps it
+    active, and that migration refuses with ``runtime_coordination_required`` — the chat
+    can never be attached, so the opening plays and the name card never comes. Staging and
+    committing it through the connection's authority makes resume find its own session.
+    Off a connection (TUI/CLI sidecar, no authority) the local row IS the session."""
+    from tui_gateway.ws_legacy_fallback import current_authority, current_authority_loop
+    conn = current_authority()
+    if conn is None:
+        return db.create_session(new_session_id(), "desktop")
+    import asyncio
+    import uuid
+    from gateway.session_local import stage_local_session
+    from gateway.session_local_recovery import restore_local_session
+    from gateway.session_runtime_workers import tracked_write
+    from noesia_state_local import commit_local_session
+    authority = conn.authority
+    staged = stage_local_session(authority, conn.actor,
+                                 {"source": "gui", "request_id": uuid.uuid4().hex},
+                                 client_local=getattr(conn, "native_owner", False))
+    if not (staged.get("policy") or {}).get("model"):
+        raise _NoModelForTheRun("No model is set up to run onboarding on.")
+
+    def commit():
+        commit_local_session(authority.db, epoch=authority.epoch, receipt=staged)
+        return restore_local_session(authority, staged["session_id"]).session_id
+
+    loop = current_authority_loop()
+    if loop is None or not loop.is_running():
+        return commit()
+
+    async def commit_on_authority():
+        # The authority's own write path, not a second writer: the store is journal_mode=DELETE here
+        # (SQLite 3.50.4 WAL-reset bug), so a competing write from this worker thread surfaces to the
+        # window as ``storage_unavailable``.
+        return await tracked_write(authority, commit)
+
+    return asyncio.run_coroutine_threadsafe(commit_on_authority(), loop).result(timeout=180)
+
+
 @method("onboarding.start")
 def _(rid, params: dict) -> dict:
     from agent.onboarding_facts import read_facts
@@ -156,13 +200,11 @@ def _(rid, params: dict) -> dict:
                     with _session_profile_runtime_scope(scope, hydrate_secrets=False):
                         facts = read_facts(
                             facts_source=params.get("facts_source") or "local",
-                            locale=params.get("locale"),
-                            app_ui=bool(params.get("app_ui", True)),
-                            first_task=bool(params.get("first_task", True)))
+                            locale=params.get("locale"))
                     # A rerun runs on the configured model; a fresh run needs something to run on.
                     if not params.get("rerun") and not _provider_configured(scope):
                         raise _NoModelForTheRun("No provider is set up for the first chat.")
-                    stored = db.create_session(new_session_id(), "desktop")
+                    stored = _open_chat(db)
                     # The record exists before the agent is built, so the build folds the onboarding toolset in.
                     start(db, stored, facts)
                 else:

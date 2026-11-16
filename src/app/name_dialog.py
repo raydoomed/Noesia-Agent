@@ -1,150 +1,127 @@
-"""起名卡片：第一次见面时问一句「我该怎么称呼你」。
+"""起名卡片：引导里唯一的一张卡，摆在消息流里问一句「我该怎么称呼你」。
 
-引擎的引导流程一共七张卡（名字/主题/布局/插件/导览/首个任务…），我们只做名字这一张——
-其余的直接关掉，引擎按「卡片被关」记一笔继续往下走（`flow.TimedOut`），不影响流程。
+跟着 `clarify` 那张卡的做法走（`app/clarify_card.py`）：卡片是流里的一块，不是弹出窗，
+所以首次运行的消息流里看得见它，答完那行绿字也留在原处。
 
 回包契约在引擎 `tools/setup_beat_tool.py::_reply_event`：
 - 正常回答 → `{"answer": {"name": "阿岚"}}`（`flow.Answered`）
-- 关掉/不答 → `{}`（`flow.TimedOut`，跟「跳过」一样让它往下走）
+- 关掉/不答 → `{}`（`flow.TimedOut`，跟「跳过」一样让它收尾）
 帧 id 用 server→client 请求的 `srq-...`，跟审批同一套。
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import PySide6.QtCore as QtCore
 import PySide6.QtWidgets as QtWidgets
 
-from app.window_geometry import card_position, screen_area
+from app.clarify_card import CONFIRM_QSS, DONE_COLOR, FIELD_QSS, GHOST_QSS, MUTED_COLOR, _flush_layout
 
-_STYLE = """
-#card { background: #23273a; border: 1px solid rgba(255,255,255,40); border-radius: 14px; }
-#title { color: #f2f4fb; font-size: 15px; font-weight: 600; }
-#hint { color: #9fb3c8; font-size: 12px; }
-QLineEdit {
-    color: #f2f4fb; background: rgba(0,0,0,70); border: 1px solid rgba(255,255,255,35);
-    border-radius: 9px; padding: 8px 10px; font-size: 14px;
-}
-QLineEdit:focus { border-color: #5b8fb9; }
-QPushButton {
-    color: #e9ecf4; background: rgba(255,255,255,20); border: 1px solid rgba(255,255,255,30);
-    border-radius: 8px; padding: 7px 14px; font-size: 13px;
-}
-QPushButton:hover { background: rgba(255,255,255,34); }
-QPushButton#primary { background: #3d6f5b; border-color: #4f8a71; }
-QPushButton#primary:hover { background: #4a8369; }
-"""
+TITLE_QSS = "QLabel{color:#f2f4fb;font-size:12.5px;background:transparent;}"
+HINT_QSS = f"QLabel{{color:{MUTED_COLOR};font-size:10.5px;background:transparent;}}"
 
 
-class NameDialog(QtWidgets.QDialog):
-    """问她该怎么称呼他。结果通过 on_name(name) 交回去；name 为空 = 这次先跳过。"""
+class SetupNameCard(QtWidgets.QWidget):
+    """名字卡：问题 + 输入框 + 确认。答完收起输入、把那行绿字留下（历史里也照这个画）。"""
 
-    def __init__(self, payload, on_name: Callable[[str], None],
+    named = QtCore.Signal(str)
+
+    def __init__(self, question: str, suggested: str = "", answer: str = "",
                  parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
-        self._on_name = on_name
-        self._answered = False
-        self._drag_offset: QtCore.QPoint | None = None
-
-        self.setWindowFlags(
-            QtCore.Qt.WindowType.Tool | QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.WindowStaysOnTopHint
-        )
-        self.setModal(False)
-        self.setStyleSheet(_STYLE)
-
-        card = QtWidgets.QFrame(self)
-        card.setObjectName("card")
-        lay = QtWidgets.QVBoxLayout(card)
-        lay.setContentsMargins(16, 14, 16, 12)
-        lay.setSpacing(10)
-
-        title = QtWidgets.QLabel("第一次见面，我该怎么称呼你？", card)
-        title.setObjectName("title")
-        lay.addWidget(title)
-
-        card_data = payload.get("card") if isinstance(payload, dict) else None
-        suggested = ""
-        if isinstance(card_data, dict):
-            suggested = str(card_data.get("suggested") or "").strip()
-
-        self._edit = QtWidgets.QLineEdit(card)
-        self._edit.setPlaceholderText("输入你的名字")
-        if suggested:
-            self._edit.setText(suggested)
+        self.setObjectName("SetupNameCard")
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        self.setAutoFillBackground(False)
+        self.wheel_target: QtWidgets.QWidget | None = None
+        self._settled = bool(answer)
+        self._question = QtWidgets.QLabel(" ".join(str(question or "").split()))
+        self._question.setStyleSheet(TITLE_QSS)
+        self._question.setWordWrap(True)
+        self._done = QtWidgets.QLabel("")
+        self._done.setStyleSheet(f"color:{DONE_COLOR};font-size:10.5px;background:transparent;")
+        self._row = QtWidgets.QWidget()
+        self._suggested = str(suggested or "").strip()
+        self._edit = QtWidgets.QLineEdit()
+        self._edit.setPlaceholderText("你的名字")
+        self._edit.setStyleSheet(FIELD_QSS)
+        self._edit.setText(self._suggested)
         self._edit.returnPressed.connect(self._submit)
-        lay.addWidget(self._edit)
+        self._hint = QtWidgets.QLabel("")
+        self._hint.setStyleSheet(HINT_QSS)
+        self._ok = QtWidgets.QPushButton("就叫这个")
+        self._ok.setStyleSheet(CONFIRM_QSS)
+        self._ok.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._ok.clicked.connect(self._submit)
+        self._build()
+        if answer:
+            self.settle(answer)
 
-        hint_text = ("这是你的系统账户名，不对就改掉。" if suggested
-                     else "名字会写进我的人设文件；以后随时能改。")
-        hint = QtWidgets.QLabel(hint_text, card)
-        hint.setObjectName("hint")
-        lay.addWidget(hint)
-
-        row = QtWidgets.QHBoxLayout()
-        row.setSpacing(8)
-        row.addStretch(1)
-        skip = QtWidgets.QPushButton("以后再说", card)
-        skip.clicked.connect(lambda: self._answer(""))
+    def _build(self) -> None:
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 11)
+        layout.setSpacing(0)
+        layout.addWidget(self._question)
+        layout.addSpacing(8)
+        row = QtWidgets.QHBoxLayout(self._row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(self._edit, 1)
+        row.addWidget(self._ok)
+        skip = QtWidgets.QPushButton("以后再说")
+        skip.setStyleSheet(GHOST_QSS)
+        skip.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        skip.clicked.connect(lambda: self.named.emit(""))
         row.addWidget(skip)
-        ok = QtWidgets.QPushButton("就叫这个", card)
-        ok.setObjectName("primary")
-        ok.clicked.connect(self._submit)
-        row.addWidget(ok)
-        lay.addLayout(row)
+        layout.addWidget(self._row)
+        layout.addSpacing(6)
+        layout.addWidget(self._hint)
+        layout.addSpacing(2)
+        layout.addWidget(self._done)
+        self._sync_hint()
 
-        outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(card)
+    def _sync_hint(self) -> None:
+        self._hint.setText(
+            f"默认是你系统账户名（{self._suggested}）：点「就叫这个」，或者改成别的再回车。"
+            if self._suggested else "输入你的名字，回车就行。"
+        )
 
-        self.adjustSize()
-        self.setFixedWidth(max(320, min(420, self.sizeHint().width())))
+    def fit(self, width: int) -> int:
+        """定宽、按内容定高：正文里那块空位要跟卡片一样高（和 `ClarifyCard.fit` 同一份约定）。"""
+        width = max(1, int(width))
+        self.setFixedWidth(width)
+        layout = self.layout()
+        if layout is None:
+            return 1
+        layout.invalidate()
+        _flush_layout()
+        layout.activate()
+        _flush_layout()
+        height = layout.heightForWidth(width) if layout.hasHeightForWidth() else layout.sizeHint().height()
+        return max(1, int(height))
 
     def _submit(self) -> None:
-        self._answer(self._edit.text().strip())
-
-    def _answer(self, name: str) -> None:
-        if self._answered:
+        """「就叫这个」/ 回车：把框里的名字交回去（留着默认的系统账户名也算）。"""
+        name = self._edit.text().strip()
+        if not name or self._settled:
             return
-        self._answered = True
-        try:
-            self._on_name(name)
-        finally:
-            self.close()
+        self.named.emit(name)
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt
-        if event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-        super().mousePressEvent(event)
+    def settle(self, name: str) -> None:
+        """答完了：收起输入，问题底下留一行绿字；`name` 为空表示这次跳过。"""
+        self._settled = True
+        self._row.setVisible(False)
+        self._hint.setVisible(False)
+        self._done.setText(f"✓ 叫我 {name}" if name else "以后再说")
+        self.updateGeometry()
 
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt
-        if self._drag_offset is not None and event.buttons() & QtCore.Qt.MouseButton.LeftButton:
-            self.move(event.globalPosition().toPoint() - self._drag_offset)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt
-        self._drag_offset = None
-        super().mouseReleaseEvent(event)
-
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt
-        if not self._answered:
-            self._answered = True
-            self._on_name("")
-        super().closeEvent(event)
-
-    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt
-        if event.key() == QtCore.Qt.Key.Key_Escape:
-            self._answer("")
+    def focus_field(self) -> None:
+        """把光标放进名字那一行：卡片一出现就能直接打字。"""
+        if self._settled:
             return
-        super().keyPressEvent(event)
+        self._edit.setFocus(QtCore.Qt.FocusReason.OtherFocusReason)
+        self._edit.selectAll()
 
-    def show_near(self, anchor: QtCore.QRect | None) -> None:
-        self.move_near(anchor)
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        self._edit.setFocus()
 
-    def move_near(self, anchor: QtCore.QRect | None) -> None:
-        self.adjustSize()
-        self.move(card_position(anchor, self.size(), screen_area(anchor)))
+def receipt_item(question: str, name: str, parent: QtWidgets.QWidget | None = None) -> SetupNameCard:
+    """历史里那张卡：只有问题和答过的名字，没有输入框。"""
+    return SetupNameCard(question, answer=name, parent=parent)

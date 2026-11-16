@@ -311,6 +311,7 @@ class EngineWire(QtCore.QObject):
     history_count = QtCore.Signal(int)
     history_page = QtCore.Signal(list, bool, str)
     history_failed = QtCore.Signal(str, str)
+    history_stale = QtCore.Signal(str)
     user_row_stamped = QtCore.Signal(int)
     sessions_listed = QtCore.Signal(list)
     config_value = QtCore.Signal(str, str)
@@ -357,6 +358,7 @@ class EngineWire(QtCore.QObject):
     cron_result = QtCore.Signal(str, dict)
     cron_changed = QtCore.Signal()
     setup_needed = QtCore.Signal(str)
+    onboarding_ended = QtCore.Signal(str)
     error = QtCore.Signal(str)
     paused = QtCore.Signal(object)
     paused_discard_failed = QtCore.Signal()
@@ -372,6 +374,7 @@ class EngineWire(QtCore.QObject):
         self._workspace = Path(workspace)
         self._link = GatewayLink(self)
         self._link.frame.connect(self._on_frame_text)
+        self.history_stale.connect(self._resume_stale_session)
         self._link.ready.connect(self._on_link_ready)
         self._link.failed.connect(self._on_link_failure)
         self._link.gone.connect(self._on_link_gone)
@@ -387,6 +390,9 @@ class EngineWire(QtCore.QObject):
         self._models_after_settings = False
         self._reasoning_effort = ""
         self._onboarding_started = False
+        self._onboarding_session = ""
+        self._history_retry = 0
+        self._history_recover = 0
         self._stored_id = ""
         self._revision = 0
         self._generation = 0
@@ -394,17 +400,28 @@ class EngineWire(QtCore.QObject):
         self._paused_sending = False
         self._resolving: dict = {}
         self._pending_rows: list[dict] = []
+        # 引擎按连接记「这个客户端回答 server→client 请求」：`client.capabilities` 落地之前问
+        # `onboarding.state`，答案里的 `eligible` 一定是 false（引擎把它当 CLI/远端）。开场问早
+        # 一步就是黄字常驻、引导不起。所以开场先排队，capabilities 发出去再问。
+        self._caps_ready = False
+        self._greet_waiting = False
         self._rewind_text = ""
         self._rewind_row = 0
         self._switch_payload: dict = {}
         self._switch_token = ""
         self._reasoning_level = ""
         self._sent: dict[int, dict] = {}
+        self._seen_requests: set[str] = set()
+        self._harvest_at = 0.0
+        self._onboarding_run = ""
         self._retried: set[int] = set()
         self._replay: list[dict] = []
         self._recovering = False
         self._attaching = False
         self._attach_since = 0.0
+        # 想在飞的那条挂载落地之后再补挂的会话（开场新建的那一场撞上启动挂载时用）。
+        self._attach_after = ""
+        self._attach_want = ""
         self._recover_rounds = 0
         self._attach_timeouts = 0
         self._pending_text = ""
@@ -434,6 +451,11 @@ class EngineWire(QtCore.QObject):
         self._sent.clear()
         self._retried.clear()
         self._replay.clear()
+        # 新连接要重新 advertise，否则开场问又落到「引擎当我是 CLI」的那一版答案上。
+        self._caps_ready = False
+        self._greet_waiting = False
+        self._attach_want = ""
+        self._attach_after = ""
         self._recovering = False
         self._attaching = False
         self._attach_since = 0.0
@@ -513,6 +535,7 @@ class EngineWire(QtCore.QObject):
             return False
         self._attaching = True
         self._attach_since = time.monotonic()
+        self._attach_want = ""
         params = {"cwd": cwd or str(self._workspace), "cwd_explicit": True, "source": SESSION_SOURCE}
         if self._reasoning_effort:
             params["reasoning"] = self._reasoning_effort
@@ -534,6 +557,9 @@ class EngineWire(QtCore.QObject):
         self._stored_id = session_id or self._stored_id
         self._attaching = True
         self._attach_since = time.monotonic()
+        # 这一条挂载想要的会话：迟到的旧挂载回包不能把 `_session_id` 拉回上一场
+        # （开场新建会话后，启动时那条 resume 的回包晚到，之后打的字就进了旧聊天）。
+        self._attach_want = session_id or ""
         self.reasoning_pending.emit(True)
         rid = self._call("session.resume", {"session_id": session_id, "source": SESSION_SOURCE,
                                             "omit_messages": True, "defer_history": True},
@@ -557,11 +583,21 @@ class EngineWire(QtCore.QObject):
         界面上两条路要的处理完全不同（接在最前面 / 接在窗口尾巴上再判够没够到洞底），
         靠位置猜不可靠，就让它自己说。
         """
-        sid = self._session_id or self._stored_id
+        sid = self._stored_id or self._session_id
         base = str(getattr(self._link, "api_origin", "") or "")
-        if not sid or not base:
+        if not sid:
+            # 还没有会话（引导那场还没开）：没有历史可取，这不是错，不该往聊天窗顶上挂红字。
+            return
+        if not base:
+            # 通道刚断或刚起，HTTP 口子还没报上来：等一会儿再取，别把「还没连上」当错误弹给人。
+            if self._history_retry < 6:
+                self._history_retry += 1
+                QtCore.QTimer.singleShot(
+                    600, lambda: self.fetch_history(offset, limit, tag))
+                return
             self.history_failed.emit("引擎还没连上，历史没取到", tag)
             return
+        self._history_retry = 0
         page = int(limit) if limit else 0
         if page <= 0 or page > int(self.HISTORY_PAGE):
             # 0/没给 = 一整页；要得比一整页多也按一整页来（页大小只在这里定）。
@@ -583,7 +619,18 @@ class EngineWire(QtCore.QObject):
                 payload = json.loads(response.read().decode("utf-8"))
         except Exception as exc:  # noqa: BLE001 — 取不到就报给界面，别把开窗卡在这儿
             code = getattr(exc, "code", "")
-            logger.warning("[历史] 第 %s 页没取到（%s）：%s", offset, tag, exc)
+            if str(code) == "404":
+                # 404 只有一种意思：库里没有这个 id。要么界面还拿着重启前的运行时 id
+                # （引擎重启后全作废），要么这一场还没落库——两种都不是「取不到」。
+                if not self._stored_id:
+                    logger.info("[历史] 库里还没有这一场（%s），先不铺", session_id[:12])
+                    return
+                if not self._history_recover:
+                    self._history_recover = 1
+                    logger.warning("[历史] 会话 %s 在库里找不到，按存储 id 重挂", session_id[:12])
+                    self.history_stale.emit(self._stored_id)
+                    return
+            logger.warning("[历史] %s 没取到（%s）：%s", url, tag, exc)
             self.history_failed.emit(
                 f"历史没取到：{type(exc).__name__}{f' {code}' if code else ''}", tag
             )
@@ -594,8 +641,14 @@ class EngineWire(QtCore.QObject):
         returned = int(pagination.get("returned") or len(raw))
         limit = int(pagination.get("limit") or page)
         logger.info("[历史] 取回 offset=%s（%s），%s 条", offset, tag, len(rows))
+        self._history_recover = 0
         # 够不够一页由服务端说：回来的条数少于这一页的 limit，就是再往前没有了。
         self.history_page.emit(rows, returned >= limit, tag)
+
+    def _resume_stale_session(self, stored_id: str) -> None:
+        """历史 404：按存储 id 重挂那场会话（`history_stale` 从取数线程发过来，这里是主线程）。"""
+        if stored_id:
+            self.resume_session(stored_id)
 
     @staticmethod
     def _page_rows(raw: list) -> list:
@@ -642,6 +695,8 @@ class EngineWire(QtCore.QObject):
                     "tool_call_id": row.get("tool_call_id"),
                     "labels": None,
                     "reasoning": "",
+                    # 名字卡要从结果里取回写进去的名字（`chat_panel._paint_setup_receipt`）。
+                    **({"content": row.get("content")} if name == "setup_beat" else {}),
                 })
                 continue
             shown = row.get("display_content")
@@ -717,6 +772,10 @@ class EngineWire(QtCore.QObject):
             self._pending_text = f"{self._pending_text}\n\n{text}" if self._pending_text else text
             self._ensure_session()
             return
+        if self._turn is not None and time.monotonic() - self._harvest_at > 3.0:
+            # 这一轮还挂着（很可能引擎正等人回一张卡）：先把还开着的服务端请求捞回来。
+            # 没有这一步，用户打的字只会排在卡后面，界面一直转圈——卡面根本没到。
+            self._reconcile_open()
         params: dict = {"session_id": self._session_id, "text": text,
                         "submission_id": uuid.uuid4().hex, "clarify_batch": True}
         if queued:
@@ -877,6 +936,7 @@ class EngineWire(QtCore.QObject):
         if not reply_id:
             return
         clean = str(name or "").strip()
+        logger.info("answer setup_beat id=%s", reply_id)
         self._reply(reply_id, {"answer": {"name": clean}} if clean else {})
 
     def set_model(self, model: str, token: str = "") -> None:
@@ -987,6 +1047,10 @@ class EngineWire(QtCore.QObject):
         所以每次猜「可能要跑」都先问 `onboarding.state`，由引擎按
         `run`（配置/从没用过）和 `eligible`（有 provider）自己判断；已经做过就什么都不发。
         """
+        if not self._caps_ready:
+            # capabilities 还没发：引擎此刻把这条连接当 CLI，eligible 必为 false。等 ready 再问。
+            self._greet_waiting = True
+            return True
         rid = self._call("onboarding.state", {}, tag="onboarding.state")
         return rid in self._sent
 
@@ -998,6 +1062,20 @@ class EngineWire(QtCore.QObject):
         `onboarding.set_run {run: true}`——「重跑引导」走的也是这一条，不删任何文件。
         """
         self._call("onboarding.set_run", {"run": True}, tag="onboarding.set_run")
+
+    def _end_onboarding(self, outcome: str) -> None:
+        """一轮引导结束了（`onboarding.ended`，或重开发现这轮已经不是我们挂着的那轮）。
+
+        结束只做三件事：撤掉「去配 Key」的黄字、关掉还开着的名字卡、把这一轮记成结束
+        —— 与参考桌面 `endOnboarding` 同义。`onboarding.run` 由引擎自己落盘，界面不再重开。
+        """
+        if not self._onboarding_run and outcome != "done":
+            return
+        self._onboarding_run = ""
+        self._onboarding_started = False
+        self._onboarding_session = ""
+        self.request_cancelled.emit("setup_beat", "")
+        self.onboarding_ended.emit(outcome or "done")
 
     def _start_onboarding(self) -> None:
         """参数与引导入口一致。
@@ -1011,8 +1089,6 @@ class EngineWire(QtCore.QObject):
             "fresh_launch": True,
             "locale": ui_locale(),
             "facts_source": "local",
-            "app_ui": False,
-            "first_task": False,
         }, tag="onboarding.start", long_lived=True)
         self._onboarding_started = True
 
@@ -1129,9 +1205,38 @@ class EngineWire(QtCore.QObject):
         self._attach_since = 0.0
         self._recover_rounds = 0
         self._attach_timeouts = 0
+        if (self._onboarding_started and self._onboarding_session
+                and session_id and session_id != self._onboarding_session):
+            # 引导正在这一场里跑：启动时发出去的那条建会话回包要是晚到，套上去之后
+            # 引导那一轮的思考/正文就被 `_on_event` 的会话过滤全丢掉，界面只剩名字卡。
+            # 不换会话，但把挂载标志放开（否则之后的建会话永远被拒）。
+            logger.info("skip late attach during onboarding: %s", session_id[:12])
+            return
         self._session_id = session_id
         if stored_id:
             self._stored_id = stored_id
+        logger.info("session ready stored=%s runtime=%s", self._stored_id, self._session_id)
+        # 在飞的那条落地了：如果它落地的不是我们真正想待的那一场（开场新建的那场），补挂过去。
+        after, self._attach_after = self._attach_after, ""
+        if after and after != self._stored_id:
+            self._stored_id = after
+            self.resume_session(after)
+        else:
+            self._reconcile_open()
+
+    def _reconcile_open(self) -> None:
+        """把「还挂着的服务端请求」捞回来。
+
+        引擎只在卡发出的那一刻写到当时的传输上；界面晚一步挂上、或者中途断线重连，
+        那张名字卡就永远看不到，回合停在原地等答案直到超时。`session.events.since` 的
+        回包带 `open_requests`，是唯一能把它重新递到界面上的通路。
+        """
+        if not self._session_id or not self.is_running():
+            return
+        self._harvest_at = time.monotonic()
+        self._call("session.events.since",
+                   {"session_id": self._session_id, "last_seen": 0},
+                   tag="session.events.since")
 
     def _ensure_session(self) -> None:
         """会话没好就去起一场：有存储 id 先续上；已经在起（或正在恢复）就不再发第二次。
@@ -1175,9 +1280,13 @@ class EngineWire(QtCore.QObject):
     @staticmethod
     def _is_session_gone(code, message) -> bool:
         """会话没了：4001 + 「找不到」。不能只认码——4001 也是参数错误码
-        （`session_id is required` 同样是 4001），认错就会把真错误当成可恢复状态吞掉。"""
-        text = str(message).lower()
-        return code in (4001, 4007) and ("not found" in text or "not exist" in text or "不存在" in text)
+        （`session_id is required` 同样是 4001），认错就会把真错误当成可恢复状态吞掉。
+
+        引擎的存储错误用的是下划线形态（`not_found` / `session_not_found`），按空格形态
+        一比就漏，恢复永远不触发——空会话/失效会话上每一次 `model.options`、`session.mutate`
+        都直接红字上屏。两种写法都要认。"""
+        text = str(message).lower().replace("_", " ")
+        return "not found" in text or "not exist" in text or "不存在" in text
 
     def _recover(self, failed: dict | None, method: str, rid=None) -> None:
         """会话句柄被回收（4001）：按存储 id 重新挂上，再把刚才那条原样重发。
@@ -1354,8 +1463,17 @@ class EngineWire(QtCore.QObject):
 
     def _on_server_request(self, frame: dict) -> None:
         method = frame.get("method")
+        rid = frame.get("id")
+        if rid is not None:
+            # 同一条请求可能既走实时帧、又从 `open_requests` 补递一次：同 id 只认第一次。
+            if str(rid) in self._seen_requests:
+                return
+            self._seen_requests.add(str(rid))
+            if len(self._seen_requests) > 400:
+                self._seen_requests.clear()
         params = dict(frame.get("params") or {})
         params["reply_id"] = frame.get("id")
+        logger.info("server request %s id=%s", method, rid)
         if method == "setup_beat":
             if str(params.get("beat") or "") == "name":
                 self.setup_beat.emit(params)
@@ -1523,9 +1641,22 @@ class EngineWire(QtCore.QObject):
                 self.voice_failed.emit(path, str(result.get("reason") or "这句没听清，再说一次"))
             return
         if tag in {"session.create", "session.resume"}:
+            stored = str(result.get("stored_session_id") or "")
+            if (tag == "session.resume" and self._attach_want and stored
+                    and stored != self._attach_want):
+                # 迟到的旧挂载：它属于上一场会话，套上去会把之后打的字送去旧聊天。
+                # 但它落地了，`_attaching` 就得放开，再补发真正想挂的那一场。
+                self._attaching = False
+                self._attach_since = 0.0
+                after, self._attach_after = self._attach_after, ""
+                if after and after != self._stored_id:
+                    self._stored_id = after
+                if after:
+                    self.resume_session(after)
+                return
             self._session_ready(
                 str(result.get("session_id") or result.get("id") or ""),
-                str(result.get("stored_session_id") or ""),
+                stored,
             )
             if tag == "session.resume":
                 self._revision = int(result.get("revision") or 0)
@@ -1551,15 +1682,22 @@ class EngineWire(QtCore.QObject):
             else:
                 self._recovering = False
                 self.create_session()
+        elif tag == "session.events.since":
+            for row in (result.get("open_requests") or []):
+                if isinstance(row, dict) and row.get("method"):
+                    self._on_server_request({"id": row.get("id"), "method": row.get("method"),
+                                             "params": dict(row.get("params") or {})})
         elif tag == "session.list":
             self.sessions_listed.emit(list(result.get("sessions") or []))
         elif tag == "onboarding.start":
+            self._onboarding_run = str(result.get("run_id") or "")
             self._stored_id = str(result.get("stored_session_id") or self._stored_id)
             self._session_id = str(result.get("session_id") or "")
+            self._onboarding_session = self._session_id
+            self.notice_clear.emit("setup")
+            logger.info("onboarding started run=%s stored=%s", self._onboarding_run, self._stored_id)
             self.session_ready.emit({"session_id": self._session_id,
                                      "stored_session_id": self._stored_id})
-            if self._stored_id:
-                self.resume_session(self._stored_id)
         elif tag == "process.list":
             rows = [row for row in (result.get("processes") or []) if isinstance(row, dict)]
             self.processes.emit(rows)
@@ -1590,10 +1728,30 @@ class EngineWire(QtCore.QObject):
         elif tag == "onboarding.set_run":
             self._onboarding_started = False
             self.greet()
+        elif tag == "client.capabilities":
+            # 引擎回执了才算 advertise 生效；这会儿补发排队的开场问，`eligible` 才是真的。
+            self._caps_ready = True
+            if self._greet_waiting:
+                self._greet_waiting = False
+                self.greet()
         elif tag == "onboarding.state":
             due = result if isinstance(result, dict) else {}
-            if due.get("run") and due.get("eligible") and not self._onboarding_started:
+            run_id = str(due.get("run_id") or "")
+            if self._onboarding_run and run_id and run_id != self._onboarding_run and due.get("run"):
+                # 这场已经不是我们挂着的那一轮（重开/另一窗口重跑）：按参考桌面，当作结束处理。
+                self._end_onboarding("skipped")
+            elif due.get("run") and due.get("eligible") and not self._onboarding_started:
                 self._start_onboarding()
+            elif due.get("run") and not due.get("eligible"):
+                # 要跑引导却还没有能撑起第一轮的模型：这一步没人会报错（引导根本不启动），
+                # 黄字得由这里发，不然第一次进来的人不知道去哪儿填 Key。配好模型后
+                # `model.set` 回包和模型清单都会按 `setup` 这个 key 撤掉它。
+                self.setup_needed.emit(NO_PROVIDER_HINT)
+            elif not self._session_id and not self._onboarding_started and not due.get("run"):
+                # 这轮确定不跑引导：到这一刻才开一场空聊天。反过来，引擎说 run 但还不 eligible
+                # （模型/密钥没配好）时绝不能先开一场——配好模型后引导会自己再开一场，那场空会话
+                # 就成了孤儿，界面还可能停在它上面，引导里的问候、名字卡和正文全落在另一场里。
+                self.create_session("")
         elif tag.startswith("model.save_key"):
             row = result.get("provider") or {}
             self.notice.emit(f"已保存 {row.get('slug') or '密钥'}")
@@ -1611,6 +1769,8 @@ class EngineWire(QtCore.QObject):
                 self._generation = gen
             self._switch_payload = {}
             self.request_models()
+            # 模型刚被启用：这一刻才真正有 provider 能撑起第一轮，补问一次开场（做过就什么都不发）。
+            self.greet()
             self.save_result.emit(tag, {"ok": True})
         elif tag == "config.set:approval":
             self.config_value.emit("approval_mode", str(result.get("value") or ""))
@@ -1710,7 +1870,15 @@ class EngineWire(QtCore.QObject):
         kind = params.get("type") or ""
         sid = str(params.get("session_id") or "")
         if sid and self._session_id and sid != self._session_id:
-            return
+            # 引导期间引擎会把会话换到引导那场；而启动时发出去的那条建会话回包要是晚到，
+            # `_session_id` 早就被换成一场空会话了。这一层按 id 过滤是静默丢弃——思考、
+            # 正文全没了，只剩走请求通道的名字卡，看着就是「界面停在名字卡上，回复不见了」。
+            # 引导没结束之前，引导那场来的帧一律认，并当场把当前会话校准过去。
+            if not (self._onboarding_started and (not self._onboarding_session or sid == self._onboarding_session)):
+                return
+            logger.info("onboarding event re-adopted session=%s", sid[:12])
+            self._onboarding_session = sid
+            self._session_id = sid
         payload = params.get("payload") or {}
         for holder in (params, payload):
             gen = holder.get("execution_generation") if isinstance(holder, dict) else None
@@ -1718,9 +1886,9 @@ class EngineWire(QtCore.QObject):
                 self._generation = gen
         if kind == "gateway.ready":
             self.ready.emit(payload)
-            self._next_id += 1
-            self._write({"jsonrpc": "2.0", "id": self._next_id, "method": "client.capabilities",
-                         "params": {"server_requests": True}})
+            # 一问一答地排队：帧是并发派发的，一次连发两条（capabilities + 开场问）会赛跑——
+            # 开场问可能在引擎还没记下 advertise 时就到，那时它把连接当 CLI，`eligible` 必为 false。
+            self._call("client.capabilities", {"server_requests": True}, tag="client.capabilities")
         elif kind == "message.delta":
             text = payload.get("text")
             if isinstance(text, str) and text:
@@ -1813,6 +1981,10 @@ class EngineWire(QtCore.QObject):
             self.request_cancelled.emit(str(payload.get("method") or ""), str(payload.get("id") or ""))
         elif kind == "session.reclaimed":
             self._session_id = ""
+        elif kind == "onboarding.ended":
+            run_id = str(payload.get("run_id") or "")
+            if not run_id or not self._onboarding_run or run_id == self._onboarding_run:
+                self._end_onboarding(str(payload.get("outcome") or "done"))
         elif kind == "notification.show":
             self.notice_show.emit(dict(payload))
             return

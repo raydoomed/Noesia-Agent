@@ -67,7 +67,7 @@ class GatewayLink(QtCore.QObject):
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._wake: asyncio.Event | None = None
-        self._stop: asyncio.Event | None = None
+        self._stop = asyncio.Event()
         self._out: deque[str] = deque()
         self._lock = threading.Lock()
         self._connected = False
@@ -128,10 +128,10 @@ class GatewayLink(QtCore.QObject):
             return ""
 
     def stop(self, timeout: float = 8.0) -> None:
-        loop, stop = self._loop, self._stop
-        if loop is not None and stop is not None:
+        loop = self._loop
+        if loop is not None:
             try:
-                loop.call_soon_threadsafe(stop.set)
+                loop.call_soon_threadsafe(self._stop.set)
             except RuntimeError:
                 pass
         thread = self._thread
@@ -170,6 +170,28 @@ class GatewayLink(QtCore.QObject):
         from noesia_cli.gateway_runtime import attachable, ensure_gateway_runtime
         from websockets.asyncio.client import connect
 
+        # 断线不是终局：引擎会因空闲退出（`gateway.unmanaged_idle_exit_seconds`），
+        # 网络/管道也会断。一次连不上就退出去，界面从那一秒起就再也收不到东西
+        # （聊天停在最后一帧，看起来像「一直转圈」）。照着参考桌面：退避重连，连上就复位。
+        delay = 1.0
+        while not self._stop.is_set():
+            try:
+                await self._attach_once(ensure_gateway_runtime, attachable, connect,
+                                        _session_ticket, gateway_ws_target, GATEWAY_WS_PROTOCOL,
+                                        home, GatewayClientError)
+                delay = 1.0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — 记录并重试，不把界面卡死在断线上
+                self._connected = False
+                self.failed.emit(f"引擎连接失败：{type(exc).__name__}: {exc}")
+            if self._stop.is_set():
+                break
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 10.0)
+
+    async def _attach_once(self, ensure_gateway_runtime, attachable, connect, _session_ticket,
+                           gateway_ws_target, GATEWAY_WS_PROTOCOL, home, GatewayClientError) -> None:
         result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=True)
         if not attachable(result):
             message = _describe(result)

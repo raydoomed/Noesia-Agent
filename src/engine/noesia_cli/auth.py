@@ -1597,8 +1597,8 @@ def resolve_provider(
     # below explicit keys and below a sign-in.
     try:
         from agent.bedrock_adapter import has_aws_credentials
-        from noesia_cli.process_identity import on_local_desktop_backend  # a laptop: no EC2 metadata lookup
-        if has_aws_credentials(instance_metadata=not on_local_desktop_backend()):
+        from noesia_cli.process_identity import is_desktop_owned_backend  # a laptop: no EC2 metadata lookup
+        if has_aws_credentials(instance_metadata=not is_desktop_owned_backend()):
             return "bedrock"
     except ImportError:
         pass  # boto3 not installed

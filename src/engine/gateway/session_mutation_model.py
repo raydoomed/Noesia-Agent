@@ -43,12 +43,19 @@ def _current_route(authority, live, old):
 
 
 async def prepare_model(authority, live, payload, prepared):
+    from pathlib import Path
     from gateway.session_policy import restore_policy, bind_launch_key, bound_route_holds, route_launch_key
     from gateway.session_policy_credentials import recover_config_secrets
-    from noesia_cli.model_switch import apply_model_selection, switch_model
+    from noesia_cli.model_switch import (apply_model_selection, persist_model_selection,
+                                         resolve_persist_behavior, switch_model)
     from noesia_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config, current = _current_route(authority, live, old)
+    # A pick that lands the profile's first model must survive the next launch, so it does not
+    # evaporate into whatever ``*_API_KEY`` happens to be around (#86414): ``resolve_persist_behavior``
+    # is the decision CLI/TUI ``/model`` already makes — no surface hardcodes ``--global`` — and this
+    # surface is the Desktop picker's only route into a selection.
+    persist = resolve_persist_behavior(False, False, False, payload.get('provider', ''))
     # A pick is an explicit user action: it resolves against the owning profile's CURRENT named
     # providers, as CLI/TUI ``/model`` do (#139740). A following session's ``config`` already is
     # the profile's current read; every other session keeps ``config`` for its own route below.
@@ -143,6 +150,11 @@ async def prepare_model(authority, live, payload, prepared):
         key = None
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,
                              config_secrets=secrets)
+    if persist:
+        # Land the same committed selection in the owning profile's config.yaml, next to the
+        # session receipt it mirrors: one selection shape, two homes (#25106).
+        await asyncio.to_thread(persist_model_selection, result,
+                                Path(authority.db.db_path).resolve().parent / 'config.yaml')
     return dict(prepared, policy=asdict(policy))
 
 

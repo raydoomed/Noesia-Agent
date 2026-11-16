@@ -34,6 +34,7 @@ from app import (
 )
 from app.chat_view import ChatView
 from app.clarify_card import ClarifyCard
+from app.name_dialog import SetupNameCard, receipt_item
 from app.history_window import HistoryWindow, text_key
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap, svg_icon
 from app.approval_dialog import ConfirmDialog
@@ -1650,6 +1651,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._delegate_cards: dict[str, dict] = {}
         self._delegate_latest: str = ""
         self._clarify: dict | None = None
+        self._setup_card = None
         self._tool_started: dict[str, tuple[disclosure.Fold, str, float, str | None]] = {}
         self._tool_clock = QtCore.QTimer(self)
         self._tool_clock.setInterval(1000)
@@ -2144,6 +2146,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._rewind_waiting = False
         self._rewind_after_stop = None
         self._clarify = None
+        self._setup_card = None
         self._clear_queue()
         self.stack.clear_all()
         self.paused_bar.set_paused(None)
@@ -2773,9 +2776,9 @@ class ChatPanel(QtWidgets.QWidget):
         """
         if self._restoring:
             return
-        if self._stream_msg is not None or self._clarify is not None:
-            # 半截回答还在流、或者问题卡等你点：这拍不重铺——重铺会把半截回答画成成品，
-            # 把问题卡抹掉（引擎还等着那个回答，卡没了就再也答不了）。这一轮收尾时补铺。
+        if self._stream_msg is not None or self._clarify is not None or self._setup_card is not None:
+            # 半截回答还在流、或者问题卡/名字卡等你点：这拍不重铺——重铺会把半截回答画成成品，
+            # 把卡片抹掉（引擎还等着那个回答，卡没了就再也答不了）。这一轮收尾时补铺。
             self._lay_pending = bool(keep_position)
             return
         # 铺这一段要先把滚动范围清成 0/0：`_follow` 若在中间那一拍被翻成 True，铺完就会
@@ -2945,6 +2948,10 @@ class ChatPanel(QtWidgets.QWidget):
         if str(item.get("role") or "") == "tool":
             # 引擎回灌的工具行没有正文，只有名字和 80 字预览——那一行本来就是照这两个画的。
             name = str(item.get("name") or "").strip()
+            if name == "setup_beat":
+                # 引导的名字卡：历史里照卡片画（问题 + 答过的名字），不是一行工具芯片。
+                if self._paint_setup_receipt(item):
+                    return
             if name:
                 context = str(item.get("context") or "").strip()
                 self.show_tool(name, context or name, ok=True)
@@ -2979,6 +2986,31 @@ class ChatPanel(QtWidgets.QWidget):
         else:
             self.append_chunk(text, replay=True)
             self.end_assistant()
+
+    def _paint_setup_receipt(self, item) -> bool:
+        """历史里的名字卡：从工具结果里取回名字，画成和当场那张一样的卡（答过那行绿字）。
+
+        取不到名字（结果是空帧/出错）就返回 False，让调用方退回普通工具行。
+        """
+        raw = item.get("content")
+        answer = ""
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                got = parsed.get("answer")
+                if isinstance(got, dict):
+                    answer = str(got.get("name") or "").strip()
+        if not answer:
+            return False
+        fold = self._folds.new("setup_beat", "", open_=True)
+        head = fold.head_block
+        if head is not None and head.isValid():
+            head.setVisible(False)
+        self._folds.attach_widget(fold, receipt_item("我该怎么称呼你？", answer, parent=self.view.viewport()))
+        return True
 
     def _take_stamp(self) -> float:
         """这条消息的时刻：重铺历史用引擎给的那一拍，新消息用当下。"""
@@ -4008,6 +4040,38 @@ class ChatPanel(QtWidgets.QWidget):
             "answers": {},
             "picks": {},
         }
+        self._settle_insert()
+        self.view._queue_sync()
+
+    def show_setup_beat(self, payload: dict, on_answer) -> None:
+        """引导的名字卡：跟着 `clarify` 的做法摆进消息流里（不是弹出窗），答完那行绿字留在原处。
+
+        `on_answer(name)` 交回给窗口发回帧；空名字 = 这张卡跳过。
+        """
+        question = str(payload.get("question") or "我该怎么称呼你？")
+        card_data = payload.get("card") if isinstance(payload, dict) else None
+        suggested = str(card_data.get("suggested") or "").strip() if isinstance(card_data, dict) else ""
+        self._end_reasoning_group()
+        fold = self._folds.new("setup_beat", "", open_=True)
+        head = fold.head_block
+        if head is not None and head.isValid():
+            head.setVisible(False)
+        card = SetupNameCard(question, suggested, parent=self.view.viewport())
+        card.wheel_target = self.view
+
+        def picked(name: str) -> None:
+            card.settle(name)
+            self._setup_card = None
+            self._folds.relayout()
+            self._settle_insert()
+            self.view._queue_sync()
+            on_answer(name)
+
+        card.named.connect(picked)
+        self._folds.attach_widget(fold, card)
+        self._setup_card = card
+        # 光标直接给卡里那一行（`_card_keeps_focus` 保证它不被抢回底部输入框）。
+        QtCore.QTimer.singleShot(0, card.focus_field)
         self._settle_insert()
         self.view._queue_sync()
 
@@ -7948,19 +8012,20 @@ class ChatPanel(QtWidgets.QWidget):
             and new is not self.input
             and self.isAncestorOf(new)
             and not self._voice_mode_on
-            and not self._on_clarify_card(new)
+            and not self._card_keeps_focus(new)
         ):
             self.input.setFocus()
 
-    def _on_clarify_card(self, widget: QtWidgets.QWidget) -> bool:
-        """提问卡片里那一行是给人打字的：光标落进去就别抢回底部输入框。"""
+    def _card_keeps_focus(self, widget: QtWidgets.QWidget) -> bool:
+        """卡片里那一行是给人打字的：光标落进去就别抢回底部输入框（提问卡、名字卡都算）。"""
+        cards = [self._setup_card]
         state = self._clarify
-        if state is None:
-            return False
-        card = state.get("card")
-        if card is None:
-            return False
-        return widget is card or card.isAncestorOf(widget)
+        if isinstance(state, dict):
+            cards.append(state.get("card"))
+        for card in cards:
+            if card is not None and (widget is card or card.isAncestorOf(widget)):
+                return True
+        return False
 
     def event(self, ev) -> bool:
         if ev.type() == QtCore.QEvent.Type.WindowActivate and not self._voice_mode_on:

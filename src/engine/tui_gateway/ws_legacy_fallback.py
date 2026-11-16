@@ -21,6 +21,18 @@ from typing import Any
 
 _connection_profile_home: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "noesia_ws_connection_profile_home", default=None)
+# The authority connection the current legacy fallback request arrived on. A sidecar handler that has
+# to open a session (onboarding's first chat) must open it in the AUTHORITY's store, not as a bare
+# state.db row: a bare row is not the authority's session, so the window's ``session.resume`` has to
+# migrate it, and the live-run guard refuses that with ``runtime_coordination_required``.
+_connection_authority: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "noesia_ws_connection_authority", default=None)
+# The event loop the authority runs on. Its writes serialize through that loop's writer
+# (``tracked_write``); a bare ``commit_local_session`` from the sidecar's worker thread instead opens
+# its own write against a journal_mode=DELETE database the authority is also writing, and the app
+# gets ``storage_unavailable`` (a raw ``sqlite3.Error`` from the authority's side).
+_connection_loop: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "noesia_ws_connection_loop", default=None)
 
 
 # The authority owns every session, its transcript and its admissions: a legacy handler in these
@@ -65,6 +77,16 @@ def legacy_fallback_allowed(actor: Any, method: str) -> bool:
 def connection_profile_home() -> str | None:
     """The non-launch profile home the current legacy fallback request's ticket is bound to."""
     return _connection_profile_home.get()
+
+
+def current_authority() -> Any | None:
+    """The authority connection the current legacy fallback request arrived on (None off a connection)."""
+    return _connection_authority.get()
+
+
+def current_authority_loop() -> Any | None:
+    """The loop the current legacy fallback request's authority runs on (None off a connection)."""
+    return _connection_loop.get()
 
 
 def _foreign_profile_home(server: Any, profile_id: Any) -> str | None:
@@ -134,7 +156,8 @@ def _own_profile_read(server: Any, req: dict, home: str) -> dict:
     return {"jsonrpc": "2.0", "id": req.get("id"), "result": {"sessions": rows}}
 
 
-def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict | None:
+def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any, authority_connection: Any | None = None,
+                    loop: Any | None = None) -> dict | None:
     """Run ``server.dispatch`` with the ticket's profile home bound (call from a worker thread;
     the pool path copies this context, so long handlers see it too)."""
     try:
@@ -154,8 +177,12 @@ def dispatch_legacy(server: Any, req: dict, transport: Any, actor: Any) -> dict 
         if target:
             scope = server._session_profile_runtime_scope({"profile_home": target})
     token = _connection_profile_home.set(home)
+    authority_token = _connection_authority.set(authority_connection)
+    loop_token = _connection_loop.set(loop)
     try:
         with scope:
             return server.dispatch(req, transport)
     finally:
+        _connection_loop.reset(loop_token)
+        _connection_authority.reset(authority_token)
         _connection_profile_home.reset(token)

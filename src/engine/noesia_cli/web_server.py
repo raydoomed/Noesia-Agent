@@ -178,9 +178,9 @@ _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
 def _probe_install_before_state_db() -> None:
-    from noesia_cli.process_identity import on_local_desktop_backend
+    from noesia_cli.process_identity import is_desktop_owned_backend
 
-    if not on_local_desktop_backend():
+    if not is_desktop_owned_backend():
         return
     try:
         from noesia_cli.install_state import probe

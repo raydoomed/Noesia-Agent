@@ -8,17 +8,15 @@ run ends write the install-level flag in the root config so the next launch does
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from typing import Any
 
 from agent.onboarding_flow import (
-    Applied, End, Event, Facts, Step, applies_to, apply, is_active, new_record,
+    End, Event, Facts, Step, apply, is_active, new_record,
 )
-from agent.onboarding_text import reminder
 
 logger = logging.getLogger(__name__)
 
@@ -156,23 +154,3 @@ def _end_deleted(current: Any) -> Any:
     if not is_active(current):
         return current
     return apply(current, End("deleted"), Facts.from_stored(current["facts"]), now=time.time()).record
-
-
-def observe_tool_result(agent, name: str, args: Mapping[str, Any], result: Any) -> Any:
-    """Settle a beat from a general tool's result (``set_theme``, ``manage_connections`` display,
-    ``gui_tour``). Runs for every tool result; only an onboarding chat (one whose agent carries
-    ``setup_beat``) reads its record. Returns *result*, with the next-step reminder added when it
-    settled a beat."""
-    if not applies_to(name) or "setup_beat" not in (getattr(agent, "valid_tool_names", None) or ()):
-        return result
-    db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", "") or ""
-    try:
-        parsed = json.loads(result) if isinstance(result, str) else result
-        if isinstance(parsed, dict) and load(db, session_id) is not None:
-            step = advance(db, session_id, Applied(name, dict(args or {}), parsed))
-            text = reminder(step.reminder, step.record, Facts.from_stored(step.record["facts"]))
-            if text and isinstance(result, str):
-                return json.dumps({**parsed, "reminder": text}, ensure_ascii=False)
-    except Exception:
-        logger.warning("onboarding: %s result did not update the run record", name, exc_info=True)
-    return result

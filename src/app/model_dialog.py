@@ -168,6 +168,8 @@ QDialog { font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; font
 #dialog-title { color: #f6dfea; font-size: 14px; font-weight: 600; letter-spacing: 0.3px; }
 #dialog-sub { color: rgba(255, 255, 255, 100); font-size: 11px; }
 #dialog-hint { color: rgba(255, 255, 255, 100); font-size: 11px; }
+/* 保存回执那一行：没有这条规则时，一旦把内联样式清空（成功/进行中），浅色主题下就退回系统黑字 */
+#dialog-warn { color: rgba(255, 255, 255, 150); font-size: 11px; }
 /* 页内小标题：不靠继承，直接给颜色——浅色主题下 QLabel 会退回系统黑字 */
 #field-label { color: rgba(246, 223, 234, 214); font-size: 11.5px; }
 #live { color: rgba(255, 255, 255, 158); font-size: 11.5px; }
@@ -2633,7 +2635,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._save_button.setEnabled(False)
         self._save_button.setText("正在保存…")
         self._warn.setStyleSheet("")
-        self._warn.setText("正在写进 .env 并切换，等引擎回话…")
+        self._warn.setText("正在切换模型，等引擎回话…")
         timer = QtCore.QTimer(self)
         timer.setSingleShot(True)
         timer.timeout.connect(self._engine_save_timed_out)

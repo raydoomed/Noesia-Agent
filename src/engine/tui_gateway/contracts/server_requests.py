@@ -66,92 +66,34 @@ server_request("clarify", params=ClarifyRequestParams, result=ClarifyResult,
 
 class SetupBeat(WireEnum):
     name = "name"
-    theme = "theme"
-    layout = "layout"
-    connectors = "connectors"
-    plugins = "plugins"
-    tour = "tour"
-    build = "build"
-
-
-class SetupOption(Params):
-    id: str
-    label: str
 
 
 class SetupNameCard(Params):
     suggested: str | None = None  # the OS account's name: shown on the card, never sent to the model
 
 
-class SetupThemeCard(Params):
-    picker: str
-
-
-class SetupOptionsCard(Params):
-    options: list[SetupOption]
-
-
-class SetupConnectorsCard(Params):
-    suggested: list[str]
-
-
-class SetupPluginsCard(Params):
-    plugins: list[str]
-
-
 class SetupBeatRequestParams(ServerRequestParams):
-    """``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``): name, theme, connectors and
-    plugins have their own shape; layout, tour and build carry ``options``. ``tool_call_id`` is the
-    setup_beat call the card belongs to: only that transcript row draws it."""
+    """``card`` is the beat's data (``agent/onboarding_flow.py::BEATS``); the name card carries a
+    ``suggested`` name. ``tool_call_id`` is the setup_beat call the card belongs to: only that
+    transcript row draws it."""
 
     beat: SetupBeat
     question: str | None = None
     tool_call_id: str | None = None
-    card: SetupNameCard | SetupThemeCard | SetupOptionsCard | SetupConnectorsCard | SetupPluginsCard
+    card: SetupNameCard
 
 
 class SetupNameAnswer(Result):
     name: str
 
 
-class SetupThemeAnswer(Result):
-    accent: str | None = None
-    mode: str | None = None
-
-
-class SetupLayoutAnswer(Result):
-    layout: str
-
-
-class SetupConnectorsAnswer(Result):
-    connected: list[str]
-    newly_connected: list[str] = Field(default_factory=list)
-
-
-class SetupPluginsAnswer(Result):
-    installed: list[str]
-    label: str | None = None  # what the card showed, for the transcript; never recorded
-
-
-class SetupTourAnswer(Result):
-    tour: str
-    label: str | None = None
-
-
-class SetupBuildAnswer(Result):
-    build: str
-    label: str | None = None
-
-
 class SetupBeatResult(Result):
-    """``answer`` holds the shown beat's picks; ids must be one of the card's options (the backend
-    rejects any other answer). ``said`` is composer text typed while the name card waited: the name.
-    ``wrote_instead``: the user sent a message instead of answering; the backend ends the turn and the
-    client sends that message as the next one. A response with none of these, or none within 300 s,
-    closes the card unanswered."""
+    """``answer`` holds the shown beat's picks. ``said`` is composer text typed while the name card
+    waited: the name. ``wrote_instead``: the user sent a message instead of answering; the backend
+    ends the turn and the client sends that message as the next one. A response with none of these,
+    or none within 300 s, closes the card unanswered."""
 
-    answer: (SetupNameAnswer | SetupThemeAnswer | SetupLayoutAnswer | SetupConnectorsAnswer | SetupPluginsAnswer
-             | SetupTourAnswer | SetupBuildAnswer | None) = None
+    answer: SetupNameAnswer | None = None
     said: str | None = None
     wrote_instead: bool = False
 

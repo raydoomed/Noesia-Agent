@@ -523,9 +523,14 @@ def _(rid, params: dict) -> dict:
     """What the calling client handles. ``server_requests: true`` marks this connection as one that answers
     server→client requests; a WebSocket client that never sends it gets every such request failed fast
     instead of stalling the agent for the deadline (#112548)."""
-    from tui_gateway import server_requests
+    from tui_gateway import server, server_requests
     from tui_gateway.contracts import registry as contracts
-    server_requests.advertise(_caller_transport(), bool(params.get("server_requests")))
+    transport = _caller_transport()
+    server_requests.advertise(transport, bool(params.get("server_requests")))
+    if params.get("server_requests"):
+        # The desktop just connected: work out the onboarding due answer now, off the RPC path, so
+        # the first ``onboarding.state`` reads a computed one instead of racing the provider reads.
+        server.start_due_boot()
     return _ok(rid, {"server_requests": sorted(contracts.SERVER_REQUESTS), "declines_not_shown": True})
 
 

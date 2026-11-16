@@ -296,7 +296,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._greeted = False
         self._approval_dialog = None
         self._approval_dialogs: list = []
-        self._name_dialog = None
         self.client: EngineWire | None = None
         # 开窗那一页历史铺上了没有：REST 分页的第一页只铺一次，之后回来的都是更早的。
         self._history_initial_done = True
@@ -792,6 +791,16 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         else:
             self._pending_notices.append((key, text, level))
 
+    def clear_notice(self, key: str) -> None:
+        """撤一条提示：连带把开窗前攒下的那条一起删掉。
+
+        只清面板不够——攒着的旧提示会在 `open_chat` 时又补发一遍，「配好模型黄字还在」
+        就是这么来的（`onboarding.state` 说能跑时引擎侧已撤，攒的那条还在队里）。
+        """
+        self._pending_notices = [row for row in self._pending_notices if row[0] != key]
+        if self.chat_panel is not None:
+            self.chat_panel.clear_status_notice(key)
+
     def preload_avatar(self) -> None:
         """语音互动档的预加载：载 dll + 建引擎，约 105ms、0 积分，不建会话。"""
         avatar = self._ensure_avatar()
@@ -1096,6 +1105,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         ctx = getattr(self, "_save_ctx", None)
         data = dict(payload or {})
         ok = bool(data.get("ok"))
+        # A committed pick is the only proof the key-and-model banner has been answered: the model
+        # list's ``current`` cannot stand in for it, because the engine's picker reports the model
+        # the live agent runs — its own default — before the user has configured anything.
+        if ok and tag.startswith("model.set") and self.chat_panel is not None:
+            self.chat_panel.clear_status_notice("setup")
         if tag.startswith("model.save_key"):
             slug = tag.split(":", 1)[1] if ":" in tag else str(data.get("slug") or "")
             waiting = getattr(self, "_key_wait", None)
@@ -1114,7 +1128,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             ctx["slugs"].discard(slug)
             ctx["waiting"] = max(0, int(ctx["waiting"]) - 1)
             if ok:
-                ctx["lines"].append(f"{slug}：已写进 .env")
+                ctx["lines"].append(f"{slug}：已保存")
             else:
                 ctx["all_ok"] = False
                 ctx["lines"].append(f"{slug}：没存成——{data.get('message') or '引擎没说原因'}")
@@ -1161,12 +1175,13 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._models_refresh_token += 1
         if self.chat_panel is not None:
             self.chat_panel.set_models(rows, current, switching=switching)
-            if current and (chosen is None or chosen.get("available")):
-                self.chat_panel.clear_status_notice("setup")
         if self._tray is not None:
             self._tray.setToolTip(f"Noesia Agent · {label}")
         if not switching:
             self.request_reasoning()
+        # 「没有可用模型」的黄字不能和「清单里有能跑的模型」同时存在——配好了就撤掉。
+        if any(item.get("available") for item in rows) or chosen is not None:
+            self.clear_notice("setup")
         finish = getattr(self, "finish_boot", None)
         if callable(finish):
             finish()
@@ -1890,6 +1905,12 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if self.client is not None:
             self.client.kill_process(process_id)
 
+    def on_onboarding_ended(self, outcome: str) -> None:
+        """一轮引导结束：撤掉「去配 Key」的黄字，聊天回到普通状态（名字卡答完自己就收了）。"""
+        self.clear_notice("setup")
+        logger.info("onboarding ended outcome=%s", outcome or "done")
+
+    @QtCore.Slot(str)
     def on_setup_needed(self, message: str) -> None:
         """还没配模型/供应商：黄色临时提示，配好（`apply_models` 看到模型可用）就按 key 撤掉。
 
@@ -1898,8 +1919,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """
         if not message:
             return
-        if self.chat_panel is not None:
-            self.chat_panel.show_notice("setup", message, level="note")
+        # 这条提示在引擎回 `onboarding.state` 时就到了，这时用户往往还没点开聊天窗
+        # （`chat_panel` 只在 `open_chat` 里建），直接 `chat_panel.show_notice` 会被静默丢掉。
+        self.show_notice_later("setup", message)
         say(f"[引擎] {message}")
 
     def on_paused_turn(self, lost) -> None:
@@ -2179,25 +2201,18 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._ask_approval(ask)
 
     def on_setup_beat(self, beat: dict) -> None:
-        """引导流程要摆「名字」那张卡：弹输入框，回帧用 reply_id（`srq-...`）。
+        """引导的名字卡：摆进消息流里（跟着 `clarify` 那张卡的做法），名字在卡里那一行打。
 
-        引擎一共七张卡，界面只做名字这一张；其余在 EngineWire 里直接回空帧关掉。
+        引导只有名字这一张卡，其余 beat 引擎不会再发。
         """
-        from app.name_dialog import NameDialog
-
-        if self._name_dialog is not None:
-            return
-        reply_id = beat.get("reply_id")
+        reply_id = str(beat.get("reply_id") or "")
 
         def answer(name: str) -> None:
-            self._name_dialog = None
             if self.client is not None:
                 self.client.answer_setup_beat(reply_id, name)
-            if self.chat_panel is not None and name:
-                self.chat_panel.show_tool("onboarding", f"你告诉我：叫你 {name}", ok=True)
 
-        self._name_dialog = NameDialog(beat, answer)
-        self._name_dialog.show_near(self.geometry())
+        if self.chat_panel is not None:
+            self.chat_panel.show_setup_beat(beat, answer)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt
         if event.key() == QtCore.Qt.Key.Key_Escape:
@@ -2781,7 +2796,10 @@ def main() -> int:
         if sid:
             wire.resume_session(sid)
         else:
-            wire.create_session()
+            # 没有上一场时别急着建空会话：先问要不要跑引导，引导会自己开一场。开场就建的话
+            # 会多出一场空聊天，界面停在那一场上，引导的问候和名字卡全落在另一场里看不见。
+            # 确定不跑引导时，`onboarding.state` 的回包会补建一场。
+            wire.greet()
 
     wire.ready.connect(_after_ready)
     wire.attachment_failed.connect(window._attachment_problem)
@@ -2805,6 +2823,7 @@ def main() -> int:
     wire.paused_discard_failed.connect(
         lambda: window.chat_panel and window.chat_panel.paused_discard_failed())
     wire.setup_needed.connect(window.on_setup_needed)
+    wire.onboarding_ended.connect(window.on_onboarding_ended)
     wire.completed.connect(window.on_complete)
     wire.turn_settled.connect(window.on_turn_settled)
     wire.tool.connect(window.on_tool_event)
@@ -2813,7 +2832,7 @@ def main() -> int:
     wire.notice.connect(window.on_notice)
     wire.review_summary.connect(window.on_review_summary)
     wire.notice_show.connect(window.on_notice_show)
-    wire.notice_clear.connect(lambda key: window.chat_panel and window.chat_panel.clear_status_notice(key))
+    wire.notice_clear.connect(window.clear_notice)
     wire.clarify.connect(window.on_clarify_request)
     wire.clarify_expired.connect(
         lambda rid: window.chat_panel and window.chat_panel.expire_clarify(rid)
