@@ -4,6 +4,8 @@ rebound onto server.py's globals at install time (method_ctx.bind_module)."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from pathlib import Path
 
 from .method_ctx import HandlerRegistry, bind_module

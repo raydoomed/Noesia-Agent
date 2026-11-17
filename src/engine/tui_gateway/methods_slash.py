@@ -6,6 +6,8 @@ method_ctx.bind_module), so they reference server.py globals bare.
 
 from __future__ import annotations
 
+from typing import Optional
+
 import contextlib
 
 from .method_ctx import HandlerRegistry, bind_module

@@ -4,6 +4,8 @@ per process). Bodies are rebound onto server.py's globals (method_ctx.bind_modul
 
 from __future__ import annotations
 
+from typing import Optional
+
 import contextlib
 import threading
 

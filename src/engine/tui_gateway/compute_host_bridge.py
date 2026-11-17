@@ -4,6 +4,8 @@ server.py's globals at install time (method_ctx.bind_module), so they use them b
 
 from __future__ import annotations
 
+from typing import Any
+
 import contextlib
 import threading
 

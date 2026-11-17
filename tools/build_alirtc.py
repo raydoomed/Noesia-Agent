@@ -8,9 +8,9 @@ from __future__ import annotations
 import pathlib
 import subprocess
 import sys
-import sys
 import sysconfig
 import tempfile
+from typing import NoReturn
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VCVARS_CANDIDATES = [
@@ -20,7 +20,7 @@ VCVARS_CANDIDATES = [
 ]
 
 
-def fail(msg: str) -> "NoReturn":
+def fail(msg: str) -> NoReturn:
     print(f"[失败] {msg}")
     raise SystemExit(1)
 

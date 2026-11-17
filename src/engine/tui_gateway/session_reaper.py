@@ -6,6 +6,8 @@ knobs _SESSION_TTL_S, _REAPER_SCAN_S, _EXIT_FLUSH_BUDGET_S and _INCREMENTAL_FLUS
 
 from __future__ import annotations
 
+from typing import Any
+
 import contextlib
 import secrets
 import threading

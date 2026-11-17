@@ -8,6 +8,8 @@ the system prompt stays byte-stable). Answering the name ends the run.
 
 from __future__ import annotations
 
+from typing import Any
+
 from collections.abc import Mapping
 
 from agent.onboarding_flow import Facts, next_beat

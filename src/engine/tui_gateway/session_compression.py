@@ -4,6 +4,8 @@ onto server.py's globals (method_ctx.bind_module) and reference them bare."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import contextlib
 
 from utils import is_truthy_value

@@ -4,6 +4,8 @@ time (method_ctx.bind_module), so they reference server.py globals bare."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import contextlib
 import copy
 
