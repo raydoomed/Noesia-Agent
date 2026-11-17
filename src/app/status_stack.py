@@ -83,6 +83,9 @@ class StatusStack(QtWidgets.QFrame):
         self._bg_done: set[str] = set()
         # 这次界面起来的时间点：比它还早结束的后台任务属于「上一回」，不再重播（见 _stale_finished）。
         self._boot_epoch = time.time()
+        # 聊天窗给这格的内缩（面板边距 + 本控件边框）。窗口没布局之前自己的 width() 是构造默认值，
+        # 这里先用首次布局后实测的 42 顶着，layouts 一跑就按实测值校准。
+        self._pad = 42
         self.hide()
 
 
@@ -358,6 +361,20 @@ class StatusStack(QtWidgets.QFrame):
         super().resizeEvent(event)
         self._sync()
 
+    def _content_width(self) -> int:
+        """提示文字的可用宽度。
+
+        窗口还没布局时 `self.width()` 还是构造默认的 100，按它折行会多算好几行、算成一条高框；
+        这时拿聊天窗宽度减内缩来算，算出来和布局落地后一致，打开时就不会先高后矮跳一下。
+        """
+        own = self.width()
+        window = self.window()
+        if own >= 120 or window is None:
+            if window is not None and own >= 120:
+                self._pad = max(0, window.width() - own)
+            return max(60, own - 16)
+        return max(60, window.width() - self._pad - 16)
+
     def _sync(self) -> None:
         shown = bool(self._rows) or self._activity is not None or self._bg is not None
         self.setVisible(shown)
@@ -366,7 +383,7 @@ class StatusStack(QtWidgets.QFrame):
         inner = self._note.widget()
         if inner is None:
             return
-        width = max(60, (self.width() or 260) - 16)
+        width = self._content_width()
         need = 8
         for row in self._rows.values():
             label = row.findChild(QtWidgets.QLabel)
@@ -384,4 +401,8 @@ class StatusStack(QtWidgets.QFrame):
         height = max(24, min(need, cap))
         inner.setMinimumHeight(need)
         self._note.setFixedHeight(height)
+        # 这一格的外层高度也在这里定：父布局要等下一次激活才重排，中间那一下只有内层变了、
+        # 外层还是旧高度（实测 205px 的空框）。同一步定死，亮出来就是终值。
+        margins = self.contentsMargins()
+        self.setFixedHeight(height + margins.top() + margins.bottom())
 
