@@ -1292,6 +1292,8 @@ class EngineWire(QtCore.QObject):
         引擎的存储错误用的是下划线形态（`not_found` / `session_not_found`），按空格形态
         一比就漏，恢复永远不触发——空会话/失效会话上每一次 `model.options`、`session.mutate`
         都直接红字上屏。两种写法都要认。"""
+        if str(code) != "4001":
+            return False
         text = str(message).lower().replace("_", " ")
         return "not found" in text or "not exist" in text or "不存在" in text
 
