@@ -6,7 +6,7 @@
 
 三秒多的登场，全是她自己：暖墨底 → 一束斜光扫过 → 她从暗里亮起来 → 名字和那句
 「她住在你的桌面上。」落定 → 左下角换成引擎的真实进度。播完就静止在那儿等，不循环、
-不拦着人：点击或按 Esc 直接露窗口。
+也不给跳过：引擎没连上就不露人物窗口。
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ TITLE = "Noesia"
 KICKER = "AI Companion"
 LINE = "她住在你的桌面上。"
 SUB = "会聊天，会记事，也会替你动手干活。"
-SKIP_HINT = "点击或按 Esc 跳过"
 
 INK_TOP = QtGui.QColor(42, 32, 40)
 INK_MID = QtGui.QColor(26, 20, 27)
@@ -88,8 +87,6 @@ class BootSplash(QtWidgets.QWidget):
 
     MIN_VISIBLE_MS = int(T_END * 1000)
 
-    skipped = QtCore.Signal()
-
     def __init__(
         self,
         avatar_path: Path | str | None = None,
@@ -105,7 +102,6 @@ class BootSplash(QtWidgets.QWidget):
         self._step = "正在准备界面…"
         self._failed = False
         self._greeting = _greeting()
-        self._skipped = False
         self._started = time.monotonic()
         self._dismissing = False
         self._fade_progress = 1.0
@@ -144,10 +140,9 @@ class BootSplash(QtWidgets.QWidget):
         """收起动画，然后执行 `then`（露出人物窗口）。
 
         收的时候先把自己淡掉，不是啪一下消失——硬切过去像画面被撕了一下。
-        用户按过 Esc 的则不再等最短时长：他已经在催了，再多留一秒都是添堵。
         """
         waited = (time.monotonic() - self._started) * 1000
-        delay = 0 if self._skipped else max(0, int(self.MIN_VISIBLE_MS - waited))
+        delay = max(0, int(self.MIN_VISIBLE_MS - waited))
         if delay <= 0:
             self._dismiss(then)
             return
@@ -172,30 +167,6 @@ class BootSplash(QtWidgets.QWidget):
     def _on_fade(self, value) -> None:
         self._fade_progress = float(value)
         self.update()
-
-    def skip(self) -> None:
-        """点击 / Esc：不再演，立刻交出窗口（引擎还在连就靠聊天窗里的提示兜着）。"""
-        if self._skipped:
-            return
-        self._skipped = True
-        self._timer.stop()
-        self.skipped.emit()
-
-    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt
-        if event.key() in (
-            QtCore.Qt.Key.Key_Escape,
-            QtCore.Qt.Key.Key_Space,
-            QtCore.Qt.Key.Key_Return,
-            QtCore.Qt.Key.Key_Enter,
-        ):
-            self.skip()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        self.skip()
-        event.accept()
 
     def _place_window(self) -> None:
         screen = QtGui.QGuiApplication.screenAt(QtGui.QCursor.pos()) or QtGui.QGuiApplication.primaryScreen()
@@ -543,21 +514,6 @@ class BootSplash(QtWidgets.QWidget):
         painter.setPen(FAIL if self._failed else QtGui.QColor(244, 232, 226, 150))
         painter.drawText(QtCore.QPointF(x + dot_gap, y + metrics.ascent()), self._step)
 
-        if not self._failed and not self._skipped:
-            hint = _ease(now, (3.00, 4.00))
-            if hint > 0:
-                hint_font = QtGui.QFont("Microsoft YaHei UI")
-                hint_font.setPixelSize(max(10, int(10.5 * u)))
-                hint_metrics = QtGui.QFontMetricsF(hint_font)
-                painter.setFont(hint_font)
-                painter.setPen(QtGui.QColor(244, 232, 226, int(80 * hint)))
-                painter.drawText(
-                    QtCore.QPointF(
-                        width - width * 0.032 - hint_metrics.horizontalAdvance(SKIP_HINT),
-                        height - 18 * u - hint_metrics.descent(),
-                    ),
-                    SKIP_HINT,
-                )
         painter.restore()
 
     def showEvent(self, event) -> None:  # noqa: N802

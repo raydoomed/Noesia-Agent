@@ -1270,11 +1270,14 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 )
         self._flush_pending_reviews()
         self._flush_pending_notices()
-        self.request_history()
         self.chat_panel.show_near(self.frameGeometry())
-        self._greet_if_needed()
-        self.request_approval_mode()
-        self.request_reasoning()
+        if self.client is not None and self.client.is_running():
+            # 通道还没开就别发这几条：发出去只会撞成「引擎没接住指令」的红字。
+            # 连上之后 `_after_ready` 会把它们原样重问一遍。
+            self.request_history()
+            self._greet_if_needed()
+            self.request_approval_mode()
+            self.request_reasoning()
 
     def _ensure_voice_model(self) -> None:
         """进语音模式先问一句模型在不在。引擎顺手在后台预热，缺文件就当场开始下。"""
@@ -1452,8 +1455,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """加载完成：收起动画、露出人物窗口——之后点开聊天窗就是即时的。
 
         只做一次；`boot_splash` 为空的窗口（测试替身、无动画场景）直接显形。
+        引擎没连上就不露脸：动画留在屏幕上等它（唯一例外是启动失败，见 `boot_failed`）。
         """
         if getattr(self, "_boot_done", True):
+            return
+        if not (getattr(self, "_engine_ready", False) or getattr(self, "_boot_failure", "")):
             return
         self._boot_done = True
         splash = getattr(self, "boot_splash", None)
@@ -2732,8 +2738,6 @@ def main() -> int:
     splash.show()
     window = FloatingAvatar(front, cfg.ui.floating, idle_path if idle_path.is_file() else None)
     window.boot_splash = splash
-    splash.skipped.connect(window.finish_boot)
-    QtCore.QTimer.singleShot(12000, window.finish_boot)
     has_tray = window.setup_tray()
     window.instance_server = start_instance_server(window)
     if window.idle_player is not None:
