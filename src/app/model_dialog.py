@@ -1845,7 +1845,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
-        layout.addWidget(QtWidgets.QLabel("厂商", page))
+        layout.addWidget(_field_label("厂商", page))
         self._avatar_provider_box = QtWidgets.QComboBox(page)
         for pid, label, _env in avatar_prefs.PROVIDERS:
             self._avatar_provider_box.addItem(label, pid)
@@ -1853,7 +1853,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._avatar_provider_box.setCurrentIndex(max(index, 0))
         layout.addWidget(self._avatar_provider_box)
 
-        layout.addWidget(QtWidgets.QLabel("数字人模型", page))
+        layout.addWidget(_field_label("数字人模型", page))
         self._avatar_model_box = QtWidgets.QComboBox(page)
         for mid, label in avatar_prefs.MODELS:
             self._avatar_model_box.addItem(label, mid)
@@ -1861,13 +1861,14 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._avatar_model_box.setCurrentIndex(max(index, 0))
         layout.addWidget(self._avatar_model_box)
 
-        layout.addWidget(QtWidgets.QLabel("形象图片", page))
+        layout.addWidget(_field_label("形象图片", page))
         image_row = QtWidgets.QHBoxLayout()
         image_row.setSpacing(8)
         self._avatar_thumb = QtWidgets.QLabel(page)
         self._avatar_thumb.setFixedSize(48, 64)
         image_row.addWidget(self._avatar_thumb)
         self._avatar_image_label = QtWidgets.QLabel("", page)
+        self._avatar_image_label.setObjectName("live")
         self._avatar_image_label.setWordWrap(True)
         image_row.addWidget(self._avatar_image_label, 1)
         self._avatar_pick_btn = QtWidgets.QPushButton("选择图片…", page)
@@ -1884,7 +1885,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.avatar_progress.connect(lambda t: self._set_avatar_note(t, busy=True))
         self._refresh_avatar_image()
 
-        self._avatar_key_label = QtWidgets.QLabel("凭证", page)
+        self._avatar_key_label = _field_label("凭证", page)
         layout.addWidget(self._avatar_key_label)
         self._avatar_key_edit = QtWidgets.QLineEdit(page)
         self._avatar_key_edit.textChanged.connect(lambda _text: self._on_avatar_key_typed())
@@ -2125,7 +2126,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
 
-        layout.addWidget(QtWidgets.QLabel("工作目录", page))
+        layout.addWidget(_field_label("工作目录", page))
         row = QtWidgets.QHBoxLayout()
         self._workspace_edit = QtWidgets.QLineEdit(page)
         self._workspace_edit.setPlaceholderText("工具和 agent 在这个目录里干活")
