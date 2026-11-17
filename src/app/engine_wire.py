@@ -359,6 +359,7 @@ class EngineWire(QtCore.QObject):
     cron_changed = QtCore.Signal()
     setup_needed = QtCore.Signal(str)
     onboarding_ended = QtCore.Signal(str)
+    greet_resolved = QtCore.Signal()
     error = QtCore.Signal(str)
     paused = QtCore.Signal(object)
     paused_discard_failed = QtCore.Signal()
@@ -405,6 +406,7 @@ class EngineWire(QtCore.QObject):
         # 一步就是黄字常驻、引导不起。所以开场先排队，capabilities 发出去再问。
         self._caps_ready = False
         self._greet_waiting = False
+        self._greet_probe = False
         self._rewind_text = ""
         self._rewind_row = 0
         self._switch_payload: dict = {}
@@ -454,6 +456,7 @@ class EngineWire(QtCore.QObject):
         # 新连接要重新 advertise，否则开场问又落到「引擎当我是 CLI」的那一版答案上。
         self._caps_ready = False
         self._greet_waiting = False
+        self._greet_probe = False
         self._attach_want = ""
         self._attach_after = ""
         self._recovering = False
@@ -1039,14 +1042,18 @@ class EngineWire(QtCore.QObject):
             params["refresh"] = True
         self._settings_rid = self._call("model.options", params, tag="model.options:settings")
 
-    def greet(self) -> bool:
+    def greet(self, *, probe: bool = False) -> bool:
         """第一次见面：先问引擎「这台机器该不该跑引导」，该跑且有模型能撑起第一轮，才让它开场。
 
         为什么不是直接 `onboarding.start`：引导要一个可用的供应商才能起（引擎回 5080），
         而「界面开窗」和「密钥配好」不是同一时刻——先开窗后填 key 的人会永远错过引导。
         所以每次猜「可能要跑」都先问 `onboarding.state`，由引擎按
         `run`（配置/从没用过）和 `eligible`（有 provider）自己判断；已经做过就什么都不发。
+
+        `probe=True`：只问不改（启动动画还在、聊天窗没建时用）。黄字、模型名这类结论当场就能
+        定下来；开场引导和空会话要等聊天窗真的建好再做，免得名字卡落在没人看的窗口里。
         """
+        self._greet_probe = probe
         if not self._caps_ready:
             # capabilities 还没发：引擎此刻把这条连接当 CLI，eligible 必为 false。等 ready 再问。
             self._greet_waiting = True
@@ -1733,25 +1740,29 @@ class EngineWire(QtCore.QObject):
             self._caps_ready = True
             if self._greet_waiting:
                 self._greet_waiting = False
-                self.greet()
+                # 排队时的意图要原样补发：启动阶段问的是探路（只问不改），别在这一步变成真开场。
+                self.greet(probe=self._greet_probe)
         elif tag == "onboarding.state":
             due = result if isinstance(result, dict) else {}
             run_id = str(due.get("run_id") or "")
+            probe = bool(getattr(self, "_greet_probe", False))
             if self._onboarding_run and run_id and run_id != self._onboarding_run and due.get("run"):
                 # 这场已经不是我们挂着的那一轮（重开/另一窗口重跑）：按参考桌面，当作结束处理。
                 self._end_onboarding("skipped")
-            elif due.get("run") and due.get("eligible") and not self._onboarding_started:
+            elif due.get("run") and due.get("eligible") and not self._onboarding_started and not probe:
                 self._start_onboarding()
             elif due.get("run") and not due.get("eligible"):
                 # 要跑引导却还没有能撑起第一轮的模型：这一步没人会报错（引导根本不启动），
                 # 黄字得由这里发，不然第一次进来的人不知道去哪儿填 Key。配好模型后
                 # `model.set` 回包和模型清单都会按 `setup` 这个 key 撤掉它。
                 self.setup_needed.emit(NO_PROVIDER_HINT)
-            elif not self._session_id and not self._onboarding_started and not due.get("run"):
+            elif not self._session_id and not self._onboarding_started and not due.get("run") and not probe:
                 # 这轮确定不跑引导：到这一刻才开一场空聊天。反过来，引擎说 run 但还不 eligible
                 # （模型/密钥没配好）时绝不能先开一场——配好模型后引导会自己再开一场，那场空会话
                 # 就成了孤儿，界面还可能停在它上面，引导里的问候、名字卡和正文全落在另一场里。
                 self.create_session("")
+            # 首屏判定完了（跑引导 / 要配 Key / 直接开聊天）：启动动画等的是这一条。
+            self.greet_resolved.emit()
         elif tag.startswith("model.save_key"):
             row = result.get("provider") or {}
             self.notice.emit(f"已保存 {row.get('slug') or '密钥'}")

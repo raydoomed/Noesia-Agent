@@ -1515,15 +1515,19 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         引擎现在是后台拉起的，开窗那一刻可能还没连上——发送失败就保持 `_greeted=False`，
         等 `connected` 信号再来一次，否则首次见面和「还没配置模型」那条黄提示都不会出现。
 
+        聊天窗还没建也照问（`probe`）：不问就等不到那条黄字，用户点开聊天才发出去、
+        再等引擎来回一趟才看见。探路这一问不碰会话、不起引导，那两件事仍等聊天窗真的建好。
+
         `force=True` 用在「刚刚才有可用模型」的时刻（保存密钥、模型清单里出现当前模型）：
         先开窗、后配密钥的人，第一遍问过去时引擎还没有 provider（`eligible=false`），
         不补问一次，引导就永远不开始——见过的现象就是「我跑完了，没弹出来」。
         """
-        if self.client is None or self.chat_panel is None:
+        if self.client is None:
             return
         if self._greeted and not force:
             return
-        self._greeted = bool(self.client.greet())
+        probe = self.chat_panel is None
+        self._greeted = bool(self.client.greet(probe=probe)) and not probe
 
     def _ask_approval(self, ask) -> None:  # noqa: ANN001 (ApprovalPayload)
         """她停下来等人点头：弹一张卡片，选完把结果交回引擎。
@@ -2778,6 +2782,28 @@ def main() -> int:
     wire = EngineWire(Path(resolver.root), workspace=workdir)
     window.client = wire
 
+    first_screen = {"models": False, "greet": False}
+
+    def _reveal_when_first_screen_ready() -> None:
+        """首屏该答的都答完了才露脸：模型名、黄字/引导都得是定下来的样子。
+
+        只看「通道连上」不够——连上之后引擎还要再答一轮（模型清单、`onboarding.state`），
+        那几秒里露脸，用户点开聊天就是空的、黄字晚几拍才冒出来。
+        """
+        if first_screen["models"] and first_screen["greet"]:
+            window.finish_boot()
+
+    def _mark_models_ready(_items: list, _current: str) -> None:
+        first_screen["models"] = True
+        _reveal_when_first_screen_ready()
+
+    def _mark_greet_ready() -> None:
+        first_screen["greet"] = True
+        _reveal_when_first_screen_ready()
+
+    wire.models.connect(_mark_models_ready)
+    wire.greet_resolved.connect(_mark_greet_ready)
+
     def _after_ready(_payload: dict) -> None:
         """引擎就绪后再问东西：模型清单、上次的会话、两个档位。"""
         say("[引擎] 已就绪")
@@ -2792,7 +2818,8 @@ def main() -> int:
         wire.config_get("reasoning")
         wire.request_display()
         window._greet_if_needed()
-        window.finish_boot()
+        # 首屏答完就露脸；引擎哪条答不上来也别把人闷在动画里，3 秒后照常放人。
+        QtCore.QTimer.singleShot(3000, window.finish_boot)
 
     def _after_sessions(rows: list) -> None:
         """没有「上一场」存档：挑最新一场真正的对话（跳过定时任务/子代理跑出来的）。"""
