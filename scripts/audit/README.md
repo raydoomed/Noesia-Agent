@@ -13,12 +13,12 @@ export QT_QPA_PLATFORM=offscreen
 
 | 脚本 | 对应证据 | 命令 | 该看到什么 |
 |---|---|---|---|
-| `import_smoke.py` | E1 | `$P scripts/audit/import_smoke.py` | `MODULES 72 FAILS 0` |
+| `import_smoke.py` | E1 | `$P scripts/audit/import_smoke.py` | `FAILS 0`（`MODULES` 数随代码增长，不写死） |
 | `logic_probe.py` | E12 | `$P scripts/audit/logic_probe.py` | `RESULT <模块> OK {...}` 逐条 + `PROBE_DONE` |
 | `data_probe.py` | E12 | `$P scripts/audit/data_probe.py` | `P2 <项> = <值>` 逐条 + `PROBE2_DONE` |
 | `panel_probe.py` | E11 | `$P scripts/audit/panel_probe.py` | 一行 `PANEL send_idle=… media_raw_visible=False …` |
 | `ui_probe.py <case>` | E11 | `$P scripts/audit/ui_probe.py chat_panel` | 一行 `PROBE_JSON {"case": …, "ok": true, "click_errors": []}` |
-| `contract_check.py` | E13 | `$P scripts/audit/contract_check.py` | `CALLS 39 METHODS 25 CONTRACTS 284` / `CHECKED 29 SKIP 10 DYNAMIC 2` / `UNKNOWN []` / `PARAM_MISMATCH 0`，逐条 `SKIP (行号, 方法, 原因)` |
+| `contract_check.py` | E13 | `$P scripts/audit/contract_check.py` | `UNKNOWN []` / `PARAM_MISMATCH 0`（`CALLS`/`CONTRACTS`/`SKIP` 随代码变，只做观察），逐条 `SKIP (行号, 方法, 原因)` |
 | `render_time.py` | E16 | `$P scripts/audit/render_time.py` | `TIME <控件> build=…ms render=…ms` |
 | `shots.py` | E11 截图 | `$P scripts/audit/shots.py` | `SHOTS True True`，PNG 落在系统临时目录的 `noesia-audit/shots/` |
 | `review_check.py` | §9 外部复核 4 条 | `$P scripts/audit/review_check.py` | 逐条打印实测值：工具行底色 `— / #55a583 / — / #e75e78 / —`、`border/padding` 丢失、抬头判定 6 行真假、气泡底色差值 |
