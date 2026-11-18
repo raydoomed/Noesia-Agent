@@ -11,14 +11,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.prefs_io import atomic_write_json, read_json
-from settings import ConfigError, RESOLVER
+from settings import ConfigError, runtime_resolver
 
 PREFS_PATH = "data/settings/text.json"
 _TEMPLATE = {"models": {}}
 
 
 def path() -> Path:
-    return RESOLVER.resolve(PREFS_PATH)
+    return runtime_resolver().resolve(PREFS_PATH)
 
 
 def load() -> dict:

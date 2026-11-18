@@ -26,7 +26,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from settings import RESOLVER
+from settings import runtime_resolver
 
 logger = logging.getLogger(__name__)
 
@@ -174,17 +174,17 @@ def save(payload: dict, path: Path) -> None:
 
 def vocab_path() -> Path:
     """词表文件：引擎读它，app 写它。"""
-    return RESOLVER.resolve(VOCAB_PATH)
+    return runtime_resolver().resolve(VOCAB_PATH)
 
 
 def typed_path() -> Path:
     """打字的语料：只有 app 写。"""
-    return RESOLVER.resolve(CORPUS_PATH)
+    return runtime_resolver().resolve(CORPUS_PATH)
 
 
 def speech_path() -> Path:
     """语音里可信的片段：引擎写完 app 只读。"""
-    return RESOLVER.resolve(SPEECH_CORPUS_PATH)
+    return runtime_resolver().resolve(SPEECH_CORPUS_PATH)
 
 
 def corpus_paths() -> list[Path]:

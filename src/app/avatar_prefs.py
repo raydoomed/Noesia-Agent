@@ -18,7 +18,7 @@ from pathlib import Path
 
 from app import env_keys
 from app.prefs_io import atomic_write_json, read_json
-from settings import ConfigError, RESOLVER
+from settings import ConfigError, runtime_resolver
 
 PREFS_PATH = Path("data/settings/avatar.json")
 
@@ -34,7 +34,10 @@ _REQUIRED = ("provider", "model")
 
 IMAGE_DIR = Path("data/assets")
 
-DEFAULT_IMAGE = RESOLVER.resolve(Path("assets/greenscreen/noesia_greenscreen.png"))
+
+def default_image() -> Path:
+    """还没换过图时用的那张默认形象。"""
+    return runtime_resolver().resolve(Path("assets/greenscreen/noesia_greenscreen.png"))
 
 
 def _write(data: dict) -> None:
@@ -43,7 +46,7 @@ def _write(data: dict) -> None:
 
 
 def path() -> Path:
-    return RESOLVER.resolve(PREFS_PATH)
+    return runtime_resolver().resolve(PREFS_PATH)
 
 
 def load() -> dict:
@@ -88,7 +91,7 @@ def image_path() -> Path | None:
     raw = image_setting()
     if not raw:
         return None
-    target = RESOLVER.resolve(raw)
+    target = runtime_resolver().resolve(raw)
     if not target.is_file():
         raise ConfigError(f"avatar.json 里的 image 指的图片找不到：{target}")
     return target
@@ -106,7 +109,7 @@ def save_image(value: str) -> dict:
 
 def clear_image() -> dict:
     """还原默认形象：清 `image`、作废云端编号、删掉复制过来的那份图。"""
-    folder = RESOLVER.resolve(IMAGE_DIR)
+    folder = runtime_resolver().resolve(IMAGE_DIR)
     if folder.is_dir():
         for old in folder.glob("avatar.*"):
             old.unlink(missing_ok=True)
@@ -127,7 +130,7 @@ def stage_image(source: str | Path) -> Path:
     suffix = src.suffix.lower()
     if suffix not in _ALLOWED:
         raise ValueError(f"形象图只认 png / jpg / jpeg / webp，这个是 {suffix or '没扩展名'}")
-    folder = RESOLVER.resolve(IMAGE_DIR)
+    folder = runtime_resolver().resolve(IMAGE_DIR)
     folder.mkdir(parents=True, exist_ok=True)
     for old in folder.glob(f"avatar{_STAGING}*"):
         old.unlink(missing_ok=True)
@@ -138,7 +141,7 @@ def stage_image(source: str | Path) -> Path:
 
 def commit_staged() -> str:
     """把待提交的那张扶正：替换 `avatar.*`、写 `image`、作废旧编号。"""
-    folder = RESOLVER.resolve(IMAGE_DIR)
+    folder = runtime_resolver().resolve(IMAGE_DIR)
     staged = next(iter(folder.glob(f"avatar{_STAGING}*")), None)
     if staged is None:
         raise ValueError("没有待提交的形象图")
@@ -148,14 +151,14 @@ def commit_staged() -> str:
         old.unlink(missing_ok=True)
     target = folder / f"avatar{staged.suffix}"
     staged.rename(target)
-    relative = str(target.relative_to(RESOLVER.root)).replace("\\", "/")
+    relative = str(target.relative_to(runtime_resolver().root)).replace("\\", "/")
     save_image(relative)
     return relative
 
 
 def drop_staged() -> None:
     """上传没成：把待提交的那张删掉，正在用的那张一个字都没动。"""
-    folder = RESOLVER.resolve(IMAGE_DIR)
+    folder = runtime_resolver().resolve(IMAGE_DIR)
     for old in folder.glob(f"avatar{_STAGING}*"):
         old.unlink(missing_ok=True)
 

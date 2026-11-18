@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 ENV_HOME = "NOESIA_HOME"
@@ -199,7 +200,20 @@ def ensure_runtime(*, root: Path | str, home: Path | str, workdir: Path | str) -
     return created
 
 
-SETTINGS, RESOLVER = load_settings()
+@lru_cache(maxsize=1)
+def _runtime() -> tuple[Settings, Resolver]:
+    return load_settings()
+
+
+def runtime_settings() -> Settings:
+    """进程内共享的一份配置：第一次用到才读盘，之后复用；改了 app.json 要重启才生效。"""
+    return _runtime()[0]
+
+
+def runtime_resolver() -> Resolver:
+    """路径解析器，和 `runtime_settings()` 取的是同一次加载里的那份。"""
+    return _runtime()[1]
+
 
 PathResolver = Resolver
 AvatarSection = _Avatar

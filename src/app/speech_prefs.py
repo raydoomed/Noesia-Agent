@@ -23,7 +23,7 @@ from pathlib import Path
 from app import doubao_voices, env_keys
 from app.doubao_voices import DOUBAO_VOICES as DOUBAO_LIST
 from app.prefs_io import atomic_write_json, read_json
-from settings import ConfigError, RESOLVER
+from settings import ConfigError, runtime_resolver
 
 PREFS_PATH = "data/settings/speech.json"
 
@@ -84,7 +84,7 @@ _REQUIRED = (
 
 
 def path() -> Path:
-    return RESOLVER.resolve(PREFS_PATH)
+    return runtime_resolver().resolve(PREFS_PATH)
 
 
 def load() -> dict:

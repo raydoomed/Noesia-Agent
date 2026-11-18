@@ -1,10 +1,10 @@
 """`python -m app` 的入口。
 
-配置坏掉、缺依赖这类错误发生在**导入期**（`settings` 在 import 的时候就把配置解析完）。
-`Noesia.vbs` 用 `pythonw -E -m app` 启动，没有控制台：异常从 `main()` 外面抛出去，双击就是
-「什么都不发生」——没有窗口、没有提示、连 `data/runtime/gui.log` 都没建（日志是在
-`main()` 里才装的）。所以导入和启动都包在这一层，失败时落一份找得到的日志，再弹一个
-系统对话框，直接告诉用户是哪份文件坏了。
+配置坏掉、缺依赖这类错误发生在**启动的最前面**（`settings` 不在 import 时读盘，`main()`
+进来第一件事就是显式取一次配置）。`Noesia.vbs` 用 `pythonw -E -m app` 启动，没有控制台：
+异常从 `main()` 外面抛出去，双击就是「什么都不发生」——没有窗口、没有提示、连
+`data/runtime/gui.log` 都没建（日志是在 `main()` 里才装的）。所以导入、首次读配置和启动
+都包在这一层，失败时落一份找得到的日志，再弹一个系统对话框，直接告诉用户是哪份文件坏了。
 """
 
 from __future__ import annotations
@@ -48,6 +48,9 @@ def _tell_user(message: str, log: Path | None) -> None:
 def main() -> int:
     try:
         from .main import main as run
+        from settings import runtime_settings
+
+        runtime_settings()  # 配置坏掉必须在这里报：落到 run() 里就成了「运行中出错」
     except Exception:  # noqa: BLE001
         detail = traceback.format_exc()
         log = _log_startup_error(detail)

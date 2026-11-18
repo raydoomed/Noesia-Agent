@@ -155,7 +155,7 @@ class AvatarRtc(QtCore.QObject):
         model: str | None = None,
     ) -> None:
         super().__init__(parent)
-        self.image_path = pathlib.Path(image_path or avatar_prefs.DEFAULT_IMAGE)
+        self.image_path = pathlib.Path(image_path or avatar_prefs.default_image())
         self.model = model
         self._module = None
         self._session: ViduSession | None = None

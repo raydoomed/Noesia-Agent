@@ -22,7 +22,7 @@ import PySide6.QtWidgets as QtWidgets
 
 from app.engine_config import workspace_from_config
 from app.env_keys import env_file
-from settings import ROOT, SETTINGS, ConfigError
+from settings import ROOT, ConfigError, runtime_settings
 
 
 def _soul_path() -> Path:
@@ -1949,7 +1949,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         except ConfigError as exc:
             chosen = None
             problem = str(exc)
-        target = chosen or avatar_prefs.DEFAULT_IMAGE
+        target = chosen or avatar_prefs.default_image()
         pixmap = QtGui.QPixmap(str(target))
         if pixmap.isNull():
             self._avatar_thumb.clear()
@@ -2048,7 +2048,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
         self._set_avatar_note("正在还原默认形象…", busy=True)
         self._warm_avatar_asset_async(
-            avatar_prefs.DEFAULT_IMAGE,
+            avatar_prefs.default_image(),
             "已还原默认形象。",
             "还原失败，还是用原来那张。",
             reset=True,
@@ -2240,7 +2240,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
 
     def _current_workspace(self) -> Path:
         """现在生效的工作目录：语义只有一处定义，和启动时用的是同一个函数。"""
-        return workspace_from_config(ROOT / SETTINGS.engine.home, ROOT / SETTINGS.engine.workdir)
+        settings = runtime_settings()
+        return workspace_from_config(ROOT / settings.engine.home, ROOT / settings.engine.workdir)
 
     def _browse_workspace(self) -> None:
         start = self._workspace_edit.text().strip() or str(ROOT)
@@ -2269,9 +2270,10 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         from app.engine_config import set_engine_config
 
         try:
+            settings = runtime_settings()
             set_engine_config(
-                ROOT / SETTINGS.engine.core_path,
-                ROOT / SETTINGS.engine.home,
+                ROOT / settings.engine.core_path,
+                ROOT / settings.engine.home,
                 {"terminal.cwd": str(target)},
             )
         except Exception as exc:  # noqa: BLE001
@@ -2301,7 +2303,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
 
-        memory_limit, user_limit = memory_limits(ROOT / SETTINGS.engine.core_path, _engine_home())
+        memory_limit, user_limit = memory_limits(ROOT / runtime_settings().engine.core_path, _engine_home())
         self._limits_at_open = (user_limit, memory_limit)
         limits = QtWidgets.QHBoxLayout()
         limits.setContentsMargins(0, 0, 0, 0)
@@ -2432,7 +2434,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                     raise
             if (user_limit, memory_limit) != self._limits_at_open:
                 set_engine_config(
-                    ROOT / SETTINGS.engine.core_path,
+                    ROOT / runtime_settings().engine.core_path,
                     _engine_home(),
                     {"memory.memory_char_limit": memory_limit, "memory.user_char_limit": user_limit},
                 )
