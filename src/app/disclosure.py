@@ -133,6 +133,7 @@ class Folds:
 
     def reset(self) -> None:
         """会话清空：文档已经没了，标记跟着作废，长内容控件一并收掉。"""
+        self._phase = 0.0
         for fold in self._items.values():
             if fold.scroll is not None:
                 fold.scroll.setParent(None)
