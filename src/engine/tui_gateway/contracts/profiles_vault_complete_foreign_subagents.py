@@ -379,18 +379,6 @@ method("onboarding.state", params=OnboardingStateParams, result=OnboardingRunSta
        doc="Whether desktop first-run onboarding is due, and the chat in progress; reads the root profile's config.")
 
 
-class OnboardingSetRunParams(Params):
-    """``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config,
-    so the first chat after onboarding gets the plain intro instead of the profile offer."""
-
-    run: bool
-    mark_profile_offered: bool = False
-
-
-method("onboarding.set_run", params=OnboardingSetRunParams, result=OnboardingRunStateResult,
-       doc="Write onboarding.run in the root profile's config.yaml; answers the new state.")
-
-
 class OnboardingFactsSource(WireEnum):
     local = "local"
     remote = "remote"

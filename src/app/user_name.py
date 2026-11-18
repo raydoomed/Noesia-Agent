@@ -18,19 +18,32 @@ _CACHE: dict[str, object] = {"stamp": None, "name": ""}
 FALLBACK_NAME = "你"
 
 
-def _from_profile(text: str) -> str:
-    """从 USER.md 正文里挑出名字：只认 `Name: X` / `名字：X` 那一行，到第一个标点为止。
+#: 名字一律写在引号里：`Name: 「某某」`、`用户的名字叫「某某」`。引号内才是名字。
+_QUOTED = re.compile(r"[「【《]([^」】》]{1,40})[」】》]")
 
-    USER.md 由引擎侧的记忆工具自己整理，`Name:` 后面可能跟着整段档案，所以不能假定这行只有
-    名字：截到第一个标点，太长或带空格就退回空串（调用方会叫「你」），不准截半个句子当名字。
+#: 引号前面紧挨着这些词的，是旧名字（「以前叫『某某』」「此前记录为『某某』」），跳过。
+_STALE = re.compile(r"以前|此前|之前|原来|原本|原名|曾|旧名")
+
+#: 判断旧名字时往前看几个字。
+_LOOKBEHIND = 8
+
+
+def _from_profile(text: str) -> str:
+    """从 USER.md 正文里挑出名字：逐行看引号，跳过旧名字，最后出现的那个当前名字算数。
+
+    名字一律用引号包着写（引导填名字、模型自己记，都是这个形状），所以只看引号内的内容。哪一个是
+    当前的由引号前面的词决定，不是位置：写着「以前叫『某某』」「此前记录为『某某』」的是旧名字，跳过；
+    其余的都算当前名字。行与行之间靠后的是新写的，所以后面覆盖前面。太长的当句子，不算名字。
     """
-    found = re.search(
-        r"^[ \t]*(?:name|名字)[ \t]*[:：][ \t]*(.+?)[ \t]*$", text, re.MULTILINE | re.IGNORECASE
-    )
-    if not found:
-        return ""
-    head = re.split(r"[，。、；：！？,.;:!?\s（(\[【]", found.group(1).strip(), maxsplit=1)[0]
-    return head if 1 <= len(head) <= 8 else ""
+    name = ""
+    for line in text.splitlines():
+        for found in _QUOTED.finditer(line):
+            if _STALE.search(line[max(0, found.start() - _LOOKBEHIND):found.start()]):
+                continue
+            candidate = found.group(1).strip()
+            if 1 <= len(candidate) <= 8:
+                name = candidate
+    return name
 
 
 def user_display_name() -> str:

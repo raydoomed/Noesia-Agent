@@ -487,7 +487,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         toggle.setEnabled(bool(getattr(self, "_revealed", True)))
         menu.addAction("恢复默认大小", self.reset_size)
         menu.addSeparator()
-        menu.addAction("重新认识一次（跑一遍起名）", self.restart_onboarding)
         menu.addAction("退出 Noesia Agent", self.quit_app)
         return menu
 
@@ -1495,19 +1494,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.client.resume_session(remembered)
             return
         self.client.list_sessions()
-
-    def restart_onboarding(self) -> None:
-        """用户主动「重新认识一次」：先让引擎把 run 打开，再按正常路径开场。
-
-        引擎只在全新安装时自动跑引导（`onboarding.state` 的 `run`：数据根里有密钥、会话或档案
-        就算「用过」）。想再跑一次就走 `onboarding.set_run {run: true}`，
-        不删任何文件。
-        """
-        if self.client is None:
-            return
-        self.open_chat()
-        self._greeted = False
-        self.client.restart_onboarding()
 
     def _greet_if_needed(self, force: bool = False) -> None:
         """问一次「该不该开场」（引擎按 `run`/`eligible` 自己判断，做过就什么都不做）。

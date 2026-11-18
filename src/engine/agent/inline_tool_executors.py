@@ -266,11 +266,11 @@ def _remember_name(agent, result: Any) -> None:
     named = [entry for entry in entries if _name_entry(entry)]
     try:
         if not named:
-            store.add("user", f"Name: {name}")
+            store.add("user", f"Name: 「{name}」")
             return
         if _name_entry(named[0]) == name and len(named) == 1:
             return
-        store.replace("user", named[0], f"Name: {name}")
+        store.replace("user", named[0], f"Name: 「{name}」")
         for stale in named[1:]:
             store.remove("user", stale)
     except Exception:  # noqa: BLE001

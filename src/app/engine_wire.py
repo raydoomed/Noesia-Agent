@@ -1073,15 +1073,6 @@ class EngineWire(QtCore.QObject):
         rid = self._call("onboarding.state", {}, tag="onboarding.state")
         return rid in self._sent
 
-    def restart_onboarding(self) -> None:
-        """用户主动重跑引导：先把引擎的 `run` 打开，再走正常流程。
-
-        引擎只在全新安装时自动跑（`onboarding.state.run`：这个数据根里没有密钥、没有会话、
-        没有档案才算全新；`.machine` 标记也在同一个根里，删根就是真的重新开始）。正规开关是
-        `onboarding.set_run {run: true}`——「重跑引导」走的也是这一条，不删任何文件。
-        """
-        self._call("onboarding.set_run", {"run": True}, tag="onboarding.set_run")
-
     def _end_onboarding(self, outcome: str) -> None:
         """一轮引导结束了（`onboarding.ended`，或重开发现这轮已经不是我们挂着的那轮）。
 
@@ -1687,10 +1678,6 @@ class EngineWire(QtCore.QObject):
                 return True
             items, current = _flatten_options(result)
             self.models.emit(items, current)
-            return True
-        if tag == "onboarding.set_run":
-            self._onboarding_started = False
-            self.greet()
             return True
         if tag == "client.capabilities":
             # 引擎回执了才算 advertise 生效；这会儿补发排队的开场问，`eligible` 才是真的。
