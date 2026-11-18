@@ -618,7 +618,6 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     LIVE_INTERACT_STYLE = "color: #fb923c; font-size: 11.5px;"
     NOTE_STYLE = "color: #ffd166; font-size: 11.5px;"
 
-    TAB_KEYS = 0
     TAB_MODELS = 1
     TAB_VOICE = 2
     TAB_AVATAR = 3

@@ -13,7 +13,7 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from PySide6 import QtCore, QtTest, QtWidgets  # noqa: E402
+from PySide6 import QtTest, QtWidgets  # noqa: E402
 
 from app.speech_interactive import StreamSpeaker  # noqa: E402
 

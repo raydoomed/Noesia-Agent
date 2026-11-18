@@ -21,7 +21,7 @@ from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 host = QtWidgets.QWidget()
 
-from app import chat_view, hover_actions, tool_scroll  # noqa: E402
+from app import hover_actions, tool_scroll  # noqa: E402
 from app.tool_view import diffview  # noqa: E402
 
 GREEN = QtGui.QColor("#55a583")
