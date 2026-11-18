@@ -3001,7 +3001,7 @@ class ChatPanel(QtWidgets.QWidget):
                     return
             if name:
                 context = str(item.get("context") or "").strip()
-                self.show_tool(name, context or name, ok=True)
+                self.show_tool(name, context or name, ok=item.get("ok", True) is not False)
             return
         reasoning = str(item.get("reasoning") or "").strip()
         # 有的供应商把整轮回答当思考存回来（见 `show_reasoning_block` 的实测记录）：

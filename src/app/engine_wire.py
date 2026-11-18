@@ -698,6 +698,8 @@ class EngineWire(QtCore.QObject):
                     "tool_call_id": row.get("tool_call_id"),
                     "labels": None,
                     "reasoning": "",
+                    # 成败跟着结果走：REST 只给原文，`{"error": …}` 就是失败，历史行要画成 ✗。
+                    "ok": not EngineWire._tool_row_failed(row.get("content")),
                     # 名字卡要从结果里取回写进去的名字（`chat_panel._paint_setup_receipt`）。
                     **({"content": row.get("content")} if name == "setup_beat" else {}),
                 })
@@ -716,6 +718,17 @@ class EngineWire(QtCore.QObject):
                 "reasoning": str(row.get("reasoning") or row.get("reasoning_content") or ""),
             })
         return out
+
+    @staticmethod
+    def _tool_row_failed(content) -> bool:
+        """这一行的结果是不是报错：引擎把失败写成 `{"error": …}`，其余都是正常输出。"""
+        if isinstance(content, str) and content.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(content)
+            except (TypeError, ValueError):
+                return False
+            return isinstance(parsed, dict) and bool(parsed.get("error"))
+        return False
 
     @staticmethod
     def _tool_preview(name: str, args: dict) -> str:
