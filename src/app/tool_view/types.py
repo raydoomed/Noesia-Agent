@@ -98,7 +98,6 @@ class ToolView:
     duration_label: str | None = None
     icon: str | None = None
     image_url: str | None = None
-    preview_target: str | None = None
     renders_ansi: bool | None = None
     search_query: str | None = None
     search_hits: list[SearchResultRow] | None = None

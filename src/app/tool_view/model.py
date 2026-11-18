@@ -35,7 +35,7 @@ from app.tool_view.fmt import (
     parse_maybe_object,
     unwrap_tool_payload,
 )
-from app.tool_view.targets import find_first_url, hostname_of, looks_like_path, looks_like_url
+from app.tool_view.targets import find_first_url, hostname_of
 from app.tool_view.helpers import (
     CONNECTION_CARD_KEY,
     capitalize,
@@ -782,56 +782,6 @@ def duration_label(result_record: dict[str, Any]) -> str | None:
         return None
 
     return format_duration_seconds(seconds)
-
-
-NON_DELIVERABLE_TOOLS = {
-    "annotate_preview",
-    "drive_preview",
-    "gui_tour",
-    "list_files",
-    "read_file",
-    "search_files",
-}
-
-
-# ---- toolPreviewTarget ----
-
-
-def tool_preview_target(tool_name: str, args: dict[str, Any], result: dict[str, Any]) -> str:
-    if tool_name == "tool_call":
-        raw_calls = args.get("calls")
-        if isinstance(raw_calls, list):
-            calls = raw_calls
-        elif isinstance(raw_calls, dict):
-            calls = [raw_calls]
-        else:
-            calls = [args]
-        call = parse_maybe_object(calls[0]) if calls else {}
-
-        if len(calls) == 1 and isinstance(call.get("name"), str):
-            return tool_preview_target(call["name"], parse_maybe_object(call.get("arguments")), result)
-
-    if tool_name in NON_DELIVERABLE_TOOLS or (tool_name == "desktop_preview" and args.get("action") != "open"):
-        return ""
-
-    direct = (
-        first_string_field(result, ["preview", "url", "target"])
-        or first_string_field(args, ["preview", "url", "target", "path", "file", "filepath"])
-        or first_string_field(result, ["path", "file", "filepath"])
-    )
-
-    if direct and (looks_like_url(direct) or looks_like_path(direct)):
-        return direct
-
-    if tool_name in ("browser_navigate", "web_extract", "web_search"):
-        explicit = first_string_field(args, ["url", "search_term", "query"]) or first_string_field(result, ["url"])
-
-        return explicit if looks_like_url(explicit) else find_first_url(args, result)
-
-    if is_file_edit_tool(tool_name):
-        return html_path_from_inline_diff(first_string_field(result, ["inline_diff", "diff"]))
-
-    return ""
 
 
 # ---- toolImageUrl ----
@@ -1614,7 +1564,6 @@ def build_tool_view(part: ToolPart | Mapping[str, Any], inline_diff: str) -> Too
         icon=meta.icon,
         image_url=tool_image_url(args_record, result_record),
         inline_diff=inline_diff,
-        preview_target=tool_preview_target(part.inner_tool_name or part.tool_name, args_record, result_record),
         renders_ansi=renders_ansi or None,
         search_query=search_query or None,
         search_hits=search_hits if search_hits else None,
