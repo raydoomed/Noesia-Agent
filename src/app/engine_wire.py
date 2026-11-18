@@ -934,7 +934,7 @@ class EngineWire(QtCore.QObject):
 
         契约在引擎 `tools/setup_beat_tool.py::_reply_event`：
         - 回答了 → `{"answer": {"name": "..."}}`（`_accepts` 要求 name 是非空字符串）
-        - 「以后再说」→ `onboarding.skip`：参考桌面的 Skip setup 走的就是它，引擎把这一轮记成
+        - 「以后再说」→ `onboarding.skip`：引擎把这一轮记成
           跳过（`phase=skipped`）、撤掉等待中的卡，并关掉安装级开关，下次开程序不再问名字。
           只回空答复的话引擎按 `TimedOut` 处理——那张卡算超时，记录仍在进行中，于是每开一次
           程序都要再点一次「以后再说」。
@@ -1076,8 +1076,8 @@ class EngineWire(QtCore.QObject):
     def _end_onboarding(self, outcome: str) -> None:
         """一轮引导结束了（`onboarding.ended`，或重开发现这轮已经不是我们挂着的那轮）。
 
-        结束只做三件事：撤掉「去配 Key」的黄字、关掉还开着的名字卡、把这一轮记成结束
-        —— 与参考桌面 `endOnboarding` 同义。`onboarding.run` 由引擎自己落盘，界面不再重开。
+        结束只做三件事：撤掉「去配 Key」的黄字、关掉还开着的名字卡、把这一轮记成结束。
+        `onboarding.run` 由引擎自己落盘，界面不再重开。
 
         会话一个字都不动：引导那场就是现在挂着的这场，引擎回给模型的收尾（实测 1.6 秒）
         走的还是它。结束只改 run 记录，帧照常按 `_session_id` 认。
@@ -1637,8 +1637,8 @@ class EngineWire(QtCore.QObject):
                 self._stored_id = stored
             self.notice_clear.emit("setup")
             logger.info("onboarding started run=%s stored=%s", self._onboarding_run, self._stored_id)
-            # 照参考桌面 `startOnboarding`：start 之后主动挂回那场存储会话，`session.resume`
-            # 的回包才是落盘之后的运行时会话 id。
+            # start 之后主动挂回那场存储会话：`session.resume` 的回包
+            # 才是落盘之后的运行时会话 id。
             if stored and self.resume_session(stored):
                 return True
             self.session_ready.emit({"session_id": self._session_id,
@@ -1692,7 +1692,7 @@ class EngineWire(QtCore.QObject):
             run_id = str(due.get("run_id") or "")
             probe = bool(getattr(self, "_greet_probe", False))
             if self._onboarding_run and run_id and run_id != self._onboarding_run and due.get("run"):
-                # 这场已经不是我们挂着的那一轮（重开/另一窗口重跑）：按参考桌面，当作结束处理。
+                # 这场已经不是当前挂着的那一轮（重开/另一窗口重跑）：当作结束处理。
                 self._end_onboarding("skipped")
             elif due.get("run") and due.get("eligible") and not self._onboarding_started and not probe:
                 self._start_onboarding()

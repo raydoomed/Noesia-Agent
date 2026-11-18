@@ -172,7 +172,7 @@ class GatewayLink(QtCore.QObject):
 
         # 断线不是终局：引擎会因空闲退出（`gateway.unmanaged_idle_exit_seconds`），
         # 网络/管道也会断。一次连不上就退出去，界面从那一秒起就再也收不到东西
-        # （聊天停在最后一帧，看起来像「一直转圈」）。照着参考桌面：退避重连，连上就复位。
+        # （聊天停在最后一帧，看起来像「一直转圈」）。退避重连，连上就复位。
         delay = 1.0
         while not self._stop.is_set():
             try:
