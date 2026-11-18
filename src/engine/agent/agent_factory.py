@@ -717,6 +717,8 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
     if any(overrides.values()):
         _rederive_per_model_route(model, resolution.runtime)
+    if not str(model or "").strip():
+        raise RuntimeError("还没有启用模型：打开「设置 → 模型设置」，选一个模型再点保存并启用。")
     return model, resolution.runtime
 
 
