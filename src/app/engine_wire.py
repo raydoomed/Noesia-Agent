@@ -1546,6 +1546,16 @@ class EngineWire(QtCore.QObject):
             return
         if self._resp_voice(tag, result):
             return
+        if self._resp_session_chain(tag, rid, result):
+            return
+        if self._resp_aux_chain(tag, rid, result):
+            return
+        if self._resp_model_chain(tag, rid, result):
+            return
+        if self._resp_tail_chain(tag, rid, result):
+            return
+
+    def _resp_session_chain(self, tag: str, rid, result: dict) -> bool:
         if tag in {"session.create", "session.resume"}:
             stored = str(result.get("stored_session_id") or "")
             if (tag == "session.resume" and self._attach_want and stored
@@ -1559,7 +1569,7 @@ class EngineWire(QtCore.QObject):
                     self._stored_id = after
                 if after:
                     self.resume_session(after)
-                return
+                return True
             self._session_ready(
                 str(result.get("session_id") or result.get("id") or ""),
                 stored,
@@ -1581,21 +1591,25 @@ class EngineWire(QtCore.QObject):
                 level, self._pending_reasoning = self._pending_reasoning, ""
                 self.set_reasoning(level)
             self._flush_after_attach()
-        elif tag == "recover.recent":
+            return True
+        if tag == "recover.recent":
             sid = chat_session_id(result.get("sessions")) or str(result.get("session_id") or "")
             if sid:
                 self.resume_session(sid)
             else:
                 self._recovering = False
                 self.create_session()
-        elif tag == "session.events.since":
+            return True
+        if tag == "session.events.since":
             for row in (result.get("open_requests") or []):
                 if isinstance(row, dict) and row.get("method"):
                     self._on_server_request({"id": row.get("id"), "method": row.get("method"),
                                              "params": dict(row.get("params") or {})})
-        elif tag == "session.list":
+            return True
+        if tag == "session.list":
             self.sessions_listed.emit(list(result.get("sessions") or []))
-        elif tag == "onboarding.start":
+            return True
+        if tag == "onboarding.start":
             self._onboarding_run = str(result.get("run_id") or "")
             self._stored_id = str(result.get("stored_session_id") or self._stored_id)
             self._session_id = str(result.get("session_id") or "")
@@ -1604,19 +1618,26 @@ class EngineWire(QtCore.QObject):
             logger.info("onboarding started run=%s stored=%s", self._onboarding_run, self._stored_id)
             self.session_ready.emit({"session_id": self._session_id,
                                      "stored_session_id": self._stored_id})
-        elif tag == "process.list":
+            return True
+        return False
+
+    def _resp_aux_chain(self, tag: str, rid, result: dict) -> bool:
+        if tag == "process.list":
             rows = [row for row in (result.get("processes") or []) if isinstance(row, dict)]
             self.processes.emit(rows)
-        elif tag == "process.kill":
+            return True
+        if tag == "process.kill":
             self.list_processes()
-        elif tag == "clarify.lock":
+            return True
+        if tag == "clarify.lock":
             if str(result.get("status") or "") == "expired":
                 self.clarify_expired.emit("")
                 self.notice_show.emit({"text": "这个问题已经结束，不用再答了", "level": "info", "ttl_ms": CONFIRM_TTL_MS,
                                        "key": "clarify.expired"})
-        elif tag == "model.options:settings":
+            return True
+        if tag == "model.options:settings":
             if rid != getattr(self, "_settings_rid", rid):
-                return
+                return True
             raw = result.get("providers") if isinstance(result, dict) else None
             rows_now = [dict(row) for row in (raw or []) if isinstance(row, dict)]
             cur_model = str((result or {}).get("model") or "").strip() if isinstance(result, dict) else ""
@@ -1626,22 +1647,26 @@ class EngineWire(QtCore.QObject):
             if getattr(self, "_models_after_settings", False):
                 self._models_after_settings = False
                 self.request_models()
-        elif tag == "model.options":
+            return True
+        if tag == "model.options":
             if rid != getattr(self, "_models_rid", rid):
-                return
+                return True
             items, current = _flatten_options(result)
             self.models.emit(items, current)
-        elif tag == "onboarding.set_run":
+            return True
+        if tag == "onboarding.set_run":
             self._onboarding_started = False
             self.greet()
-        elif tag == "client.capabilities":
+            return True
+        if tag == "client.capabilities":
             # 引擎回执了才算 advertise 生效；这会儿补发排队的开场问，`eligible` 才是真的。
             self._caps_ready = True
             if self._greet_waiting:
                 self._greet_waiting = False
                 # 排队时的意图要原样补发：启动阶段问的是探路（只问不改），别在这一步变成真开场。
                 self.greet(probe=self._greet_probe)
-        elif tag == "onboarding.state":
+            return True
+        if tag == "onboarding.state":
             due = result if isinstance(result, dict) else {}
             run_id = str(due.get("run_id") or "")
             probe = bool(getattr(self, "_greet_probe", False))
@@ -1662,7 +1687,11 @@ class EngineWire(QtCore.QObject):
                 self.create_session("")
             # 首屏判定完了（跑引导 / 要配 Key / 直接开聊天）：启动动画等的是这一条。
             self.greet_resolved.emit()
-        elif tag.startswith("model.save_key"):
+            return True
+        return False
+
+    def _resp_model_chain(self, tag: str, rid, result: dict) -> bool:
+        if tag.startswith("model.save_key"):
             row = result.get("provider") or {}
             self.notice.emit(f"已保存 {row.get('slug') or '密钥'}")
             self.request_provider_rows(refresh=True)
@@ -1672,7 +1701,8 @@ class EngineWire(QtCore.QObject):
                                         "slug": tag.split(":", 1)[1] if ":" in tag else str(row.get("slug") or "")})
             if self._pending_switch:
                 self._switch_model(self._pending_switch, self._pending_switch_token)
-        elif tag.startswith("model.set"):
+            return True
+        if tag.startswith("model.set"):
             self._revision = int(result.get("revision") or self._revision or 0)
             gen = result.get("execution_generation")
             if isinstance(gen, int):
@@ -1682,9 +1712,11 @@ class EngineWire(QtCore.QObject):
             # 模型刚被启用：这一刻才真正有 provider 能撑起第一轮，补问一次开场（做过就什么都不发）。
             self.greet()
             self.save_result.emit(tag, {"ok": True})
-        elif tag == "config.set:approval":
+            return True
+        if tag == "config.set:approval":
             self.config_value.emit("approval_mode", str(result.get("value") or ""))
-        elif tag == "reasoning.set":
+            return True
+        if tag == "reasoning.set":
             self._revision = int(result.get("revision") or self._revision or 0)
             gen = result.get("execution_generation")
             if isinstance(gen, int):
@@ -1692,11 +1724,17 @@ class EngineWire(QtCore.QObject):
             self._reasoning_level = ""
             self._call("config.get", {"key": "reasoning", "session_id": self._session_id},
                        tag="config.get:reasoning")
-        elif tag == "config.get:full":
+            return True
+        return False
+
+    def _resp_tail_chain(self, tag: str, rid, result: dict) -> bool:
+        if tag == "config.get:full":
             self.display_config.emit(dict((result.get("config") or {}).get("display") or {}))
-        elif tag.startswith("attach:"):
+            return True
+        if tag.startswith("attach:"):
             self._on_attach_done(rid, tag, result)
-        elif tag.startswith("cron."):
+            return True
+        if tag.startswith("cron."):
             payload = dict(result) if isinstance(result, dict) else {}
             # 引擎有些回包是「成功帧里带失败」：`ok: true` 配 `success: false` + `error`（新建走的
             # cronjob 工具就这样）。照单全收会当成保存成功、把编辑页关掉再报错，所以两者都要看。
@@ -1704,11 +1742,14 @@ class EngineWire(QtCore.QObject):
             if not payload["ok"] and not payload.get("message"):
                 payload["message"] = str(payload.get("error") or "操作失败")
             self.cron_result.emit(tag, payload)
-        elif tag.startswith("config.get:"):
+            return True
+        if tag.startswith("config.get:"):
             key = tag.split(":", 1)[1]
             if key == "reasoning":
                 self.reasoning_wire.emit(str(result.get("wire") or ""))
             self.config_value.emit(key, str(result.get("value", "")))
+            return True
+        return False
 
     def _resp_prompt(self, tag: str, result: dict) -> bool:
         if tag == "rewind":
