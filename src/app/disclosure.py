@@ -114,6 +114,8 @@ class Folds:
     ) -> None:
         self._doc = doc
         doc.setUndoRedoEnabled(False)
+        self._phase = 0.0
+        """扫光当前的相位：`retitle` 每秒重插一次抬头，重插时要接着这个相位，不能从 0 重来。"""
         self._head_format = head_format
         self._body_format = body_format
         self._gap = gap
@@ -739,7 +741,7 @@ class Folds:
         start = cursor.position() - cursor.block().position()
         if hit:
             cursor.insertText(text[:hit], base)
-        cursor.insertText(fold.accent, self._accent_link(fold, 0.0))
+        cursor.insertText(fold.accent, self._accent_link(fold, self._phase))
         rest = text[hit + len(fold.accent) :]
         if rest:
             cursor.insertText(rest, base)
@@ -769,6 +771,7 @@ class Folds:
     def shimmer(self, fold: Fold, phase: float) -> None:
         """推进一帧扫光：只改抬头里那一段的底色，别的字符不碰。"""
         start, length = fold.accent_span
+        self._phase = phase
         block = fold.head_block
         if not length or block is None or not block.isValid():
             return
