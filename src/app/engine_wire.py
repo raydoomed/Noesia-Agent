@@ -1542,39 +1542,9 @@ class EngineWire(QtCore.QObject):
         gen = result.get("execution_generation")
         if isinstance(gen, int):
             self._generation = gen
-        if tag == "rewind":
-            self._revision = int(result.get("revision") or self._revision or 0)
-            text, self._rewind_text = self._rewind_text, ""
-            if text:
-                self.submit(text)
+        if self._resp_prompt(tag, result):
             return
-        if tag == "prompt.resolve_unknown":
-            self._paused_sending = False
-            resolved = (self._resolving or {}).get("admission_id")
-            self._resolving = {}
-            self._pending_rows = [row for row in self._pending_rows
-                                  if row.get("admission_id") != resolved]
-            self._refresh_paused()
-            return
-        if tag == "prompt.submit":
-            row_id = result.get("user_row_id")
-            if isinstance(row_id, int):
-                self.user_row_stamped.emit(row_id)
-            return
-        if tag == "voice.transcribe.ready":
-            self.voice_model.emit(result if isinstance(result, dict) else {})
-            return
-        if tag == "voice.transcribe.download":
-            self.check_voice_model()
-            return
-        if tag.startswith("voice.transcribe:"):
-            job = tag.split(":", 1)[1]
-            path = self._voice_jobs.pop(int(job), "") if job.isdigit() else ""
-            text = str(result.get("text") or "").strip()
-            if text:
-                self.voice_text.emit(path, text)
-            else:
-                self.voice_failed.emit(path, str(result.get("reason") or "这句没听清，再说一次"))
+        if self._resp_voice(tag, result):
             return
         if tag in {"session.create", "session.resume"}:
             stored = str(result.get("stored_session_id") or "")
@@ -1739,6 +1709,46 @@ class EngineWire(QtCore.QObject):
             if key == "reasoning":
                 self.reasoning_wire.emit(str(result.get("wire") or ""))
             self.config_value.emit(key, str(result.get("value", "")))
+
+    def _resp_prompt(self, tag: str, result: dict) -> bool:
+        if tag == "rewind":
+            self._revision = int(result.get("revision") or self._revision or 0)
+            text, self._rewind_text = self._rewind_text, ""
+            if text:
+                self.submit(text)
+            return True
+        if tag == "prompt.resolve_unknown":
+            self._paused_sending = False
+            resolved = (self._resolving or {}).get("admission_id")
+            self._resolving = {}
+            self._pending_rows = [row for row in self._pending_rows
+                                  if row.get("admission_id") != resolved]
+            self._refresh_paused()
+            return True
+        if tag == "prompt.submit":
+            row_id = result.get("user_row_id")
+            if isinstance(row_id, int):
+                self.user_row_stamped.emit(row_id)
+            return True
+        return False
+
+    def _resp_voice(self, tag: str, result: dict) -> bool:
+        if tag == "voice.transcribe.ready":
+            self.voice_model.emit(result if isinstance(result, dict) else {})
+            return True
+        if tag == "voice.transcribe.download":
+            self.check_voice_model()
+            return True
+        if tag.startswith("voice.transcribe:"):
+            job = tag.split(":", 1)[1]
+            path = self._voice_jobs.pop(int(job), "") if job.isdigit() else ""
+            text = str(result.get("text") or "").strip()
+            if text:
+                self.voice_text.emit(path, text)
+            else:
+                self.voice_failed.emit(path, str(result.get("reason") or "这句没听清，再说一次"))
+            return True
+        return False
 
     def _resp_error_head(self, tag: str, err, message) -> bool:
         if tag == "model.options:settings":
