@@ -1460,6 +1460,25 @@ class ChatPanel(QtWidgets.QWidget):
         settings: QtCore.QSettings | None = None,
     ) -> None:
         super().__init__(parent)
+        layout = self._setup_window(settings)
+
+        self._setup_header(layout)
+
+        self._init_state()
+
+        self._setup_view(layout)
+        self._init_view_state()
+        self._setup_scrollbars()
+        self._setup_notice_bars(layout)
+        row, box, box_row = self._setup_composer()
+        self._setup_attach_button(box, box_row)
+        self._setup_input(box, box_row)
+        self._setup_composer_buttons(box, box_row)
+        self._setup_send(layout, row)
+        self._setup_meta(layout)
+        self._setup_finish()
+
+    def _setup_window(self, settings: QtCore.QSettings | None) -> QtWidgets.QVBoxLayout:
         self.setWindowFlags(
             QtCore.Qt.WindowType.Tool
             | QtCore.Qt.WindowType.FramelessWindowHint
@@ -1481,6 +1500,7 @@ class ChatPanel(QtWidgets.QWidget):
         frame = _OpacityFrame(self)
         frame.setObjectName("frame")
         self._opacity_frame = frame
+        self._frame = frame
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(frame)
@@ -1488,7 +1508,10 @@ class ChatPanel(QtWidgets.QWidget):
         layout = QtWidgets.QVBoxLayout(frame)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
+        return layout
 
+    def _setup_header(self, layout: QtWidgets.QVBoxLayout) -> None:
+        frame = self._frame
         header = QtWidgets.QHBoxLayout()
         title = QtWidgets.QLabel(TITLE_FULL, frame)
         title.setObjectName("title")
@@ -1554,6 +1577,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._current_model_id = ""
         self._refresh_button: QtWidgets.QPushButton | None = None
 
+    def _init_state(self) -> None:
         self._bubble_has_text = False
         self._busy = False
         self._interrupted = False
@@ -1645,7 +1669,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._spin_timer = QtCore.QTimer(self)
         self._spin_timer.setInterval(_SPIN_INTERVAL_MS)
         self._spin_timer.timeout.connect(self._tick_spin)
-        
+
         self._tool_folds: dict[str, disclosure.Fold] = {}
         self._tool_images: dict[int, str] = {}
         self._tool_term_drawn: dict[int, bool] = {}
@@ -1666,7 +1690,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._tool_progress = "all"
         self._provider_wait = ""
 
-        self.view = ChatView(frame)
+    def _setup_view(self, layout: QtWidgets.QVBoxLayout) -> None:
+        self.view = ChatView(self._frame)
         self.view.setObjectName("view")
         self.view.document().setDocumentMargin(ChatView.BUBBLE_PAD_Y)
         self.view.setReadOnly(True)
@@ -1699,6 +1724,7 @@ class ChatPanel(QtWidgets.QWidget):
         )
         self.view.attach_folds(self._folds)
 
+    def _init_view_state(self) -> None:
         self._el_buttons: dict[tuple, HoverActionButton] = {}
         self._shown_buttons: list[HoverActionButton] = []
         self._el_scan_pos = 0
@@ -1729,6 +1755,8 @@ class ChatPanel(QtWidgets.QWidget):
         self._restoring = False
         self._diff_texts: dict[int, tuple[str | None, str]] = {}
         self._tool_payloads: dict[int, tuple[str, str]] = {}
+
+    def _setup_scrollbars(self) -> None:
         self.view.viewport().setMouseTracking(True)
         self.view.viewport().installEventFilter(self)
         self.view.installEventFilter(self)
@@ -1745,26 +1773,30 @@ class ChatPanel(QtWidgets.QWidget):
         bar.valueChanged.connect(lambda _value: self._place_msg_bars())
         bar.rangeChanged.connect(lambda *_args: QtCore.QTimer.singleShot(0, self._place_msg_bars))
 
-        self.stack = StatusStack(frame)
+    def _setup_notice_bars(self, layout: QtWidgets.QVBoxLayout) -> None:
+        self.stack = StatusStack(self._frame)
         self.stack.kill_requested.connect(self.process_kill_requested.emit)
         layout.addWidget(self.stack)
 
-        self.speech_bar = SpeechBar(frame)
+        self.speech_bar = SpeechBar(self._frame)
         self.speech_bar.stop_requested.connect(self.speech_stop_requested.emit)
         layout.addWidget(self.speech_bar)
 
-        self.paused_bar = PausedBar(frame)
+        self.paused_bar = PausedBar(self._frame)
         self.paused_bar.discard_requested.connect(self.paused_discard_requested.emit)
         layout.addWidget(self.paused_bar)
 
+    def _setup_composer(self) -> tuple[QtWidgets.QHBoxLayout, QtWidgets.QFrame, QtWidgets.QHBoxLayout]:
         row = QtWidgets.QHBoxLayout()
         row.setSpacing(8)
-        self._inputbox = box = QtWidgets.QFrame(frame)
+        self._inputbox = box = QtWidgets.QFrame(self._frame)
         box.setObjectName("inputbox")
         box_row = QtWidgets.QHBoxLayout(box)
         box_row.setContentsMargins(8, 0, 4, 0)
         box_row.setSpacing(2)
+        return row, box, box_row
 
+    def _setup_attach_button(self, box: QtWidgets.QFrame, box_row: QtWidgets.QHBoxLayout) -> None:
         self._attach_button = QtWidgets.QToolButton(box)
         self._attach_button.setObjectName("icon")
         self._attach_button.setIcon(_glyph_icon("plus"))
@@ -1793,6 +1825,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attach_button.clicked.connect(self._show_attach_menu)
         box_row.addWidget(self._attach_button)
 
+    def _setup_input(self, box: QtWidgets.QFrame, box_row: QtWidgets.QHBoxLayout) -> None:
         self.input = _Input(box)
         self.input.setObjectName("input")
         self.input.set_placeholder("和 Noesia 说点什么…")
@@ -1820,6 +1853,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._voice_orb.released.connect(self._voice_hold_end)
         box_row.addWidget(self._voice_orb, 1, QtCore.Qt.AlignmentFlag.AlignCenter)
 
+    def _setup_composer_buttons(self, box: QtWidgets.QFrame, box_row: QtWidgets.QHBoxLayout) -> None:
         self._approval_button = QtWidgets.QToolButton(box)
         self._approval_button.setObjectName("icon")
         self._approval_button.setIcon(_glyph_icon("shield"))
@@ -1896,7 +1930,8 @@ class ChatPanel(QtWidgets.QWidget):
             self._keep_input_focus
         )
 
-        self._send_button = send = QtWidgets.QPushButton(frame)
+    def _setup_send(self, layout: QtWidgets.QVBoxLayout, row: QtWidgets.QHBoxLayout) -> None:
+        self._send_button = send = QtWidgets.QPushButton(self._frame)
         send.setFixedSize(32, 32)
         send.setIconSize(QtCore.QSize(15, 15))
         send.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
@@ -1911,7 +1946,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attachments: list[dict] = []
         self._clipboard_seq = 0
         self._attach_chips: list[QtWidgets.QFrame] = []
-        self._attach_bar = QtWidgets.QFrame(frame)
+        self._attach_bar = QtWidgets.QFrame(self._frame)
         self._attach_bar.setObjectName("attachbar")
         self._attach_row = QtWidgets.QHBoxLayout(self._attach_bar)
         self._attach_row.setContentsMargins(6, 4, 6, 4)
@@ -1920,7 +1955,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._attach_bar.hide()
         self._queued: list[dict] = []
         self._queue_chips: list[QtWidgets.QFrame] = []
-        self._queue_bar = QtWidgets.QFrame(frame)
+        self._queue_bar = QtWidgets.QFrame(self._frame)
         self._queue_bar.setObjectName("attachbar")
         self._queue_col = QtWidgets.QVBoxLayout(self._queue_bar)
         self._queue_col.setContentsMargins(6, 4, 6, 4)
@@ -1929,16 +1964,17 @@ class ChatPanel(QtWidgets.QWidget):
         layout.addWidget(self._queue_bar)
         layout.addWidget(self._attach_bar)
 
-        row.addWidget(box, 1)
+        row.addWidget(self._inputbox, 1)
         row.addWidget(send)
         layout.addLayout(row)
 
+    def _setup_meta(self, layout: QtWidgets.QVBoxLayout) -> None:
         meta_row = QtWidgets.QHBoxLayout()
         meta_row.setContentsMargins(4, 4, 4, 0)
         meta_row.setSpacing(6)
-        meta_row.addWidget(hint_label)
+        meta_row.addWidget(self._hint_label)
         meta_row.addStretch(1)
-        self._opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, frame)
+        self._opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal, self._frame)
         self._opacity_slider.setObjectName("opacity")
         self._opacity_slider.setFixedWidth(96)
         self._opacity_slider.setRange(0, 100)
@@ -1950,12 +1986,11 @@ class ChatPanel(QtWidgets.QWidget):
         meta_row.addWidget(self._opacity_slider)
         layout.addLayout(meta_row)
 
-        send.clicked.connect(self._emit)
-
-        self._frame = frame
-        frame.setMouseTracking(True)
-        frame.installEventFilter(self)
-        self._init_background(frame)
+    def _setup_finish(self) -> None:
+        self._send_button.clicked.connect(self._emit)
+        self._frame.setMouseTracking(True)
+        self._frame.installEventFilter(self)
+        self._init_background(self._frame)
         self._restore_geometry()
         self._sync_send_button()
 
