@@ -1524,90 +1524,17 @@ class EngineWire(QtCore.QObject):
                 self._attaching = False
             if isinstance(rid, int):
                 self._sent.pop(rid, None)
-            if tag == "model.options:settings":
-                self.provider_rows_failed.emit(str(message))
+            if self._resp_error_head(tag, err, message):
                 return
-            if tag == "voice.transcribe.download":
-                self.voice_model.emit({"ready": False, "failed": str(message)})
+            if self._resp_error_prompt(tag, err, code, message):
                 return
-            if tag.startswith("voice.transcribe:"):
-                job = tag.split(":", 1)[1]
-                path = self._voice_jobs.pop(int(job), "") if job.isdigit() else ""
-                self.voice_failed.emit(path, str(message))
+            if self._resp_error_model(tag, message):
                 return
-            if tag == "prompt.submit" and code == 4009:
-                self.error.emit("这一轮还没停下，等它真结束再重发")
+            if self._resp_error_cron(tag, message):
                 return
-            if tag == "prompt.submit":
-                data = err.get("data") if isinstance(err, dict) else None
-                if isinstance(data, dict) and data.get("reason") == "unknown_execution":
-                    self.paused.emit(dict(self._paused) if self._paused else None)
-                    if self._paused:
-                        self.error.emit("上一轮在重启时被打断了，这场会话卡着——先点横幅里的「丢弃那一轮」再发")
-                    else:
-                        self.error.emit("上一轮在重启时被打断了，这场会话卡着——重开 Noesia 后它会自己接着跑")
-                    return
-            if tag == "prompt.resolve_unknown":
-                self._paused_sending = False
-                self._resolving = {}
-                self.paused_discard_failed.emit()
-                self.error.emit(f"丢弃那一轮没成功：{message}")
+            if self._resp_error_setup(code, message):
                 return
-            if tag == "rewind" or tag == "reasoning.set" or tag.startswith("model.set"):
-                data = err.get("data") if isinstance(err, dict) else None
-                fresh_rev = data.get("revision") if isinstance(data, dict) else None
-                fresh_gen = data.get("execution_generation") if isinstance(data, dict) else None
-                if isinstance(fresh_rev, int) and fresh_rev != self._revision:
-                    self._revision = fresh_rev
-                    if isinstance(fresh_gen, int):
-                        self._generation = fresh_gen
-                    if tag == "rewind" and self._rewind_text:
-                        self._send_rewind()
-                        return
-                    if tag == "reasoning.set" and self._reasoning_level:
-                        self.set_reasoning(self._reasoning_level)
-                        return
-                    if tag.startswith("model.set") and self._switch_payload:
-                        self._send_switch_model()
-                        return
-                if tag == "rewind":
-                    self._rewind_text = ""
-                    self.error.emit(str(message))
-                    return
-                if tag == "reasoning.set":
-                    self._reasoning_level = ""
-                    self.error.emit(str(message))
-                    return
-                self._switch_payload = {}
-                self.save_result.emit(tag, {"ok": False, "message": str(message)})
-                return
-            if tag == "session.interrupt":
-                data = err.get("data") if isinstance(err, dict) else None
-                fresh = data.get("execution_generation") if isinstance(data, dict) else None
-                if isinstance(fresh, int) and fresh != self._generation:
-                    self._generation = fresh
-                    self.interrupt()
-                    return
-                if isinstance(data, dict) and data.get("reason") == "stale_generation":
-                    return  # 那一轮已经不在跑了，停止按钮不该再弹错
-                self.error.emit(str(message))
-                return
-            if tag.startswith("model.save_key") or tag.startswith("model.set"):
-                if tag.startswith("model.save_key"):
-                    self._pending_switch = ""
-                    self._pending_switch_token = ""
-                self.save_result.emit(tag, {"ok": False, "message": str(message)})
-                return
-            if tag.startswith("cron."):
-                self.cron_result.emit(tag, {"ok": False, "message": str(message)})
-                return
-            if code == 5080 or looks_unconfigured(message, code):
-                self.setup_needed.emit(NO_PROVIDER_HINT)
-                return
-            if tag.startswith("attach:"):
-                name = self._attach_taken(rid)[0]
-                self.attachment_failed.emit(name or "附件", str(message))
-                self._settle_turn(tag)
+            if self._resp_error_attach(rid, tag, message):
                 return
             self.error.emit(f"{message}")
             return
@@ -1812,6 +1739,109 @@ class EngineWire(QtCore.QObject):
             if key == "reasoning":
                 self.reasoning_wire.emit(str(result.get("wire") or ""))
             self.config_value.emit(key, str(result.get("value", "")))
+
+    def _resp_error_head(self, tag: str, err, message) -> bool:
+        if tag == "model.options:settings":
+            self.provider_rows_failed.emit(str(message))
+            return True
+        if tag == "voice.transcribe.download":
+            self.voice_model.emit({"ready": False, "failed": str(message)})
+            return True
+        if tag.startswith("voice.transcribe:"):
+            job = tag.split(":", 1)[1]
+            path = self._voice_jobs.pop(int(job), "") if job.isdigit() else ""
+            self.voice_failed.emit(path, str(message))
+            return True
+        return False
+
+    def _resp_error_prompt(self, tag: str, err, code, message) -> bool:
+        if tag == "prompt.submit" and code == 4009:
+            self.error.emit("这一轮还没停下，等它真结束再重发")
+            return True
+        if tag == "prompt.submit":
+            data = err.get("data") if isinstance(err, dict) else None
+            if isinstance(data, dict) and data.get("reason") == "unknown_execution":
+                self.paused.emit(dict(self._paused) if self._paused else None)
+                if self._paused:
+                    self.error.emit("上一轮在重启时被打断了，这场会话卡着——先点横幅里的「丢弃那一轮」再发")
+                else:
+                    self.error.emit("上一轮在重启时被打断了，这场会话卡着——重开 Noesia 后它会自己接着跑")
+                return True
+        if tag == "prompt.resolve_unknown":
+            self._paused_sending = False
+            self._resolving = {}
+            self.paused_discard_failed.emit()
+            self.error.emit(f"丢弃那一轮没成功：{message}")
+            return True
+        if tag == "rewind" or tag == "reasoning.set" or tag.startswith("model.set"):
+            data = err.get("data") if isinstance(err, dict) else None
+            fresh_rev = data.get("revision") if isinstance(data, dict) else None
+            fresh_gen = data.get("execution_generation") if isinstance(data, dict) else None
+            if isinstance(fresh_rev, int) and fresh_rev != self._revision:
+                self._revision = fresh_rev
+                if isinstance(fresh_gen, int):
+                    self._generation = fresh_gen
+                if tag == "rewind" and self._rewind_text:
+                    self._send_rewind()
+                    return True
+                if tag == "reasoning.set" and self._reasoning_level:
+                    self.set_reasoning(self._reasoning_level)
+                    return True
+                if tag.startswith("model.set") and self._switch_payload:
+                    self._send_switch_model()
+                    return True
+            if tag == "rewind":
+                self._rewind_text = ""
+                self.error.emit(str(message))
+                return True
+            if tag == "reasoning.set":
+                self._reasoning_level = ""
+                self.error.emit(str(message))
+                return True
+            self._switch_payload = {}
+            self.save_result.emit(tag, {"ok": False, "message": str(message)})
+            return True
+        if tag == "session.interrupt":
+            data = err.get("data") if isinstance(err, dict) else None
+            fresh = data.get("execution_generation") if isinstance(data, dict) else None
+            if isinstance(fresh, int) and fresh != self._generation:
+                self._generation = fresh
+                self.interrupt()
+                return True
+            if isinstance(data, dict) and data.get("reason") == "stale_generation":
+                return True  # 那一轮已经不在跑了，停止按钮不该再弹错
+            self.error.emit(str(message))
+            return True
+        return False
+
+    def _resp_error_model(self, tag: str, message) -> bool:
+        if tag.startswith("model.save_key") or tag.startswith("model.set"):
+            if tag.startswith("model.save_key"):
+                self._pending_switch = ""
+                self._pending_switch_token = ""
+            self.save_result.emit(tag, {"ok": False, "message": str(message)})
+            return True
+        return False
+
+    def _resp_error_cron(self, tag: str, message) -> bool:
+        if tag.startswith("cron."):
+            self.cron_result.emit(tag, {"ok": False, "message": str(message)})
+            return True
+        return False
+
+    def _resp_error_setup(self, code, message) -> bool:
+        if code == 5080 or looks_unconfigured(message, code):
+            self.setup_needed.emit(NO_PROVIDER_HINT)
+            return True
+        return False
+
+    def _resp_error_attach(self, rid, tag: str, message) -> bool:
+        if tag.startswith("attach:"):
+            name = self._attach_taken(rid)[0]
+            self.attachment_failed.emit(name or "附件", str(message))
+            self._settle_turn(tag)
+            return True
+        return False
 
     def _attach_taken(self, rid) -> tuple[str, bool]:
         """取走这条附件的登记：(名字, 是否必须有 @file: 回执)。"""
