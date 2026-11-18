@@ -13,12 +13,12 @@ export QT_QPA_PLATFORM=offscreen
 
 | 脚本 | 对应证据 | 命令 | 该看到什么 |
 |---|---|---|---|
-| `import_smoke.py` | E1 | `$P scripts/audit/import_smoke.py` | `MODULES 68 FAILS 0` |
+| `import_smoke.py` | E1 | `$P scripts/audit/import_smoke.py` | `MODULES 72 FAILS 0` |
 | `logic_probe.py` | E12 | `$P scripts/audit/logic_probe.py` | `RESULT <模块> OK {...}` 逐条 + `PROBE_DONE` |
 | `data_probe.py` | E12 | `$P scripts/audit/data_probe.py` | `P2 <项> = <值>` 逐条 + `PROBE2_DONE` |
 | `panel_probe.py` | E11 | `$P scripts/audit/panel_probe.py` | 一行 `PANEL send_idle=… media_raw_visible=False …` |
 | `ui_probe.py <case>` | E11 | `$P scripts/audit/ui_probe.py chat_panel` | 一行 `PROBE_JSON {"case": …, "ok": true, "click_errors": []}` |
-| `contract_check.py` | E13 | `$P scripts/audit/contract_check.py` | `CALLS 27 METHODS 18 CONTRACTS 255` / `UNKNOWN []` / `PARAM_MISMATCH 0` |
+| `contract_check.py` | E13 | `$P scripts/audit/contract_check.py` | `CALLS 39 METHODS 25 CONTRACTS 284` / `CHECKED 29 SKIP 10 DYNAMIC 2` / `UNKNOWN []` / `PARAM_MISMATCH 0`，逐条 `SKIP (行号, 方法, 原因)` |
 | `render_time.py` | E16 | `$P scripts/audit/render_time.py` | `TIME <控件> build=…ms render=…ms` |
 | `shots.py` | E11 截图 | `$P scripts/audit/shots.py` | `SHOTS True True`，PNG 落在系统临时目录的 `noesia-audit/shots/` |
 | `review_check.py` | §9 外部复核 4 条 | `$P scripts/audit/review_check.py` | 逐条打印实测值：工具行底色 `— / #55a583 / — / #e75e78 / —`、`border/padding` 丢失、抬头判定 6 行真假、气泡底色差值 |
@@ -54,9 +54,9 @@ done
 
 ```bash
 $P -m compileall -q src                       # E2：无输出即 0 语法错误
-$P scripts/run_tests.py                       # E15：21 个回归脚本，失败 0 个
+$P scripts/run_tests.py                       # E15：全部回归脚本，失败 0 个
 $P scripts/check_cleanroom.py                 # E14：真起引擎、真回话（约 40 秒）
 grep -rn 'setText("\[A-Za-z\]\|QPushButton("\[A-Za-z\]' src/app | wc -l   # E17：英文写死的界面文案
 ```
 
-`ruff` / `vulture` / `pyflakes` 本机装不上（`pip --target` 退出码 2），`AUDIT.md` §5 写了用上面这些扫描器替代的逐条对应关系。
+`ruff` / `vulture` / `pyflakes` 不进项目环境；需要时用 `pip --target` 装到临时目录再跑（本轮验收就是这么跑的：ruff F401 3→0、vulture 80% 仍是 6 条）。`AUDIT.md` §5 有替代扫描器的逐条对应关系。

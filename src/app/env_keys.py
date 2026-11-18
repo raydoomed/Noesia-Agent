@@ -56,7 +56,7 @@ def read(key: str) -> str:
 
 
 def write(key: str, value: str) -> None:
-    """只改 `.env` 里这一个变量那一行，别的行按字节原样留着（不转码、不追加不删除）。"""
+    """只改 `.env` 里这一个变量那一行：其余行内容原样保留，行尾统一成 LF（dotenv 语义下等价）。"""
 
     value = value.strip()
     env = env_file()

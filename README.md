@@ -89,7 +89,8 @@ Noesia Agent/
 ├── assets/                        # 形象图、待机视频、截图与演示
 ├── vendor/                        # 随包运行环境（整合包自带；源码副本由 setup 自动补）
 ├── data/                          # 运行时数据（首次启动自动建，不入库）
-├── scripts/   tools/   tests/     # setup.ps1 / uninstall.ps1 · 构建脚本 · 测试
+├── scripts/   tools/              # setup.ps1 / uninstall.ps1 · 构建脚本
+├── tests/                         # 本机回归脚本（不入库；克隆仓库跑不了 make test）
 ├── pyproject.toml   Makefile   VERSION
 ├── app.example.json   .env.example
 ├── README.md   LICENSE

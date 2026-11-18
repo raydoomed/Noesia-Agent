@@ -26,7 +26,17 @@ from app.prefs_io import atomic_write_json
 from settings import ConfigError, RESOLVER
 
 PREFS_PATH = "data/settings/speech.json"
-_ENV_SHOWN = "data/NoesiaHome/.env"
+
+
+def _env_shown() -> str:
+    """`.env` 的展示路径：默认 home 下是仓库相对的 `data/NoesiaHome/.env`；`NOESIA_HOME` 指到仓库外就显示绝对路径。"""
+    path = env_keys.env_file()
+    try:
+        return path.relative_to(env_keys.REPO_ROOT).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
 VOICES_URL = "https://api.elevenlabs.io/v1/voices"
 ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
@@ -364,7 +374,7 @@ def key_status(provider: str = "") -> tuple[bool, str]:
     if read_api_key(provider):
         env_path = env_file()
         if env_path.is_file() and name in env_path.read_text(encoding="utf-8", errors="replace"):
-            return True, f"已保存（{_ENV_SHOWN} 里的 {name}）"
+            return True, f"已保存（{_env_shown()} 里的 {name}）"
         return True, f"来自环境变量 {name}"
     return False, f"还没填：粘贴 {name} 的值"
 
