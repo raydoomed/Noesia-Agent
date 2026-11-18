@@ -656,7 +656,7 @@ def _breathe_frames() -> tuple[tuple[tuple[int, int], ...], ...]:
 _BREATHE_FRAMES = _breathe_frames()
 _SPIN_INTERVAL_MS = 100
 _SPIN_PERIOD = 14
-"""抬头扫光转一圈几帧：100ms × 14 = 1.4s，一圈 1.4 秒。"""
+"""抬头扫光转一圈：100ms × 14 帧 = 1.4 秒。"""
 
 
 def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
