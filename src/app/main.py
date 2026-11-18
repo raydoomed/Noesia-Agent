@@ -336,7 +336,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._hidden = False
         self._avatar_idle = QtCore.QTimer(self)
         self._avatar_idle.setSingleShot(True)
-        self._avatar_idle.setInterval(5_000)
+        self._avatar_idle.setInterval(10_000)
         self._avatar_idle.timeout.connect(self._end_avatar_session)
         self._warm_idle = QtCore.QTimer(self)
         self._warm_idle.setSingleShot(True)
@@ -717,6 +717,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self._avatar_idle.start()
             return
         self._avatar.hangup()
+        self._show_avatar(False)
 
     def _stop_voice(self) -> None:
         """停下所有发声路径：纯语音的声卡、互动的流播放，以及数字人那边正在渲染的嘴。"""
@@ -726,7 +727,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._pending_speech = ""
         if self._avatar is not None:
             self._avatar.interrupt()
-        self._show_avatar(False)
         if self.chat_panel is not None:
             self.chat_panel.speech_done()
 
@@ -736,10 +736,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._voice_finished()
 
     def _voice_finished(self) -> None:
-        """一句读完：交还待机画面，会话再留 5 秒防备下一句。
+        """一句读完：画面留在互动里，会话再留 10 秒防备下一句。
 
-        短句（几个字）常常是这句话已经念完、画面还没送来第一帧——这时候切回待机会
-        "没有画面"，所以先等它真的出过几帧，最多等 2 秒。
+        短句（几个字）常常是这句话已经念完、画面还没送来第一帧，所以先等它真的出过几帧
+        （最多 2 秒）再起计时；画面要等会话真的挂断才还给待机视频。
         """
         avatar = self._avatar
         if (self._streamer is not None and self._streamer.playing) or self._pending_speech:
@@ -757,7 +757,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             if not self._reset_sent:
                 self._reset_sent = True
                 avatar.baseline_reset()
-        self._show_avatar(False)
         self._avatar_idle.start()
 
     def _ensure_avatar(self):
