@@ -13,12 +13,11 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
 from app import env_keys
-from app.prefs_io import atomic_write_json
+from app.prefs_io import atomic_write_json, read_json
 from settings import ConfigError, RESOLVER
 
 PREFS_PATH = Path("data/settings/avatar.json")
@@ -53,15 +52,7 @@ def load() -> dict:
     if not target.is_file():
         _write(dict(_TEMPLATE))
         return dict(_TEMPLATE)
-    try:
-        stored = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ConfigError(f"读不懂 {target}：{exc}") from None
-    if not isinstance(stored, dict):
-        raise ConfigError(f"{target} 的最外层要是一个对象")
-    missing = [key for key in _REQUIRED if key not in stored]
-    if missing:
-        raise ConfigError(f"{target} 缺 {', '.join(missing)}（语音互动的配置只有这一份，缺键不猜）")
+    stored = read_json(target, _REQUIRED, hint="（语音互动的配置只有这一份，缺键不猜）")
     data = dict(_TEMPLATE)
     data.update(stored)
     return data

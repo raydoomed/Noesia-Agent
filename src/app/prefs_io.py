@@ -1,4 +1,4 @@
-"""四份 JSON 偏好共用的落盘动作：先写临时文件、再改名。
+"""四份 JSON 偏好共用的读写动作：落盘先写临时文件再改名，读盘把三类坏文件一次判死。
 
 引擎随时可能在读这些文件（一按说话就读一次音色配置）。直接覆盖时它可能正好读到写了一半
 的内容——解不开 JSON 就成了「合成失败」，用户只看到一句莫名其妙的错。改名是原子的，
@@ -13,6 +13,27 @@ import json
 import os
 import threading
 from pathlib import Path
+from typing import Iterable
+
+from settings import ConfigError
+
+
+def read_json(target: Path, required: Iterable[str] = (), *, hint: str = "") -> dict:
+    """读一份 JSON：读不懂、最外层不是对象、缺必填键，都当场抛 ConfigError。
+
+    缺键不拿代码默认值兜着——默认值只用来**写**新文件，读到的旧文件缺键说明有人动过它，
+    悄悄补上会让用户以为设置生效了。`hint` 接在缺键那句后面，讲清这份为什么不能猜。
+    """
+    try:
+        stored = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ConfigError(f"读不懂 {target}：{exc}") from None
+    if not isinstance(stored, dict):
+        raise ConfigError(f"{target} 的最外层要是一个对象")
+    missing = [key for key in required if key not in stored]
+    if missing:
+        raise ConfigError(f"{target} 缺 {', '.join(missing)}{hint}")
+    return stored
 
 
 def atomic_write_json(target: Path, data: dict) -> None:

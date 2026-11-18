@@ -8,10 +8,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from app.prefs_io import atomic_write_json
+from app.prefs_io import atomic_write_json, read_json
 from settings import ConfigError, RESOLVER
 
 PREFS_PATH = "data/settings/text.json"
@@ -28,11 +27,8 @@ def load() -> dict:
     if not target.is_file():
         _write({"models": {}})
         return {"models": {}}
-    try:
-        stored = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise ConfigError(f"读不懂 {target}：{exc}") from None
-    models = stored.get("models") if isinstance(stored, dict) else None
+    stored = read_json(target)
+    models = stored.get("models")
     if not isinstance(models, dict):
         raise ConfigError(f"{target} 里要有 models 这一项（每家供应商上次选的模型）")
     return {"models": {str(key): str(value) for key, value in models.items() if value}}
