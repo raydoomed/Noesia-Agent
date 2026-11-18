@@ -753,19 +753,29 @@ class Folds:
         return fmt
 
     def _accent_brush(self, phase: float) -> QtGui.QBrush:
-        """抬头的扫光：底色到提亮色的渐变，亮点按 `phase` 从词头扫到词尾。
+        """抬头的扫光：底色到高光的渐变，亮点按 `phase` 从词头扫到词尾。
 
-        `ObjectBoundingMode` 让渐变落在**这一段字**的包围盒上，不用管光标位置；
-        提亮用 `lighter()` 从主题色派生，深浅两套界面都不用另给常量。
+        `ObjectBoundingMode` 让渐变落在**这一段字**的包围盒上，不用管光标位置。
+        高光不能只是"提亮 RGB"：抬头基色本身是浅色半透明（`SCAFFOLD_IDLE` 是
+        236/230/239 带 110 的 alpha），再往白推根本看不出。alpha 没满就把 alpha 拉满
+        （深底上等于字变实、变亮），alpha 已满说明是浅底深字，改用加深。
         """
         base = self._head_format.foreground().color()
         if not base.isValid():
             base = QtGui.QColor("#8a8a8a")
+        hot = QtGui.QColor(base)
+        if hot.alpha() < 255:
+            hot.setAlpha(255)
+            hot = hot.lighter(120)
+        else:
+            hot = hot.darker(200)
         grad = QtGui.QLinearGradient(0, 0, 1, 0)
         grad.setCoordinateMode(QtGui.QGradient.CoordinateMode.ObjectBoundingMode)
         grad.setColorAt(0.0, base)
         grad.setColorAt(1.0, base)
-        grad.setColorAt(0.05 + (phase % 1.0) * 0.9, base.lighter(200))
+        peak = 0.05 + (phase % 1.0) * 0.9
+        grad.setColorAt(max(0.02, peak - 0.18), hot)
+        grad.setColorAt(min(0.98, peak + 0.18), hot)
         return QtGui.QBrush(grad)
 
     def shimmer(self, fold: Fold, phase: float) -> None:
