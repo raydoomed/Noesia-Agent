@@ -37,6 +37,7 @@ from app.clarify_card import ClarifyCard
 from app.name_dialog import SetupNameCard, receipt_item
 from app.history_window import HistoryWindow, text_key
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap, svg_icon
+from app.approval_card import ApprovalCard
 from app.approval_dialog import ConfirmDialog
 from app.photo_view import PhotoView
 from app.paused_bar import PausedBar
@@ -1679,6 +1680,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._delegate_latest: str = ""
         self._clarify: dict | None = None
         self._setup_card = None
+        self._approval_cards: dict[str, ApprovalCard] = {}
         self._tool_started: dict[str, tuple[disclosure.Fold, str, float, str | None]] = {}
         self._tool_clock = QtCore.QTimer(self)
         self._tool_clock.setInterval(1000)
@@ -2191,6 +2193,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._rewind_after_stop = None
         self._clarify = None
         self._setup_card = None
+        self._approval_cards = {}
         self._clear_queue()
         self.stack.clear_all()
         self.paused_bar.set_paused(None)
@@ -4115,6 +4118,46 @@ class ChatPanel(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, card.focus_field)
         self._settle_insert()
         self.view._queue_sync()
+
+    def show_approval_card(self, payload, on_answer) -> None:
+        """审批卡插进消息流末尾，不开窗。
+
+        弹出窗会被截图、最小化、抢焦点、退出程序这些窗口级事故弄没；流里的卡片跟别的消息
+        一起走，答完留一行结果。
+        """
+        request_id = str(getattr(payload, "request_id", "") or "")
+        if request_id and request_id in self._approval_cards:
+            return
+        self._end_reasoning_group()
+        fold = self._folds.new("approval", "", open_=True)
+        head = fold.head_block
+        if head is not None and head.isValid():
+            head.setVisible(False)
+        card = ApprovalCard(payload, parent=self.view.viewport())
+        card.wheel_target = self.view
+
+        def picked(choice: str) -> None:
+            self._approval_cards.pop(request_id, None)
+            self._folds.relayout()
+            self._settle_insert()
+            self.view._queue_sync()
+            on_answer(choice)
+
+        card.answered.connect(picked)
+        self._folds.attach_widget(fold, card)
+        if request_id:
+            self._approval_cards[request_id] = card
+        self._settle_insert()
+        self.view._queue_sync()
+
+    def withdraw_approval_cards(self, request_ids) -> None:
+        """引擎撤回了这一轮：屏上几张卡按下去并写明原因，别留着像还等人答。"""
+        wanted = {str(item) for item in (request_ids or [])}
+        for request_id, card in list(self._approval_cards.items()):
+            if wanted and request_id and request_id not in wanted:
+                continue
+            card.mark_withdrawn()
+            self._approval_cards.pop(request_id, None)
 
     def _on_card_pick(self, qindex: int, index: int) -> None:
         """卡片上的药丸被点了：单选直接算答了，多选先勾着，`-1` 是「就这样」。"""

@@ -11,6 +11,7 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parents[2]
 SCRATCH = Path(tempfile.gettempdir()) / "noesia-audit"
@@ -120,8 +121,9 @@ CASES = {
     "chat_panel": lambda: (__import__("app.chat_panel", fromlist=["x"]).ChatPanel(), True),
     "chat_input": lambda: (__import__("app.chat_panel", fromlist=["x"])._Input(), True),
     "confirm": lambda: (__import__("app.approval_dialog", fromlist=["x"]).ConfirmDialog(None, "确认操作", "说明文字", "确定"), True),
-    "approval": lambda: (__import__("app.approval_dialog", fromlist=["x"]).ApprovalDialog(
-        {"title": "批准", "description": "运行命令", "command": "ls -la", "request_id": "r1"}, lambda *a: None), True),
+    "approval": lambda: (__import__("app.approval_card", fromlist=["x"]).ApprovalCard(
+        SimpleNamespace(title="批准", description="运行命令", command="ls -la", request_id="r1",
+                        allow_session=True, allow_permanent=True)), True),
     "name_dialog": lambda: (__import__("app.name_dialog", fromlist=["x"]).NameDialog({"prompt": "叫你什么？"}, lambda *a: None), True),
     "photo_view": lambda: (__import__("app.photo_view", fromlist=["x"]).PhotoView("图片"), True),
     "diff_preview": lambda: (__import__("app.file_preview", fromlist=["x"]).DiffPreviewWindow(

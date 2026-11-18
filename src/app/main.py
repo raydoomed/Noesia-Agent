@@ -294,8 +294,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._pending_reviews: list[str] = []
         self._pending_notices: list[tuple[str, str, str]] = []
         self._greeted = False
-        self._approval_dialog = None
-        self._approval_dialogs: list = []
         self.client: EngineWire | None = None
         # 开窗那一页历史铺上了没有：REST 分页的第一页只铺一次，之后回来的都是更早的。
         self._history_initial_done = True
@@ -1515,36 +1513,21 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._greeted = bool(self.client.greet(probe=probe)) and not probe
 
     def _ask_approval(self, ask) -> None:  # noqa: ANN001 (ApprovalPayload)
-        """她停下来等人点头：弹一张卡片，选完把结果交回引擎。
+        """她停下来等人点头：卡片摆进消息流末尾，选完把结果交回引擎。
 
-        关窗、按 Esc 都算拒绝——沉默不是同意。
+        不开窗——窗口会被截图、最小化、退出程序弄没；流里的卡跟消息一起走、一起恢复。
+        没有面板（探针模式）就直接按拒绝交回去，沉默不是同意。
         """
-        from app.approval_dialog import ApprovalDialog
+        if self.chat_panel is None:
+            if self.client is not None:
+                self.client.answer_approval(ask.request_id, "deny")
+            return
 
         def answer(choice: str) -> None:
-            if dialog in self._approval_dialogs:
-                self._approval_dialogs.remove(dialog)
-            self._approval_dialog = self._approval_dialogs[-1] if self._approval_dialogs else None
             if self.client is not None:
                 self.client.answer_approval(ask.request_id, choice)
-            if self.chat_panel is not None:
-                label = {
-                    "once": "允许一次",
-                    "session": "本次会话都允许",
-                    "always": "以后都允许",
-                }.get(choice, "拒绝")
-                detail = "\n".join(
-                    part for part in (getattr(ask, "description", ""), getattr(ask, "command", "")) if part
-                )
-                self.chat_panel.show_tool(
-                    "approval", f"你选择：{label}", ok=choice != "deny", body=detail
-                )
 
-        dialog = ApprovalDialog(ask, answer)
-        dialog.request_id = str(getattr(ask, "request_id", "") or "")
-        self._approval_dialogs.append(dialog)
-        self._approval_dialog = dialog
-        dialog.show_near(self.geometry())
+        self.chat_panel.show_approval_card(ask, answer)
 
     def _send_user_text(self, message: str, source: str = "typed") -> None:
         self._last_user_text = (message or "").strip()
@@ -1844,27 +1827,13 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self.chat_panel.expire_clarify(request_id)
 
     def on_approvals_cancelled(self, request_ids: list) -> None:
-        """引擎自己撤了审批卡（超时 / 那一轮作废）：卡跟着关，别让人对着废卡点头。
+        """引擎自己撤了审批卡（超时 / 那一轮作废）：卡上标失效，别让人对着废卡点头。
 
-        同时可能开着好几张（并行工具各自要授权），所以一张一张按 request_id 认：
-        载荷里的 request_ids 会漏掉「没有 request_id」的那几条，列表为空时照关全部；
-        只有明明列了 id、又不是这张卡的，才留着手上的卡。
+        同时可能挂着好几张（并行工具各自要授权），所以按 request_id 一张一张认：载荷里没列
+        id 时照常全标，只有明明列了、又不是这张的，才留着。
         """
-        wanted = {str(item) for item in (request_ids or [])}
-        closed = 0
-        for dialog in list(self._approval_dialogs):
-            mine = str(getattr(dialog, "request_id", "") or "")
-            if wanted and mine and mine not in wanted:
-                continue
-            if dialog in self._approval_dialogs:
-                self._approval_dialogs.remove(dialog)
-            dialog.dismiss()
-            closed += 1
-        if not closed:
-            return
-        self._approval_dialog = self._approval_dialogs[-1] if self._approval_dialogs else None
         if self.chat_panel is not None:
-            self.chat_panel.show_tool("approval", "这张审批卡已失效（引擎撤回了这一轮）", ok=False)
+            self.chat_panel.withdraw_approval_cards(request_ids)
 
     def on_secret_request(self, payload: dict) -> None:
         """引擎要一个密钥 / sudo 密码：问一句，答了按 `{"value": …}` 回；取消 = 空串（跳过）。"""
@@ -2296,14 +2265,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             painter.drawText(QtCore.QPointF(x, y), "♥")
 
     def moveEvent(self, event) -> None:  # noqa: N802
-        """头像窗一挪，贴在上面的审批卡片跟着挪——不然卡片会留在原地。"""
         super().moveEvent(event)
-        self._follow_approval()
         self._sync_chat_anchor()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self._follow_approval()
         self._sync_chat_anchor()
         self._hit_timer.start(120)
         if self.idle_player is not None:
@@ -2347,16 +2313,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             except Exception:
                 logger.debug("WM_NCHITTEST 解析失败，按普通窗口处理", exc_info=True)
         return super().nativeEvent(event_type, message)
-
-    def _follow_approval(self) -> None:
-        """贴身的卡片跟着人物走。"""
-        for attr in ("_approval_dialog",):
-            dialog = getattr(self, attr, None)
-            if dialog is not None and dialog.isVisible():
-                dialog.move_near(self.geometry())
-        for dialog in list(getattr(self, "_approval_dialogs", ())):
-            if dialog is not getattr(self, "_approval_dialog", None) and dialog.isVisible():
-                dialog.move_near(self.geometry())
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() != QtCore.Qt.MouseButton.LeftButton:
@@ -2419,10 +2375,6 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self._stop_process_watch()
         self._save_geometry()
         self.release_audio()
-        for dialog in list(self._approval_dialogs):
-            dialog.dismiss()
-        self._approval_dialogs.clear()
-        self._approval_dialog = None
         super().closeEvent(event)
 
     def hideEvent(self, event) -> None:  # noqa: N802
