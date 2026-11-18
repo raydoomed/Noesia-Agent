@@ -1,7 +1,7 @@
 """正文渲染：把引擎推来的 markdown 变成 Qt 能画的 HTML。
 
-**为什么要这一层**：桌面端的正文段就是 markdown 渲染（`assistant-ui/thread` 里的
-`TimelineMarkdownText`，代码块交给高亮器）。我们照同一条路——用现成的 markdown 库解析，
+**为什么要这一层**：正文段就是 markdown 渲染（
+代码块交给高亮器）。用现成的 markdown 库解析，
 再拿 pygments 上色；不自己写「哪些符号算标题、算列表」这种规则。
 
 两种落法，对应流式的两种情形：
@@ -145,7 +145,7 @@ def _style_links(markup: str) -> str:
 def _style_quotes(markup: str) -> str:
     """引用块：按层缩进 + 淡底色 + 淡化字色。
 
-    桌面端是 CSS 的左边框 + 淡底（浏览器默认样式）；Qt 的富文本没有左边框这回事，
+    做法是 CSS 的左边框 + 淡底；Qt 的富文本没有左边框这回事，
     缩进一层层加深、底色铺在段上，是同一套观感里能落地的那种。缩进和底色都写在 `<p>` 的
     样式上——Qt 的 `insertHtml` 认 `margin-left` 与 `background-color`，会转成段格式。
     """
@@ -401,7 +401,7 @@ def is_fence(line: str) -> bool:
 
 
 # ---- 公式 ----
-# 桌面端正文是 remark-math + KaTeX（`assistant-ui/thread` 的 markdown 管线），$…$ 渲成数学式。
+# 正文里的 $…$ 要渲成数学式（remark-math + KaTeX 那套规矩）。
 # Qt 这边没有 JS 环境、KaTeX 用不了，用 matplotlib 的 mathtext 渲成图；分界认四种写法——
 # `$…$` / `$$…$$`（remark-math 的规矩：开 `$` 后面不能是空格、闭 `$` 前面不能是空格，
 # 不然「$5 和 $10」这种价钱会被当公式）和 `\(…\)` / `\[…\]`（模型写 LaTeX 时爱用）。

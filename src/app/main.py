@@ -128,7 +128,7 @@ _INSTANCE_MUTEX = None
 
 
 def _flag(value, *, default: bool = True) -> bool:
-    """配置里的开关：只有 `false` / `"false"` / `0` 算关（桌面端 `setShowReasoningFromConfig` 同一条判据）。"""
+    """配置里的开关：只有 `false` / `"false"` / `0` 算关。"""
     if value is None:
         return default
     return not (value is False or value == "false" or value == 0)
@@ -502,9 +502,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         self.client.set_model(option_id)
 
     def refresh_models(self) -> None:
-        """聊天窗菜单里的「刷新模型」：让引擎绕过目录缓存重问一遍上游。
+        """聊天窗菜单里的「刷新模型」：让引擎绕过目录缓存重问一遍服务商。
 
-        上游上新/下架是绕着程序发生的，清单不能只靠开窗那一次。刷新途中那条菜单项写
+        模型上新/下架是绕着程序发生的，清单不能只靠开窗那一次。刷新途中那条菜单项写
         「刷新中…」；清单一回来（`apply_models`）就自动收回，引擎没回音也别一直卡着。
         """
         if self.client is None:
@@ -1359,7 +1359,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.client.resolve_unknown()
 
     def _start_process_watch(self) -> None:
-        """会话一连上就一直盯着后台进程，每 5 秒问一次（桌面端也是这样：窗口活着就问）。
+        """会话一连上就一直盯着后台进程，每 5 秒问一次（窗口活着就问）。
 
         只在一轮里问是不够的——`terminal(background=true)` 的进程往往在你没说话的时候还在跑，
         那一轮一结束就看不见了，跑完了也没人知道。
@@ -1399,7 +1399,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     def request_reasoning(self, effort: str = "") -> None:
         """查（不传 effort）或改推理强度。
 
-        档位清单是固定的（照桌面端 `REASONING_EFFORTS`），这里只要有「现在是哪一档」：
+        档位清单是固定的，这里只要有「现在是哪一档」：
         查用 `config.get reasoning`，改的回包自己带 value，回来照它勾。
         """
         if self.client is None:
@@ -1805,7 +1805,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         """`config.yaml` 的 display 段：画不画思考段、工具行由引擎配置说了算。
 
         `show_reasoning` 默认开（引擎默认值），`tool_progress` 默认 all；
-        字符串 "false"/"off"/0 这类写法也当关（桌面端同样认）。
+        字符串 "false"/"off"/0 这类写法也当关。
         """
         panel = self.chat_panel
         if panel is None:
@@ -2137,7 +2137,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 )
 
     def on_reasoning_pending(self, pending: bool) -> None:
-        """恢复会话时挡档位还不知道：先不画具体档（照桌面端 `reasoningEffortPending`）。"""
+        """恢复会话时挡档位还不知道：先不画具体档。"""
         self._reasoning_pending = bool(pending)
         panel = self.chat_panel
         if panel is None:
@@ -2161,7 +2161,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
     def on_reasoning_reported(self, effort: str, wire: str = "") -> None:
         """引擎报到这场会话的档位（首条消息建好 agent 后才有）：以它为准，解除 pending。
 
-        照桌面端：第一次回报就解除，哪怕回的是空串——那说明引擎这场没设过档，界面退回默认。
+        第一次回报就解除，哪怕回的是空串——那说明引擎这场没设过档，界面退回默认。
         """
         self._reasoning_pending = False
         self._reasoning_fresh = True

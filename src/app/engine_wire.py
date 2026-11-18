@@ -574,7 +574,7 @@ class EngineWire(QtCore.QObject):
         return sent
 
     def fetch_history(self, offset: int = 0, limit: int | None = None, tag: str = "older") -> None:
-        """取一页历史（REST）：`offset` 从最新一条往前数，和桌面端 `getOlderSessionMessages` 同义。
+        """取一页历史（REST）：`offset` 从最新一条往前数。
 
         resume 不再背整份 transcript（`omit_messages`），历史由界面按页要——这样开窗成本跟
         会话多长无关，滚到顶再往前取。
@@ -1416,7 +1416,7 @@ class EngineWire(QtCore.QObject):
         self._write({
             "jsonrpc": "2.0",
             "id": request_id,
-            "error": {"code": -32601, "message": f"桌面端没有 {method} 这个 handler"},
+            "error": {"code": -32601, "message": f"没有 {method} 这个 handler"},
         })
 
     ATTACH_TIMEOUT_S = 15.0
@@ -1579,7 +1579,7 @@ class EngineWire(QtCore.QObject):
                 self._generation = int(result.get("execution_generation") or 0)
                 self._note_pending(result.get("pending"))
                 # 引擎把正文省了（`defer_history` 回 `messages=[]`）：它只报条数，
-                # 历史照桌面端的做法按页从 REST 取。
+                # 历史按页从 REST 取。
                 if count := int(result.get("message_count") or 0):
                     self.history_count.emit(count)
                 if self._rewind_text and self._rewind_row:

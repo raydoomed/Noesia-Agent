@@ -5,7 +5,7 @@
 还钉死 `numpy<=1.26.4`，装上去会把项目现有的 numpy 2.x 降级。
 
 前处理自己实现：80 维 fbank → LFR(7,6) 帧堆叠成 560 维 → CMVN 归一化。这三步都是
-公开算法，参数来自模型自带的 `am.mvn`，不依赖上游代码。
+公开算法，参数来自模型自带的 `am.mvn`，不依赖那个包的代码。
 
 模型三个文件，第一次用的时候下到 `data/models/SenseVoice/`：
 `model_quant.onnx`(230 MB) / `tokens.json` / `am.mvn`。

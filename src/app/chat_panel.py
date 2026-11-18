@@ -149,7 +149,7 @@ MSG_GAP_TIGHT = 4
 class _JumpPill(QtWidgets.QWidget):
     """没看完的时候浮在正文底下那颗胶囊：图标 + 「滚动到底部」。
 
-    桌面端那颗就是长这样：圆角胶囊、图标在左、文字在右，锚在输入框上方居中。
+    就是这颗的样子：圆角胶囊、图标在左、文字在右，锚在输入框上方居中。
     这里不能交给 QSS——正文视口里的子控件画不出 `background`（只画得出边框和字），
     所以整颗自己画。
     """
@@ -246,7 +246,7 @@ class _StickyPrompt(QtWidgets.QWidget):
 
     def set_layout(self, margin: float, gap: int, top: float) -> None:
         """气泡画在哪：margin 是左边距（跟文档里那条同一个数），gap 是下面那段
-        间距（对应桌面端粘顶容器的 `pb-(--conversation-turn-gap)`），top 是气泡
+        间距（对应粘顶容器的 `pb-(--conversation-turn-gap)`），top 是气泡
         外沿相对带子顶的位置——被自己这一轮的底边顶上去时会变成负数。
         """
         key = (float(margin), int(gap), float(top))
@@ -276,7 +276,7 @@ _SELF_BLOCK_TAGS = ("<ul", "<ol", "<table", "<hr", "<blockquote")
 _HEADING_RE = re.compile(r"^\s*<h([1-6])[^>]*>(.*)</h\1>\s*$", re.S | re.I)
 _HEADING_PX = {1: 20, 2: 18, 3: 16, 4: 15, 5: 14, 6: 14}
 _DETAILS_LABEL = "详情"
-# 折叠块层数上限。桌面端（`lib/markdown-html-depth.ts`）的规矩是「只数没闭合的开标签、到顶就把后面的 `<`
+# 折叠块层数上限。规矩是「只数没闭合的开标签、到顶就把后面的 `<`
 # 转成可见文字」——上界管的是递归，不是内容：超了照样画出来、看得见，只是不再往里套折叠段。
 _DETAILS_MAX_DEPTH = 32
 
@@ -645,7 +645,7 @@ _BREATHE_STAGES = (
 
 
 def _breathe_frames() -> tuple[tuple[tuple[int, int], ...], ...]:
-    """运行中抬头那颗图标：照桌面端 `GlyphSpinner spinner="breathe"` 的 17 帧，每帧 100ms。
+    """运行中抬头那颗图标：17 帧、每帧 100ms 的呼吸圈。
 
     每一帧是点阵里亮着的 (行, 列)，4 行 2 列；正放再倒放，看起来就是一次呼吸。
     """
@@ -656,7 +656,7 @@ def _breathe_frames() -> tuple[tuple[tuple[int, int], ...], ...]:
 _BREATHE_FRAMES = _breathe_frames()
 _SPIN_INTERVAL_MS = 100
 _SPIN_PERIOD = 14
-"""抬头扫光转一圈几帧：100ms × 14 = 1.4s，跟桌面端那一圈差不多。"""
+"""抬头扫光转一圈几帧：100ms × 14 = 1.4s，一圈 1.4 秒。"""
 
 
 def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
@@ -2737,7 +2737,7 @@ class ChatPanel(QtWidgets.QWidget):
     def _restore_view(self, old_height: float, old_value: int) -> None:
         """按新增高度把视野让回来：正在看的那行停在原位。
 
-        滚动值就是「内容区顶上是哪一行」：补页铺了多少高度就把值让多少。桌面端补页也是
+        滚动值就是「内容区顶上是哪一行」：补页铺了多少高度就把值让多少。补页也是
         这一条——`scrollTop = scrollHeight - restoreFromBottom`，补的是顶上，看的不动。
         这拍里带子若正好让位，`_set_band` 的值补偿会把顶上的行裁进带子底下：恢复是有意
         重定位，不是无感换带，这里的补偿冻住不认。
@@ -2758,7 +2758,7 @@ class ChatPanel(QtWidgets.QWidget):
         """落到真底：插完字当拍排版还没落，`maximum()` 还是旧的，一次滚动到不了底。
 
         到不了就下一拍接着来，最多几拍——「到底」只有一个判据：`value == maximum`。
-        桌面端 `requestScrollToBottom` 也是这套 settle，不是滚一次就当成了。
+        这套 settle 不是滚一次就当成了。
         """
         self._scroll_to_end()
         bar = self.view.verticalScrollBar()
@@ -4047,10 +4047,10 @@ class ChatPanel(QtWidgets.QWidget):
         return choices, bool(question.get("multi_select")) and bool(choices)
 
     def show_clarify(self, payload: dict) -> None:
-        """引擎提问：一张卡，选项点一下就算答了（桌面端 `clarify` 那张卡）。
+        """引擎提问：一张卡，选项点一下就算答了。
 
         答过的选项变成「✓ 选了什么」留在记录里，整批答完抬头换成「已回答」；没选项的问题
-        直接用输入框回（和桌面端一样，下一句打出去就当答案）。
+        直接用输入框回（下一句打出去就当答案）。
         """
         questions = [
             question for question in (payload.get("questions") or [])
@@ -4233,7 +4233,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._settle_clarify("已结束")
 
     def pending_clarify(self) -> bool:
-        """她还在等一个回答（输入框里的下一句就当答案，和桌面端一样）。"""
+        """她还在等一个回答（输入框里的下一句就当答案）。"""
         return self._clarify is not None
 
     def answer_clarify_text(self, text: str) -> bool:
@@ -4613,7 +4613,7 @@ class ChatPanel(QtWidgets.QWidget):
         return fmt
 
     def _tick_spin(self) -> None:
-        """运行中的行：抬头那颗图标每 100ms 换一帧，跟桌面端的呼吸动画一致。"""
+        """运行中的行：抬头那颗图标每 100ms 换一帧，是呼吸动画。"""
         if not self._tool_started:
             self._spin_timer.stop()
             return
@@ -4839,7 +4839,7 @@ class ChatPanel(QtWidgets.QWidget):
     def _draw_delegate(self, fold, tool_id: str, event: dict, *, pending: bool) -> None:
         """子代理卡片：抬头是「几个子代理 · 到哪一步了」，正文**一行一个子代理**。
 
-        照桌面端 `DelegateTool`：每行是它的目标（加模型/用时），下面一行是它最新在干什么。
+        每行是它的目标（加模型/用时），下面一行是它最新在干什么。
         活动行原地换字，不往下追加——追加会让卡片被她的回答切开，而且子代理越活跃卡片越长。
         """
         key = tool_id or fold.key
@@ -4923,7 +4923,7 @@ class ChatPanel(QtWidgets.QWidget):
         body: str = "",
         tool_id: str = "",
     ) -> None:
-        """工具行：一行摘要，点开看引擎给的参数与结果（照桌面端那条脚手架行）。
+        """工具行：一行摘要，点开看引擎给的参数与结果。
 
         摘要用引擎的 `context`，不自己解析参数——工具名和命令原文都在引擎那边定好了；
         结果同样照引擎给的字段原样铺进折叠区，界面不改写。
@@ -4953,7 +4953,7 @@ class ChatPanel(QtWidgets.QWidget):
     def show_info(self, message: str) -> None:
         """引擎/界面的一条普通消息（保存成功、正在切换…）：灰色一行，不叫「错误」。
 
-        桌面端把这类东西放通知，只有请求失败才是错误行——这里照同一条规矩分开，
+        这类东西放通知，只有请求失败才是错误行——按同一条规矩分开，
         不然「已保存 deepseek」也会顶着 [错误] 出现在对话里。
         """
         markup = f"<span style='color:#8f9bb0;font-size:9pt;'>· {html.escape(message)}</span>"
@@ -4961,7 +4961,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._note_line(markup)
 
     def set_show_reasoning(self, show: bool) -> None:
-        """`display.show_reasoning`：关掉就不画思考段（桌面端用的是同一把开关）。"""
+        """`display.show_reasoning`：关掉就不画思考段。"""
         self._show_reasoning = bool(show)
 
     def set_tool_progress(self, mode: str) -> None:
@@ -5069,7 +5069,7 @@ class ChatPanel(QtWidgets.QWidget):
     def show_reasoning_block(self, text: str) -> None:
         """不流式的供应商一次给全的思考（`reasoning.available`）：整块落进同一段。
 
-        桌面端对它的处理是「替换式追加」（`appendReasoningDelta(..., replace=true)`）。
+        处理方式是「替换式追加」。
         实测（真引擎）：这一帧是在这一轮**正文之后**、`message.complete` 之前到的，
         payload 就是整轮回答的全文快照：与正文一模一样的丢掉（否则回答底下会再冒出一段
         「已思考」把回答铺第二遍），只有内容确实另算的才折成「已思考」贴进流里。
@@ -5149,7 +5149,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._paint_state_label()
 
     def set_provider_wait(self, text: str) -> None:
-        """引擎在等供应商（`thinking.delta` 里那几句）：桌面端放底部状态行，不进正文。"""
+        """引擎在等供应商（`thinking.delta` 里那几句）：放底部状态行，不进正文。"""
         self._provider_wait = (text or "").strip()
         self._paint_state_label()
 
@@ -5403,10 +5403,10 @@ class ChatPanel(QtWidgets.QWidget):
 
         留 4px 余量不是随手拍的：Qt 的滚动范围是整数，文档高度常带小数
         （行高 17 加半像素这种），取整后最后一两像素滚不到。按 1px 判就永远
-        判不到底，症状是胶囊不消失、新内容不跟随——桌面端用 0.5px 是因为
+        判不到底，症状是胶囊不消失、新内容不跟随——用 0.5px 是因为
         浏览器里滚动值是精确的浮点值，这边不能照搬那个数。
 
-        文末动作条那截也算「到底」：按钮是这条消息的一部分（桌面端就占在气泡里），
+        文末动作条那截也算「到底」：按钮是这条消息的一部分（占在气泡里），
         文字见底就算到这条消息的底。不然文字一见底就被判「没到底」，动作条永远压在
         折叠线下，要人再手动往下滚才露出来。
         """
@@ -5438,7 +5438,7 @@ class ChatPanel(QtWidgets.QWidget):
     def _text_selected(self) -> bool:
         """正文里有选中的字，且焦点还在正文上：这时候不许替人滚。
 
-        桌面端 `hasTranscriptTextSelection` 管的就是这个：选着字的时候视口不许动。
+        选着字的时候视口不许动。
         多判一个焦点——焦点跑到输入框里以后，正文那条选中的高亮早就灰了，
         再按它算就会一直不跟随，看着像「底部不锁」。
         """
@@ -5489,7 +5489,7 @@ class ChatPanel(QtWidgets.QWidget):
         """贴着正文底边居中摆。
 
         每次都按当下的视口算，不留旧坐标：窗口一变、正文一长，按旧高度摆出来的位置就悬在
-        半空里了。桌面端那颗是 `bottom: calc(...)` 锚在底边的，怎么变都贴底，这里等价地重算。
+        半空里了。那颗是 `bottom: calc(...)` 锚在底边的，怎么变都贴底，这里等价地重算。
         每次滚动也要重摆：Qt 滚一下会把视口里的子件跟着内容拖走（消息条就是每 tick 重摆的），
         不重摆就跟着滚动条上下跑，不在底边。
         """
@@ -5563,7 +5563,7 @@ class ChatPanel(QtWidgets.QWidget):
         """顶上给黏顶那条让位：只改视口上边距，滚动值同步加同样的量。
 
         视口矮多少、滚动范围就大多少，值跟着加这么多，屏上的字一个像素都不动：
-        等于桌面端把被盖住的内容裁掉，而不是把整条正文往下推。改边距会在同一拍
+        等于把被盖住的内容裁掉，而不是把整条正文往下推。改边距会在同一拍
         触发 rangeChanged / valueChanged：这里裹着 `_self_scroll` 挡住跟随判定，
         重算侧另有 `_sticky_busy` 守卫，嵌套只记脏、值由外层这一次补回去。
         """
@@ -5612,8 +5612,8 @@ class ChatPanel(QtWidgets.QWidget):
     def _sticky_target(self) -> dict | None:
         """该钉哪一条；没有就是 `None`。
 
-        判据照桌面端 `use-sticky-prompt-clip` + `user-message.tsx` 里 `group/user-message sticky`
-        那一套：提问气泡是**粘在它那一轮里的**，只要这一轮还占着视口就钉在顶上。判「这一轮还在
+        判据是「提问气泡粘在它自己那一轮里」：
+        提问气泡是**粘在它那一轮里的**，只要这一轮还占着视口就钉在顶上。判「这一轮还在
         不在视口里」要看**再新一条提问的气泡顶**（一轮的底下一条提问），不能看这个气泡自己的
         底边——本轮性能改写把前者换成了后者，长回答（尤其回答还在流时）一滚出去就判 None，
         顶上那条整条消失。这一轮怎么算只跟「气泡顶翻过钉线」有关，所以这里就只判这一件事，
@@ -5731,7 +5731,7 @@ class ChatPanel(QtWidgets.QWidget):
         if resizing:
             return
         if self._at_end() and not self._user_scroll:
-            # 桌面端（use-stick-to-bottom）的语义是「滚回底部就重新钉住」。
+            # 语义是「滚回底部就重新钉住」。
             #
             # 用户自己往上翻时不认这个「接近到底」：文末动作条那截（`_at_end` 留的余量）
             # 有几十像素高，在余量里每滚一格都会被拽回底部，看上去就是滚动上下跳。
@@ -5741,7 +5741,7 @@ class ChatPanel(QtWidgets.QWidget):
             return
         if not self._user_scroll:
             # 值被 Qt 挪的（排版长高、窗口拉伸、范围回填）：跟着的人继续跟着，
-            # 不许因为这种挪动就脱锁——桌面端判定脱锁只看用户自己的滚动。
+            # 不许因为这种挪动就脱锁——脱锁只看用户自己的滚动。
             if self._follow and not self._restoring:
                 self._scroll_to_end_later()
             return
@@ -5797,7 +5797,7 @@ class ChatPanel(QtWidgets.QWidget):
     def set_reasoning_state(self, state: dict) -> None:
         """按引擎回读的当前档位重建菜单：`{current, can_disable}`。
 
-        档位清单照桌面端写死（`REASONING_EFFORTS`，7 档 + 可关时多一项「关闭思考」）：
+        档位清单写死（7 档 + 可关时多一项「关闭思考」）：
         引擎没有「这个模型有哪几档」这种接口，`config.get reasoning` 只回当前值，
         自己去问档位就会问出个空清单（然后整个菜单变成一句「没有可调的思考档」）。
         """
@@ -5961,7 +5961,7 @@ class ChatPanel(QtWidgets.QWidget):
 
         网关这条链上引擎只发 `message.complete`，没有 TUI 那条路的 `turn.done`；排队原先
         只在 `settle_turn` 里抽，那一帧永远不来，于是排队的第二句就一直挂着没人发。
-        桌面端是这轮一完就把下一句递过去、让引擎自己按序跑，这里照同一条路走。
+        这轮一完就把下一句递过去、让引擎自己按序跑。
 
         `_rewind_after_stop` 挂着时也一样：收尾这一帧就是那个「重跑」该落地的界线，先把它交出去
         再抽队列——重跑在等，不该连带把后面排队的话一起堵死（否则重跑永远不发，队列也永远不动）。
@@ -5971,7 +5971,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._drain_queue()
 
     def _send_label(self) -> str:
-        """发送键上写什么——按「此刻按下它会做什么」定，跟桌面端一致。
+        """发送键上写什么——按「此刻按下它会做什么」定。
 
         框里有字：发送（忙的时候是交给引擎排队，这轮跑完自己接上）；
         框里空着、又在跑：停止。
@@ -6011,7 +6011,7 @@ class ChatPanel(QtWidgets.QWidget):
                  source: str = "typed") -> None:
         """这一轮还在跑：这句话先排队，等它完了再发出去。
 
-        正文里不提前出现你要说的话——和桌面端一样，「排着队」和「已经交给引擎」是两回事。
+        正文里不提前出现你要说的话——「排着队」和「已经交给引擎」是两回事。
         前面那条要是被你按停了，后面这条就成了「说了却没发生」的假记录。
 
         `from_input=False` 是语音那条路：语音模式下输入框藏着，里面可能压着草稿，
@@ -6090,7 +6090,7 @@ class ChatPanel(QtWidgets.QWidget):
 
 
     def _show_attach_menu(self) -> None:
-        """「＋」弹菜单：位置照桌面端——贴着按钮往上弹，别盖住输入框。"""
+        """「＋」弹菜单：贴着按钮往上弹，别盖住输入框。"""
         menu = self._attach_menu
         menu.adjustSize()
         anchor = self._attach_button.mapToGlobal(QtCore.QPoint(0, 0))
@@ -7697,7 +7697,7 @@ class ChatPanel(QtWidgets.QWidget):
     def _mount_msg_bar(self, msg: dict) -> None:
         """这条消息写完了：在它文末落一块动作条。
 
-        桌面端把按钮条写在气泡里、靠排版占位；这里同样插一个空段落把动作条那一段占住，
+        按钮条写在气泡里、靠排版占位；同样插一个空段落把动作条那一段占住，
         按钮贴着这一块摆——位置由排版给，不用再去算「最后一行在哪」。
 
         这里只记「该摆哪几个按钮」（`bar_specs`），控件等鼠标真的落到这条上才建

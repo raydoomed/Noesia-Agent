@@ -927,14 +927,14 @@ def provider_model_entries(provider: str, *, allow_network: bool = True) -> dict
     """models.dev 里这家供应商的原始条目（id → 字段），拿不到就是 {}。
 
     与 :func:`list_agentic_models` 的区别：那份只留 ``tool_call`` 的模型，这份不带任何过滤，
-    调用方要自己看 ``status``（``deprecated`` = 上游已下架）。
+    调用方要自己看 ``status``（``deprecated`` = 服务商已下架）。
     """
     entries = _get_provider_models(provider, allow_network=allow_network) or {}
     return {str(mid): dict(entry) for mid, entry in entries.items() if isinstance(entry, dict)}
 
 
 def deprecated_model_ids(provider: str, *, allow_network: bool = True) -> list[str]:
-    """models.dev 标了 ``status: deprecated`` 的模型 id —— 上游自己宣布退役的那批。"""
+    """models.dev 标了 ``status: deprecated`` 的模型 id —— 服务商自己宣布退役的那批。"""
     return [
         mid for mid, entry in provider_model_entries(provider, allow_network=allow_network).items()
         if str(entry.get("status") or "").strip().lower() == "deprecated"

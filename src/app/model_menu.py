@@ -91,7 +91,7 @@ def fill_menu(
 ) -> QtWidgets.QPushButton | None:
     """把分组后的清单填成两级菜单：一级供应商，二级模型。`on_pick(option_id)` 由调用方决定做什么。
 
-    `on_refresh` 给了就在最后加一条「刷新模型」：上游发了新模型、下架了旧模型，菜单不必等着
+    `on_refresh` 给了就在最后加一条「刷新模型」：服务商发了新模型、下架了旧模型，菜单不必等着
     重开程序才更新。刷新途中这条变灰写「刷新中…」，免得连点几下发好几次请求。
     """
     menu.clear()
@@ -159,7 +159,7 @@ def _add_refresh_action(
     button.setFlat(True)
     button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
     button.setProperty("busy", bool(refreshing))
-    button.setToolTip("重新向引擎要一次模型清单：上游新上的会加进来，下架的会去掉")
+    button.setToolTip("重新向引擎要一次模型清单：新上架的会加进来，下架的会去掉")
     holder = QtWidgets.QWidgetAction(menu)
     holder.setDefaultWidget(button)
     menu.addAction(holder)

@@ -928,7 +928,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """把一段已经录好的 WAV 转成文字。
 
-    采集在桌面端做（要设备选择、电平反馈），这里只管识别。``path`` 是调用方写好的
+    采集在界面层做（要设备选择、电平反馈），这里只管识别。``path`` 是调用方写好的
     16kHz 单声道 16 位 WAV；转完由调用方自己删。
     """
     from pathlib import Path

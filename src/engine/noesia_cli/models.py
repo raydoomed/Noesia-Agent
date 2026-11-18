@@ -314,7 +314,7 @@ def get_default_model_for_provider(provider: str) -> str:
 def _ordered_live_ids(preferred: Sequence, live_by_id: dict[str, Any]) -> list[str]:
     """线上清单的 id，推荐表里有的排前面，其余按线上顺序跟在后面。
 
-    推荐表只影响顺序，不再当白名单：上游新发的模型必须能在菜单里出现。
+    推荐表只影响顺序，不再当白名单：服务商新发的模型必须能在菜单里出现。
     """
     ordered = [str(pid) for pid, *_ in preferred if pid in live_by_id]
     seen = set(ordered)
@@ -1090,7 +1090,7 @@ def _model_dedup_key(model_id: str) -> str:
 
 
 def _deprecated_model_ids(normalized: str) -> set[str]:
-    """models.dev 标成 ``deprecated`` 的 id（小写）：上游宣布退役的那批，菜单里不该再出现。"""
+    """models.dev 标成 ``deprecated`` 的 id（小写）：服务商宣布退役的那批，菜单里不该再出现。"""
     try:
         from agent.models_dev import deprecated_model_ids
 
@@ -1113,14 +1113,14 @@ def _selected_model_id(normalized: str) -> str:
 def _merge_live_with_catalog(normalized: str, live) -> list:
     """这份清单只放实时探测的结果——静态表/models.dev 里那些没校验在售的旧名字一律不补。
 
-    以前这里取并集（实时 + 目录 + 静态表）来兜住「上游 /models 漏列自家模型」的情况，代价是
+    以前这里取并集（实时 + 目录 + 静态表）来兜住「服务商 /models 漏列自家模型」的情况，代价是
     已下架、从来没校验过的 id 也会进菜单；现在只认实时抓到的，抓不到就空着，由上层说话。
     """
     return _drop_retired_models(normalized, list(live))
 
 
 def _drop_retired_models(normalized: str, models):
-    """删掉上游已下架的模型（models.dev 的 ``status: deprecated``）。
+    """删掉服务商已下架的模型（models.dev 的 ``status: deprecated``）。
 
     正在用的那个即使被标退役也留着——把它从菜单里删掉，用户再想切回来就找不到入口了。
     """
