@@ -15,6 +15,7 @@ from collections import deque
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import cast
 
@@ -128,6 +129,11 @@ class GatewayLink(QtCore.QObject):
             return ""
 
     def stop(self, timeout: float = 8.0) -> None:
+        # 退出前刚排进去的那几帧（例如让人不在时的审批/回合收尾的 `session.interrupt`）
+        # 要真的发出去：一 stop 就取消写任务，队列里的帧会烂在这儿。
+        deadline = time.monotonic() + 0.5
+        while self._out and time.monotonic() < deadline:
+            time.sleep(0.01)
         loop = self._loop
         if loop is not None:
             try:

@@ -2904,7 +2904,12 @@ def main() -> int:
     QtCore.QTimer.singleShot(30000, _boot_timeout)
 
     def _shutdown_engine() -> None:
-        """退出顺序：收起窗口 → 关引擎通道让它自己收尾 → 退出。"""
+        """退出顺序：收起窗口 → 收掉在跑的这一轮 → 关引擎通道 → 退出。
+
+        退出时人就不在跟前了：挂着的审批没人会点，干等只会等到超时。先发一次
+        `session.interrupt`，引擎把这一轮的审批按 deny 结算、回合当场收尾，重开就是能说话的
+        干净状态（空闲时发这一帧是无害的空操作）。
+        """
         try:
             window.hide()
             if window.idle_player is not None:
@@ -2912,6 +2917,7 @@ def main() -> int:
         except Exception:  # noqa: BLE001
             logger.debug("退出时收起窗口失败", exc_info=True)
         quitting["v"] = True
+        wire.interrupt()
         wire.shutdown()
         _reap_browser_daemons()
 
