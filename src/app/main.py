@@ -2042,8 +2042,14 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     panel.show_notice("session", "已开新会话", ttl_ms=2500)
 
     def on_history_count(self, count: int) -> None:
-        """resume 只报了条数（引擎按 `defer_history` 省掉正文）：历史按页从 REST 取，跟桌面端一样。"""
+        """resume 只报了条数（引擎按 `defer_history` 省掉正文）：历史按页从 REST 取。"""
         say(f"[历史] 库里 {count} 条，按页取")
+        if self.chat_panel is not None and self.chat_panel.rewind_waiting():
+            # 这次 resume 是「刷新 / 重新发送」为了拿最新 revision 才做的：紧接着就要从那条
+            # 用户消息截断重跑，这时按库里的旧账整屏重铺，会把马上要删的那几条又画回屏上，
+            # 截断随后按块标记找不到位置，旧回答就永远留在那里。
+            say("[历史] 等这次重发落地，不重铺")
+            return
         self._history_initial_done = False
         if self.client is not None:
             self.client.fetch_history(0)

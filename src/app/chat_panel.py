@@ -7496,6 +7496,10 @@ class ChatPanel(QtWidgets.QWidget):
             self.input.clear()
         self._sync_send_button()
 
+    def rewind_waiting(self) -> bool:
+        """点过「刷新 / 重新发送」、引擎还没接下这次截断：这期间屏上内容不许被历史重铺换掉。"""
+        return self._rewind_waiting
+
     def cancel_rewind(self) -> None:
         """这次截断重发没成立（被拒 / 换了会话）：正文留在框里，发送键恢复原样。"""
         self._rewind_waiting = False
