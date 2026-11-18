@@ -2222,10 +2222,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         引导只有名字这一张卡，其余 beat 引擎不会再发。
         """
         reply_id = str(beat.get("reply_id") or "")
+        beat_sid = str(beat.get("session_id") or "")
 
         def answer(name: str) -> None:
             if self.client is not None:
-                self.client.answer_setup_beat(reply_id, name)
+                self.client.answer_setup_beat(reply_id, name, beat_sid)
 
         if self.chat_panel is not None:
             self.chat_panel.show_setup_beat(beat, answer)

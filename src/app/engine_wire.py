@@ -385,13 +385,13 @@ class EngineWire(QtCore.QObject):
         self._next_id = 0
         self._pending: dict[int, str] = {}
         self._session_id = ""
+        self._session_ids: set[str] = set()
         self._pending_switch = ""
         self._pending_switch_token = ""
         self._pending_reasoning = ""
         self._models_after_settings = False
         self._reasoning_effort = ""
         self._onboarding_started = False
-        self._onboarding_session = ""
         self._history_retry = 0
         self._history_recover = 0
         self._stored_id = ""
@@ -929,18 +929,30 @@ class EngineWire(QtCore.QObject):
             "choice": str(choice or "deny"),
         }, tag="approval.respond")
 
-    def answer_setup_beat(self, reply_id, name: str = "") -> None:
+    def answer_setup_beat(self, reply_id, name: str = "", session_id: str = "") -> None:
         """起名卡的回答，同样是 server 请求，用**帧 id** 回。
 
         契约在引擎 `tools/setup_beat_tool.py::_reply_event`：
         - 回答了 → `{"answer": {"name": "..."}}`（`_accepts` 要求 name 是非空字符串）
-        - 跳过/关掉 → `{}`（引擎记 `TimedOut`，引导继续往下走，不是退出）
+        - 「以后再说」→ `onboarding.skip`：参考桌面的 Skip setup 走的就是它，引擎把这一轮记成
+          跳过（`phase=skipped`）、撤掉等待中的卡，并关掉安装级开关，下次开程序不再问名字。
+          只回空答复的话引擎按 `TimedOut` 处理——那张卡算超时，记录仍在进行中，于是每开一次
+          程序都要再点一次「以后再说」。
+
+        skip 用**这一帧自带的** `session_id`：引导开场引擎落盘时会换掉运行时 id，全局
+        `_session_id` 可能还是过期那个，引擎回 `not in memory`，人点了「以后再说」等于没点。
         """
         if not reply_id:
             return
         clean = str(name or "").strip()
         logger.info("answer setup_beat id=%s", reply_id)
-        self._reply(reply_id, {"answer": {"name": clean}} if clean else {})
+        if clean:
+            self._reply(reply_id, {"answer": {"name": clean}})
+            return
+        sid = session_id or self._session_id
+        if sid:
+            self._call("onboarding.skip", {"session_id": sid}, tag="onboarding.skip")
+        self._reply(reply_id, {})
 
     def set_model(self, model: str, token: str = "") -> None:
         """`token` 只进 tag：设置窗每一轮带一个编号，迟到的上一轮回执才认得出来。"""
@@ -1075,12 +1087,14 @@ class EngineWire(QtCore.QObject):
 
         结束只做三件事：撤掉「去配 Key」的黄字、关掉还开着的名字卡、把这一轮记成结束
         —— 与参考桌面 `endOnboarding` 同义。`onboarding.run` 由引擎自己落盘，界面不再重开。
+
+        会话一个字都不动：引导那场就是现在挂着的这场，引擎回给模型的收尾（实测 1.6 秒）
+        走的还是它。结束只改 run 记录，帧照常按 `_session_id` 认。
         """
         if not self._onboarding_run and outcome != "done":
             return
         self._onboarding_run = ""
         self._onboarding_started = False
-        self._onboarding_session = ""
         self.request_cancelled.emit("setup_beat", "")
         self.onboarding_ended.emit(outcome or "done")
 
@@ -1198,7 +1212,7 @@ class EngineWire(QtCore.QObject):
                     self.failed.emit("引擎一直没回会话，这条还攒着——再等等，或者重开一次 Noesia")
         return not self._session_id or self._attaching
 
-    def _session_ready(self, session_id: str, stored_id: str = "") -> None:
+    def _session_ready(self, session_id: str, stored_id: str = "") -> bool:
         """会话真到手了：在途结束、恢复计数清零、运行时 id 换上。
 
         「会话可用」只有这一个出口；发起失败（error 分支）和超时/退出（`_reset_transport_state`）
@@ -1206,20 +1220,26 @@ class EngineWire(QtCore.QObject):
 
         存储 id 是这份对话的名字（重启、重开都靠它找回），运行时 id 只在本次后端进程里有效；
         引擎没回存储 id 就保留原来那个，别把唯一的线索抹掉。
+
+        返回 False 表示这一帧被扔掉了（引导正在另一场里跑）——
+        调用方不能再往下走：它既不能改 revision、也不能发 `session_ready`，否则窗口那边会切到
+        一场引擎不认的会话，之后每一帧都被会话过滤丢掉。
         """
         self._recovering = False
         self._attaching = False
         self._attach_since = 0.0
         self._recover_rounds = 0
         self._attach_timeouts = 0
-        if (self._onboarding_started and self._onboarding_session
-                and session_id and session_id != self._onboarding_session):
-            # 引导正在这一场里跑：启动时发出去的那条建会话回包要是晚到，套上去之后
-            # 引导那一轮的思考/正文就被 `_on_event` 的会话过滤全丢掉，界面只剩名字卡。
-            # 不换会话，但把挂载标志放开（否则之后的建会话永远被拒）。
+        # 认「是不是同一场」用存储 id：引导那场落盘时引擎会把运行时 id 换一套，拿 id 比会把
+        # 引导自己那一场的 resume 回包也当成别人。引导期间只认这一场——启动时发出去的那条
+        # 建会话回包要是晚到，套上去之后引导那一轮的思考和正文就被会话过滤全丢掉了。
+        same_stored = bool(stored_id) and stored_id == self._stored_id
+        if self._onboarding_started and stored_id and not same_stored and session_id:
             logger.info("skip late attach during onboarding: %s", session_id[:12])
-            return
+            return False
         self._session_id = session_id
+        if session_id:
+            self._session_ids.add(session_id)
         if stored_id:
             self._stored_id = stored_id
         logger.info("session ready stored=%s runtime=%s", self._stored_id, self._session_id)
@@ -1230,6 +1250,7 @@ class EngineWire(QtCore.QObject):
             self.resume_session(after)
         else:
             self._reconcile_open()
+        return True
 
     def _reconcile_open(self) -> None:
         """把「还挂着的服务端请求」捞回来。
@@ -1303,7 +1324,9 @@ class EngineWire(QtCore.QObject):
         手里没有存储 id（或连 resume 自身都被拒）就先问引擎最近那场对话；
         连着救不回来就开一场新会话——宁可新开，也不能把用户卡在一条红字上。
         """
-        if failed is not None:
+        if failed is not None and method != "onboarding.skip":
+            # `onboarding.skip` 不重放：它带的是那一帧的会话句柄，句柄一旦失效就永远是 4001，
+            # 重放只会把同一条拒绝刷几十遍（人再点一次「以后再说」就有了）。
             queued = dict(failed)
             queued.pop("at", None)
             if queued["tag"].startswith("attach:") and isinstance(rid, int):
@@ -1325,6 +1348,7 @@ class EngineWire(QtCore.QObject):
             self._replay.clear()
             self._stored_id = ""
             self._session_id = ""
+            self._session_ids.clear()
             # 置位是 `create_session` 自己的事：先置就把这一帧吃掉（见 `_ensure_session` 的说明）。
             self.create_session()
             return
@@ -1570,10 +1594,11 @@ class EngineWire(QtCore.QObject):
                 if after:
                     self.resume_session(after)
                 return True
-            self._session_ready(
+            if not self._session_ready(
                 str(result.get("session_id") or result.get("id") or ""),
                 stored,
-            )
+            ):
+                return True
             if tag == "session.resume":
                 self._revision = int(result.get("revision") or 0)
                 self._generation = int(result.get("execution_generation") or 0)
@@ -1611,11 +1636,20 @@ class EngineWire(QtCore.QObject):
             return True
         if tag == "onboarding.start":
             self._onboarding_run = str(result.get("run_id") or "")
-            self._stored_id = str(result.get("stored_session_id") or self._stored_id)
-            self._session_id = str(result.get("session_id") or "")
-            self._onboarding_session = self._session_id
+            stored = str(result.get("stored_session_id") or "")
+            # 回包里的运行时 id 当场就能用：引擎推问候时带的就是它。但它只活到引擎把引导
+            # 会话落盘那一步，之后会换一套——所以下面还要挂回去拿真的那个。
+            self._session_id = str(result.get("session_id") or self._session_id)
+            if self._session_id:
+                self._session_ids.add(self._session_id)
+            if stored:
+                self._stored_id = stored
             self.notice_clear.emit("setup")
             logger.info("onboarding started run=%s stored=%s", self._onboarding_run, self._stored_id)
+            # 照参考桌面 `startOnboarding`：start 之后主动挂回那场存储会话，`session.resume`
+            # 的回包才是落盘之后的运行时会话 id。
+            if stored and self.resume_session(stored):
+                return True
             self.session_ready.emit({"session_id": self._session_id,
                                      "stored_session_id": self._stored_id})
             return True
@@ -1963,16 +1997,9 @@ class EngineWire(QtCore.QObject):
     def _on_event(self, params: dict) -> None:
         kind = params.get("type") or ""
         sid = str(params.get("session_id") or "")
-        if sid and self._session_id and sid != self._session_id:
-            # 引导期间引擎会把会话换到引导那场；而启动时发出去的那条建会话回包要是晚到，
-            # `_session_id` 早就被换成一场空会话了。这一层按 id 过滤是静默丢弃——思考、
-            # 正文全没了，只剩走请求通道的名字卡，看着就是「界面停在名字卡上，回复不见了」。
-            # 引导没结束之前，引导那场来的帧一律认，并当场把当前会话校准过去。
-            if not (self._onboarding_started and (not self._onboarding_session or sid == self._onboarding_session)):
-                return
-            logger.info("onboarding event re-adopted session=%s", sid[:12])
-            self._onboarding_session = sid
-            self._session_id = sid
+        if sid and self._session_ids and sid not in self._session_ids:
+            logger.info("丢帧 %s sid=%s 当前=%s", kind, sid, self._session_id)
+            return
         payload = params.get("payload") or {}
         for holder in (params, payload):
             gen = holder.get("execution_generation") if isinstance(holder, dict) else None
