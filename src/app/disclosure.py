@@ -87,6 +87,8 @@ class Fold:
     open: bool
     parent: int = 0
     indent: int = 0
+    accent: str = ""
+    accent_span: tuple[int, int] = (0, 0)
     head_block: QtGui.QTextBlock | None = field(default=None, repr=False)
     has_body: bool = False
     pinned: bool = False
@@ -111,6 +113,7 @@ class Folds:
         host: QtWidgets.QWidget | None = None,
     ) -> None:
         self._doc = doc
+        doc.setUndoRedoEnabled(False)
         self._head_format = head_format
         self._body_format = body_format
         self._gap = gap
@@ -218,17 +221,17 @@ class Folds:
         fold.glyph = glyph
         self.retitle(fold, fold.label)
 
-    def new(self, kind: str, label: str, *, open_: bool = False, glyph=None) -> Fold:
+    def new(self, kind: str, label: str, *, open_: bool = False, glyph=None, accent: str = "") -> Fold:
         cursor = self._end_cursor()
         self._start_block(cursor, margin=self._gap)
         head_pos = cursor.position()
         self._seq += 1
-        fold = Fold(key=self._seq, kind=kind, label=label, open=bool(open_))
+        fold = Fold(key=self._seq, kind=kind, label=label, open=bool(open_), accent=accent)
         if glyph is not None:
             fold.glyph = glyph
             cursor.insertImage(glyph)
             cursor.insertText(" ")
-        cursor.insertText(head_text(label, fold.open), self._head_link(fold))
+        fold.accent_span = self._insert_head(cursor, fold, head_text(label, fold.open))
         fold.head_block = self._doc.findBlock(head_pos)
         head_format = fold.head_block.blockFormat()
         head_format.setLineHeight(18, QtGui.QTextBlockFormat.LineHeightTypes.FixedHeight.value)
@@ -692,10 +695,11 @@ class Folds:
         cursor.beginEditBlock()
         cursor.setPosition(pos)
         cursor.setPosition(pos + block.length() - 1, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        cursor.removeSelectedText()
         if fold.glyph is not None:
             cursor.insertImage(fold.glyph)
             cursor.insertText(" ")
-        cursor.insertText(head_text(label, fold.open), self._head_link(fold))
+        fold.accent_span = self._insert_head(cursor, fold, head_text(label, fold.open))
         cursor.endEditBlock()
         fold.label = label
         fold.head_block = self._doc.findBlock(pos)
@@ -720,6 +724,58 @@ class Folds:
         fmt.setAnchor(True)
         fmt.setAnchorHref(f"#fold:{fold.key}")
         return fmt
+
+    def _insert_head(self, cursor: QtGui.QTextCursor, fold: Fold, text: str) -> tuple[int, int]:
+        """插抬头那一行，把 `fold.accent` 那段单独拿出来点亮；返回它在这一行里的位置和长度。
+
+        找不到那段（收尾之后抬头换成「已运行 2.3s」这种）就整行一个格式，(0, 0) 表示没有扫光。
+        三段都用同一份链接格式，所以点动词也能折叠。
+        """
+        base = self._head_link(fold)
+        hit = text.find(fold.accent) if fold.accent else -1
+        if hit < 0:
+            cursor.insertText(text, base)
+            return (0, 0)
+        start = cursor.position() - cursor.block().position()
+        if hit:
+            cursor.insertText(text[:hit], base)
+        cursor.insertText(fold.accent, self._accent_link(fold, 0.0))
+        rest = text[hit + len(fold.accent) :]
+        if rest:
+            cursor.insertText(rest, base)
+        return (start + hit, len(fold.accent))
+
+    def _accent_link(self, fold: Fold, phase: float) -> QtGui.QTextCharFormat:
+        fmt = self._head_link(fold)
+        fmt.setForeground(self._accent_brush(phase))
+        return fmt
+
+    def _accent_brush(self, phase: float) -> QtGui.QBrush:
+        """抬头的扫光：底色到提亮色的渐变，亮点按 `phase` 从词头扫到词尾。
+
+        `ObjectBoundingMode` 让渐变落在**这一段字**的包围盒上，不用管光标位置；
+        提亮用 `lighter()` 从主题色派生，深浅两套界面都不用另给常量。
+        """
+        base = self._head_format.foreground().color()
+        if not base.isValid():
+            base = QtGui.QColor("#8a8a8a")
+        grad = QtGui.QLinearGradient(0, 0, 1, 0)
+        grad.setCoordinateMode(QtGui.QGradient.CoordinateMode.ObjectBoundingMode)
+        grad.setColorAt(0.0, base)
+        grad.setColorAt(1.0, base)
+        grad.setColorAt(0.05 + (phase % 1.0) * 0.9, base.lighter(200))
+        return QtGui.QBrush(grad)
+
+    def shimmer(self, fold: Fold, phase: float) -> None:
+        """推进一帧扫光：只改抬头里那一段的底色，别的字符不碰。"""
+        start, length = fold.accent_span
+        block = fold.head_block
+        if not length or block is None or not block.isValid():
+            return
+        cursor = QtGui.QTextCursor(self._doc)
+        cursor.setPosition(block.position() + start)
+        cursor.setPosition(block.position() + start + length, QtGui.QTextCursor.MoveMode.KeepAnchor)
+        cursor.setCharFormat(self._accent_link(fold, phase))
 
     def _end_cursor(self) -> QtGui.QTextCursor:
         cursor = QtGui.QTextCursor(self._doc)

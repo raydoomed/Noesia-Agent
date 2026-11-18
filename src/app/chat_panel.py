@@ -655,6 +655,8 @@ def _breathe_frames() -> tuple[tuple[tuple[int, int], ...], ...]:
 
 _BREATHE_FRAMES = _breathe_frames()
 _SPIN_INTERVAL_MS = 100
+_SPIN_PERIOD = 20
+"""抬头扫光转一圈几帧：100ms × 20 = 2s，跟桌面端那一圈差不多。"""
 
 
 def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
@@ -4266,7 +4268,13 @@ class ChatPanel(QtWidgets.QWidget):
         glyph = self._tool_glyph(view, pending=pending, file_edit=is_file_edit)
         fold = self._tool_folds.get(tool_id) if tool_id else None
         if fold is None:
-            fold = self._folds.new("tool", label, open_=bool(view.inline_diff) or delegate_event is not None, glyph=glyph)
+            fold = self._folds.new(
+                "tool",
+                label,
+                open_=bool(view.inline_diff) or delegate_event is not None,
+                glyph=glyph,
+                accent=self._title_accent(view, pending),
+            )
             if tool_id:
                 self._tool_folds[tool_id] = fold
         elif label != fold.label or self._glyph_url(glyph) != self._glyph_url(fold.glyph):
@@ -4578,8 +4586,16 @@ class ChatPanel(QtWidgets.QWidget):
         glyph = self._spin_format(self._spin_frame)
         if glyph is None:
             return
+        phase = (self._spin_frame % _SPIN_PERIOD) / _SPIN_PERIOD
         for fold, _base, _started, _icon in list(self._tool_started.values()):
             self._folds.set_glyph(fold, glyph)
+            self._folds.shimmer(fold, phase)
+
+    @staticmethod
+    def _title_accent(view, pending: bool) -> str:
+        """抬头里要点亮的那一段（「正在点击」这种动词）。跑完就不给，扫光自己停。"""
+        action = view.title_action
+        return action.text if pending and action is not None else ""
 
     def _track_running_tool(self, tool_id: str, fold, label: str, icon: str | None = None) -> None:
         """记下这一行的起点；同一行后续再更新时保留原起点，免得每秒都从 0 重来。
