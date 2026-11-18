@@ -1392,6 +1392,7 @@ class _PttKeyDialog(QtWidgets.QDialog):
 
 BG_PORTRAIT_CROP = 0.66
 BG_PORTRAIT_SCALE = 0.30
+BG_PORTRAIT_INSET = 16
 
 
 def _dimmed(pixmap: QtGui.QPixmap, factor: float) -> QtGui.QPixmap:
@@ -1649,7 +1650,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._originals: dict[str, bytes] = {}
         self._downloading: set[str] = set()
         self._local_photos: dict[str, tuple[str, "Path | bytes"]] = {}
-        self._hint_label: QtWidgets.QLabel | None
+        self._hint_label: QtWidgets.QLabel
         self._hint_timer = QtCore.QTimer(self)
         self._hint_timer.setSingleShot(True)
         self._hint_timer.timeout.connect(self._restore_hint)
@@ -2027,7 +2028,10 @@ class ChatPanel(QtWidgets.QWidget):
         self._place_background()
 
     def _place_background(self) -> None:
-        """按原图比例缩放贴右下：先定高，宽度跟着比例走；宽过面板就反过来以宽为准。"""
+        """按原图比例缩放贴右下：先定高，宽度跟着比例走；宽过面板就反过来以宽为准。
+
+        底边贴死，右侧退 `BG_PORTRAIT_INSET`（等于面板圆角半径），她的右下直角才不落在弧线外。
+        """
         if getattr(self, "_bg", None) is None or self._bg_pixmap.isNull():
             return
         frame = self._bg.parentWidget()
@@ -2046,7 +2050,10 @@ class ChatPanel(QtWidgets.QWidget):
         )
         self._bg.setPixmap(scaled)
         self._bg.resize(scaled.size())
-        self._bg.move(frame.width() - scaled.width(), frame.height() - scaled.height())
+        self._bg.move(
+            frame.width() - scaled.width() - BG_PORTRAIT_INSET,
+            frame.height() - scaled.height(),
+        )
 
     def set_models(self, items: list[dict], current: str, *, switching: bool = False) -> None:
         """填模型菜单：一级按供应商分组，二级是那家的模型；按钮上显示当前模型名。
@@ -3833,14 +3840,11 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _flash_hint(self, text: str) -> None:
         """底部提示行临时改口说一句，两秒半后回到原话。"""
-        if self._hint_label is None:
-            return
         self._hint_label.setText(text)
         self._hint_timer.start(2500)
 
     def _restore_hint(self) -> None:
-        if self._hint_label is not None:
-            self._hint_label.setText(_HINT_TEXT)
+        self._hint_label.setText(_HINT_TEXT)
 
     def _fetch_then_save(self, url: str) -> None:
         """原图字节早被松手了：取回来再问存哪儿。"""
