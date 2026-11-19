@@ -60,29 +60,22 @@ def screen_area(anchor: QtCore.QRect | None) -> QtCore.QRect:
     return screen.availableGeometry()
 
 
-def card_position(
+def card_center(
     anchor: QtCore.QRect | None,
     size: QtCore.QSize,
     area: QtCore.QRect,
-    gap: int = 12,
     margin: int = 8,
 ) -> QtCore.QPoint:
-    """一张卡片贴在锚点（人物窗）**下方**并夹在屏幕可见区域里。
+    """一张卡片摆到锚点窗口的正中（没有锚点就屏幕正中），并夹在可见区域内。
 
-    人物窗可能贴在屏幕底边或左右边，直接 `anchor.bottom() + gap` 会跑到屏幕外，
-    所以放不下就翻到上方；左右夹在 `area` 里。没有锚点就居中——不是「随便找个地方」，
-    而是「至少别跑到屏幕外」。
+    卡片都是从窗口里点出来的：挂在窗口下方会掉到窗口外面，看着像「弹在最底下」，
+    真正的对话框应该盖在它所属的窗口上。窗口贴着屏幕边时往回收，别露到屏幕外。
     """
-    if anchor is None or not anchor.isValid():
-        return QtCore.QPoint(
-            area.center().x() - size.width() // 2,
-            area.center().y() - size.height() // 2,
-        )
-    x = anchor.center().x() - size.width() // 2
-    y = anchor.bottom() + gap
-    if y + size.height() > area.bottom():
-        y = max(area.top() + margin, anchor.top() - size.height() - gap)
+    box = anchor if (anchor is not None and anchor.isValid()) else area
+    x = box.center().x() - size.width() // 2
+    y = box.center().y() - size.height() // 2
     x = max(area.left() + margin, min(x, area.right() - size.width() - margin))
+    y = max(area.top() + margin, min(y, area.bottom() - size.height() - margin))
     return QtCore.QPoint(x, y)
 
 

@@ -33,23 +33,20 @@ import PySide6.QtCore as QtCore
 
 logger = logging.getLogger(__name__)
 
-# 定时任务、子代理、工具、看板跑出来的会话不是「用户自己聊的那场」：冷启动和恢复挑会话时跳过。
-# 引擎的自动恢复名单只挡 kanban/tool/oneshot，cron 的会话在它眼里同样「像人」。
-NON_CHAT_SOURCES = frozenset({"cron", "kanban", "tool", "oneshot", "subagent", "bot"})
+# 左栏只认「你自己聊出来的会话」：桌面（gui）、老版本遗留的 local、终端 cli/tui 都算。
+# 定时任务、看板、子代理、工具、机器人跑出来的会话一律不列。
+CHAT_SOURCES = frozenset({"local", "gui", "desktop", "cli", "tui"})
 # 面板对引擎报的身份：引擎的 SURFACES 只认 gui/tui/cli/acp/tool/oneshot（桌面就是 gui），
 # 不报的话会话会被当成 cli，思考这类「本地窗口才显示」的东西整轮都不会发上来。
 SESSION_SOURCE = "gui"
 
 
-def chat_session_id(rows) -> str:
-    """从会话清单里挑一场真正的对话（引擎给的是最新在前），挑不到就空串。"""
-    for row in rows or []:
-        if not isinstance(row, dict) or str(row.get("source") or "") in NON_CHAT_SOURCES:
-            continue
-        sid = str(row.get("session_id") or row.get("id") or "")
-        if sid:
-            return sid
-    return ""
+def chat_sessions(rows) -> list:
+    """清单里属于「用户自己聊」的那几场（引擎给的是最新在前）。"""
+    return [
+        row for row in rows or []
+        if isinstance(row, dict) and str(row.get("source") or "").lower() in CHAT_SOURCES
+    ]
 
 
 def _engine_home_path(root: "Path | str") -> Path:
@@ -313,7 +310,8 @@ class EngineWire(QtCore.QObject):
     history_failed = QtCore.Signal(str, str)
     history_stale = QtCore.Signal(str)
     user_row_stamped = QtCore.Signal(int)
-    sessions_listed = QtCore.Signal(list)
+    sessions_panel = QtCore.Signal(list)
+    session_changed = QtCore.Signal(str, str)
     config_value = QtCore.Signal(str, str)
     reasoning_reported = QtCore.Signal(str, str)
     reasoning_pending = QtCore.Signal(bool)
@@ -609,16 +607,22 @@ class EngineWire(QtCore.QObject):
         threading.Thread(target=self._fetch_history_job, args=(base, sid, int(offset), page, tag),
                          name=f"history-page-{tag}", daemon=True).start()
 
-    def _rest_json(self, url: str, timeout: int) -> dict:
-        """带本机票据取一条 REST JSON（历史和运行详情共用一口子），失败原样抛给对方判。"""
+    def _rest_json(self, url: str, timeout: int, method: str = "GET",
+                   body: dict | None = None) -> dict:
+        """带本机票据取一条 REST JSON（历史、运行详情、会话改动共用一口子），失败原样抛给对方判。"""
         headers = {"Accept": "application/json"}
         ticket = self._link.native_http_ticket()
         if ticket:
             # 本地桌面的 REST 凭证：网关按「本机同用户」认这张一次性票据，不认裸请求。
             headers["x-noesia-gateway-ticket"] = ticket
-        request = urllib.request.Request(url, headers=headers)
+        data = None
+        if body is not None:
+            data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
+            raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw.strip() else {}
 
     def _fetch_history_job(self, base: str, session_id: str, offset: int, page: int, tag: str) -> None:
         url = (f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
@@ -795,9 +799,77 @@ class EngineWire(QtCore.QObject):
             return ""
         return str(content)
 
-    def list_sessions(self, limit: int = 50) -> None:
-        """库里存过的会话（含来源）：没有「上一场」存档时，靠它挑一场真正的对话。"""
-        self._call("session.list", {"scope": "stored", "limit": limit}, tag="session.list")
+    def request_session_list(self, limit: int = 100) -> None:
+        """左栏那份清单：引擎的 `/api/sessions`（直接读 state.db 那条 REST），只读。
+
+        不走 `session.list scope=stored`：那条是「接续老库遗留对话」的挑会话接口，
+        正常会话在那里一条都出不来（行带 `chat_id` 就被判成不是遗留行）。
+        """
+        base = str(getattr(self._link, "api_origin", "") or "")
+        if not base:
+            return
+        threading.Thread(target=self._fetch_sessions_job, args=(base, int(limit)),
+                         name="session-list", daemon=True).start()
+
+    def _fetch_sessions_job(self, base: str, limit: int) -> None:
+        # 这个接口单页上限 100，要更多得翻页；左栏只铺最新一页，够用。
+        cap = max(1, min(int(limit), 100))
+        url = (f"{base}/api/sessions?limit={cap}&order=recent&archived=exclude"
+               f"&exclude_sources=cron,subagent")
+        try:
+            payload = self._rest_json(url, timeout=15)
+        except Exception as exc:  # noqa: BLE001 — 取不到就当没有清单，界面保持原样
+            logger.warning("[会话] 左栏清单没取到：%s", exc)
+            return
+        self.sessions_panel.emit(chat_sessions((payload or {}).get("sessions")))
+
+    def rename_session(self, session_id: str, title: str) -> None:
+        self._session_mutation(session_id, "PATCH", {"title": str(title or "").strip()})
+
+    def set_session_pinned(self, session_id: str, pinned: bool) -> None:
+        self._session_mutation(session_id, "PATCH", {"pinned": bool(pinned)})
+
+    def delete_session(self, session_id: str) -> None:
+        self._session_mutation(session_id, "DELETE")
+
+    def _session_mutation(self, session_id: str, method: str, body: dict | None = None) -> None:
+        """改一场会话（标题 / 置顶 / 删除）：走 REST 的 mutations，改完只报一声，清单由窗口那边重拉。"""
+        base = str(getattr(self._link, "api_origin", "") or "")
+        sid = str(session_id or "")
+        if not base or not sid:
+            return
+        threading.Thread(target=self._session_mutation_job,
+                         args=(base, sid, method, dict(body or {})),
+                         name="session-edit", daemon=True).start()
+
+    def _session_mutation_job(self, base: str, session_id: str, method: str, body: dict) -> None:
+        """一次写：先拿 mutation-snapshot 当栅栏（revision/generation），再带 request_id 提交。
+
+        引擎两种都不认白写：没有 request_id 回 `client_upgrade_required`，没有 expected_revision
+        回 `mutation_identity_required`。request_id 同时是幂等回执的键，重试同一件事不会写两遍。
+        """
+        url = f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}"
+        fences: dict[str, str | int] = {"request_id": uuid.uuid4().hex}
+        try:
+            snap = self._rest_json(f"{url}/mutation-snapshot", timeout=15)
+            fences["expected_revision"] = int((snap or {}).get("runtime_revision") or 0)
+            generation = (snap or {}).get("runtime_generation")
+            if generation is not None:
+                fences["expected_generation"] = int(generation)
+            if method == "DELETE":
+                query = urllib.parse.urlencode(fences)
+                self._rest_json(f"{url}?{query}", timeout=15, method=method)
+            else:
+                self._rest_json(url, timeout=15, method=method, body={**body, **fences})
+        except Exception as exc:  # noqa: BLE001 — 没改成就不动界面，清单保持原样
+            logger.warning("[会话] %s %s 没成功：%s", method, session_id[:12], exc)
+            return
+        if method == "DELETE" and str(session_id) in {self._session_id, self._stored_id}:
+            # 删掉的就是手里这场：句柄和存储 id 一起放掉——会话不在了就没得接着聊，
+            # 下一句话由 `_ensure_session` 新开一场（和挂不上时同一条规矩）。
+            self._session_id = ""
+            self._stored_id = ""
+        self.session_changed.emit(session_id, method.lower())
 
     def config_get(self, key: str) -> None:
         self._call("config.get", {"key": key, "session_id": self._session_id}, tag=f"config.get:{key}")
@@ -1357,8 +1429,8 @@ class EngineWire(QtCore.QObject):
     def _recover(self, failed: dict | None, method: str, rid=None) -> None:
         """会话句柄被回收（4001）：按存储 id 重新挂上，再把刚才那条原样重发。
 
-        手里没有存储 id（或连 resume 自身都被拒）就先问引擎最近那场对话；
-        连着救不回来就开一场新会话——宁可新开，也不能把用户卡在一条红字上。
+        手里没有存储 id（或连 resume 自身都被拒）就直接开一场新会话——宁可新开，也不能把用户
+        卡在一条红字上。
         """
         if failed is not None and method != "onboarding.skip":
             # `onboarding.skip` 不重放：它带的是那一帧的会话句柄，句柄一旦失效就永远是 4001，
@@ -1390,7 +1462,9 @@ class EngineWire(QtCore.QObject):
             return
         self._recovering = True
         if method in {"session.resume", "session.create"} or not self._stored_id:
-            self._call("session.list", {"scope": "stored", "limit": 50}, tag="recover.recent")
+            # 没有能挂回去的存储 id（或连 resume 都被拒）：直接开一场新的。
+            self._recovering = False
+            self.create_session()
             return
         self._call("session.resume", {"session_id": self._stored_id, "source": SESSION_SOURCE},
                    tag="session.resume")
@@ -1653,22 +1727,11 @@ class EngineWire(QtCore.QObject):
                 self.set_reasoning(level)
             self._flush_after_attach()
             return True
-        if tag == "recover.recent":
-            sid = chat_session_id(result.get("sessions")) or str(result.get("session_id") or "")
-            if sid:
-                self.resume_session(sid)
-            else:
-                self._recovering = False
-                self.create_session()
-            return True
         if tag == "session.events.since":
             for row in (result.get("open_requests") or []):
                 if isinstance(row, dict) and row.get("method"):
                     self._on_server_request({"id": row.get("id"), "method": row.get("method"),
                                              "params": dict(row.get("params") or {})})
-            return True
-        if tag == "session.list":
-            self.sessions_listed.emit(list(result.get("sessions") or []))
             return True
         if tag == "onboarding.start":
             self._onboarding_run = str(result.get("run_id") or "")

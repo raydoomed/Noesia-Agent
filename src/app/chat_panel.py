@@ -38,12 +38,13 @@ from app.name_dialog import SetupNameCard, receipt_item
 from app.history_window import HistoryWindow, text_key
 from app.hover_actions import DIFF_PREVIEW_LABEL, HoverActionButton, icon_pixmap, svg_icon
 from app.approval_card import ApprovalCard
-from app.approval_dialog import ConfirmDialog
+from app.approval_dialog import ConfirmDialog, TextDialog
 from app.photo_view import PhotoView
 from app.paused_bar import PausedBar
 from app.cron_toast import CronToast
 from app.speech_bar import SpeechBar
 from app.status_stack import StatusStack
+from app.session_sidebar import SessionList, sidebar_width
 from app.voice_input import SILENT_PEAK, VoiceRecorder, peak_of, write_wav
 from app.voice_orb import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_THINKING, VoiceOrb
 from app.tool_view.i18n import tr as tool_tr
@@ -379,11 +380,7 @@ def save_photo_bytes(parent: QtWidgets.QWidget, data: bytes, name: str) -> str |
     )
     if not path:
         return None
-    try:
-        Path(path).write_bytes(data)
-    except OSError as err:
-        QtWidgets.QMessageBox.warning(parent, "存不下来", str(err))
-        return None
+    Path(path).write_bytes(data)
     return path
 
 
@@ -448,6 +445,28 @@ STYLE = """
 #hint  { color: rgba(255, 255, 255, 90); font-size: 10.5px; }
 #state { color: rgba(240, 178, 210, 200); font-size: 11px; }
 #dot { color: #7fe0ac; font-size: 9px; }
+/* 左侧会话栏：一列一行，选中那场压一层粉底，悬停亮一档 */
+#sidebar {
+    background-color: rgba(255, 255, 255, 7);
+    border: 1px solid rgba(255, 255, 255, 16);
+    border-radius: 10px;
+}
+#shead { color: rgba(255, 255, 255, 110); font-size: 10.5px; font-weight: 600; letter-spacing: 0.5px; }
+#divider { color: rgba(255, 255, 255, 78); font-size: 10px; }
+#sidebarscroll { background: transparent; border: none; }
+#sidebarBody { background: transparent; }
+#row { background-color: transparent; border-radius: 6px; }
+#row:hover { background-color: rgba(255, 255, 255, 16); }
+#row[selected="true"] { background-color: rgba(240, 178, 210, 40); }
+#rowtitle { background: transparent; color: rgba(255, 255, 255, 205); font-size: 11.5px; }
+#rowage { background: transparent; color: rgba(255, 255, 255, 80); font-size: 9.5px; }
+/* 行内动作：每行都留一个 ⋯（点开是 重命名/置顶/删除），平时压暗，指上去才亮；置顶那行前面一个粉点 */
+#rowmore {
+    background: transparent; border: none; color: rgba(255, 255, 255, 70);
+    font-size: 12px; padding: 0;
+}
+#rowmore:hover { color: #ffffff; background-color: rgba(255, 255, 255, 34); border-radius: 4px; }
+#rowpin { background: transparent; color: #f0b2d2; font-size: 7px; }
 /* 输入框上方那一叠状态（引擎提示 / 后台进程 / 正在调用）：一行一个，暗底小字 */
 #statusrow {
     background-color: rgba(255, 255, 255, 12);
@@ -711,6 +730,11 @@ def _glyph_pixmap(kind: str, color: str, size: int = 14) -> QtGui.QPixmap:
                 QtCore.QPointF(9.0 + dx * 5.0, 9.0 + dy * 5.0),
                 QtCore.QPointF(9.0 + dx * 6.4, 9.0 + dy * 6.4),
             )
+    elif kind == "panel":
+        panel = QtGui.QPainterPath()
+        panel.addRoundedRect(QtCore.QRectF(2.9, 3.9, 12.2, 10.2), 1.7, 1.7)
+        painter.drawPath(panel)
+        painter.drawLine(QtCore.QPointF(6.9, 3.9), QtCore.QPointF(6.9, 14.1))
     elif kind == "clock":
         painter.drawEllipse(QtCore.QPointF(9.0, 9.0), 6.3, 6.3)
         painter.drawLine(QtCore.QPointF(9.0, 5.2), QtCore.QPointF(9.0, 9.3))
@@ -1437,6 +1461,11 @@ class ChatPanel(QtWidgets.QWidget):
     model_settings_requested = QtCore.Signal()
     cron_requested = QtCore.Signal()
     new_session_requested = QtCore.Signal()
+    session_switch_requested = QtCore.Signal(str)
+    sessions_requested = QtCore.Signal()
+    session_rename_requested = QtCore.Signal(str, str)
+    session_pin_requested = QtCore.Signal(str, bool)
+    session_delete_requested = QtCore.Signal(str)
     approval_requested = QtCore.Signal(str)
     stop_requested = QtCore.Signal()
     speech_stop_requested = QtCore.Signal()
@@ -1492,6 +1521,8 @@ class ChatPanel(QtWidgets.QWidget):
         self.setMinimumSize(MIN_PANEL_WIDTH, MIN_PANEL_HEIGHT)
         self.setMouseTracking(True)
         self._settings = settings or window_settings()
+        # 启动一律收起：上次开着还是收着都不算，左栏要点 ☰ 才出来，不跨启动记忆。
+        self._sidebar_open = False
         self._streaming = False
         self._drag_offset: QtCore.QPoint | None = None
         self._anchor: QtCore.QRect | None = None
@@ -1508,9 +1539,17 @@ class ChatPanel(QtWidgets.QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(frame)
 
-        layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(12, 12, 12, 12)
+        sidebar_row = QtWidgets.QHBoxLayout(frame)
+        sidebar_row.setContentsMargins(12, 12, 12, 12)
+        sidebar_row.setSpacing(8)
+        self.sidebar = SessionList(frame)
+        self.sidebar.switch_requested.connect(self.session_switch_requested.emit)
+        self.sidebar.session_action.connect(self._on_session_action)
+        sidebar_row.addWidget(self.sidebar)
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
+        sidebar_row.addLayout(layout, 1)
         return layout
 
     def _setup_header(self, layout: QtWidgets.QVBoxLayout) -> None:
@@ -1526,6 +1565,15 @@ class ChatPanel(QtWidgets.QWidget):
         hint_label = QtWidgets.QLabel(_HINT_TEXT, frame)
         hint_label.setObjectName("hint")
         self._hint_label = hint_label
+        sidebar_button = QtWidgets.QPushButton(frame)
+        sidebar_button.setObjectName("mini")
+        sidebar_button.setIcon(_glyph_icon("panel"))
+        sidebar_button.setIconSize(QtCore.QSize(14, 14))
+        sidebar_button.setFixedSize(26, 20)
+        sidebar_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        sidebar_button.clicked.connect(self.toggle_sidebar)
+        self._sidebar_button = sidebar_button
+        header.addWidget(sidebar_button)
         header.addWidget(title)
         header.addWidget(dot)
         header.addWidget(state)
@@ -1538,6 +1586,7 @@ class ChatPanel(QtWidgets.QWidget):
         layout.addLayout(header)
         self._state_label = state
         self._title_label = title
+        self._dot_label = dot
 
         combo = QtWidgets.QToolButton(frame)
         combo.setObjectName("model")
@@ -1553,6 +1602,7 @@ class ChatPanel(QtWidgets.QWidget):
         menu.setStyleSheet(STYLE)
         combo.setMenu(menu)
         header.addWidget(combo)
+        self._model_combo = combo
         header.addWidget(new_session)
         cron = QtWidgets.QPushButton(frame)
         cron.setObjectName("mini")
@@ -1579,6 +1629,79 @@ class ChatPanel(QtWidgets.QWidget):
         self._models_refreshing = False
         self._current_model_id = ""
         self._refresh_button: QtWidgets.QPushButton | None = None
+        self._apply_sidebar()
+
+    def _apply_sidebar(self) -> None:
+        """按 `_sidebar_open` 摆位：收起就是把左栏藏掉，聊天区自己占满。
+
+        ☰ 永远在（窗口拉多小都能收放），左栏宽窄跟着面板缩，最窄 132 像素。
+        """
+        self.sidebar.setVisible(bool(self._sidebar_open))
+        width = sidebar_width(self.width())
+        if self.sidebar.maximumWidth() != width:
+            self.sidebar.setFixedWidth(width)
+        self._sidebar_button.setToolTip(
+            "收起会话列表" if self._sidebar_open else "展开会话列表")
+        self._fit_header()
+
+    def _fit_header(self) -> None:
+        """窄窗按优先级收掉顶栏：先让标题和「模型/定时」走，☰ 和新会话、设置留着。
+
+        挤在一排里谁也不肯缩，结果是控件被压成十几个像素的碎块——不如主动收。
+        """
+        if not hasattr(self, "_cron_button"):
+            return
+        room = self.width() - (sidebar_width(self.width()) + 24 if self._sidebar_open else 0)
+        for widget, need in ((self._state_label, 300), (self._model_combo, 300),
+                             (self._cron_button, 300), (self._title_label, 200),
+                             (self._dot_label, 200)):
+            widget.setVisible(room >= need)
+
+    def set_sidebar_open(self, open_: bool) -> None:
+        """展开 / 收起只在这一程里算数，不写进设置——下次启动还是要收起。"""
+        self._sidebar_open = bool(open_)
+        self._apply_sidebar()
+        if self._sidebar_open:
+            self.sessions_requested.emit()
+
+    def toggle_sidebar(self) -> None:
+        self.set_sidebar_open(not self._sidebar_open)
+
+    def sidebar_visible(self) -> bool:
+        return bool(self._sidebar_open)
+
+    def current_session(self) -> str:
+        return self.sidebar.current()
+
+    def _on_session_action(self, session_id: str, action: str) -> None:
+        """行菜单：重命名要标题、删除要确认，置顶直接翻。"""
+        sid = str(session_id or "")
+        if not sid:
+            return
+        title = self.sidebar.title_for(sid)
+        if action == "rename":
+            text = self._ask_title(title)
+            if text and text != title:
+                self.session_rename_requested.emit(sid, text)
+        elif action in {"pin", "unpin"}:
+            self.session_pin_requested.emit(sid, action == "pin")
+        elif action == "delete" and self._confirm_delete(title):
+            self.session_delete_requested.emit(sid)
+
+    def _ask_title(self, current: str) -> str:
+        """问一个新标题；取消或空串都当没改（返回空串）。"""
+        text = TextDialog.ask(self.window(), "重命名会话", "给它起个新名字：", current)
+        return text or ""
+
+    def _confirm_delete(self, title: str) -> bool:
+        return ConfirmDialog.ask(
+            self.window(), "删除会话", f"删掉「{title}」？这一场里的消息会一起消失。", "删除")
+
+    def set_sessions(self, rows, current_id: str = "") -> None:
+        self.sidebar.set_sessions(rows, current_id)
+
+    def set_current_session(self, session_id: str) -> None:
+        self.sidebar.set_current(session_id)
 
     def _init_state(self) -> None:
         self._bubble_has_text = False
@@ -3841,7 +3964,11 @@ class ChatPanel(QtWidgets.QWidget):
 
     def _save_bytes(self, name: str, data: bytes) -> None:
         """问存哪儿、写盘，成了就在底部报一句文件名。取消就什么也不说。"""
-        path = save_photo_bytes(self.window(), data, name)
+        try:
+            path = save_photo_bytes(self.window(), data, name)
+        except OSError as err:
+            self._flash_hint(f"存不下来：{err}")
+            return
         if path:
             self._flash_hint(f"已保存 {Path(path).name}")
 
@@ -6167,23 +6294,9 @@ class ChatPanel(QtWidgets.QWidget):
             self.insert_text(f"@folder:{folder}")
 
     def _add_url(self) -> None:
-        dialog = self._url_dialog()
-        accepted = dialog.exec() == QtWidgets.QDialog.DialogCode.Accepted
-        url = dialog.textValue().strip()
-        dialog.deleteLater()
-        if not accepted:
-            return
+        url = TextDialog.ask(self.window(), "加链接", "链接（http/https）：", "", "加上")
         if url:
             self.insert_text(f"@url:{url}")
-
-    def _url_dialog(self) -> QtWidgets.QInputDialog:
-        """输入链接的小框。人物窗本身是置顶无边框窗，对话框不带同一个标志就会被压在下面点不着。"""
-        dialog = QtWidgets.QInputDialog(self.window())
-        dialog.setWindowTitle("加链接")
-        dialog.setLabelText("链接（http/https）：")
-        dialog.setWindowFlag(QtCore.Qt.WindowType.WindowStaysOnTopHint, True)
-        dialog.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
-        return dialog
 
     def _paste_image(self) -> None:
         """「粘贴图片」：图当场读进内存放在待发条上，不落盘、也不交给引擎（取消就当没发生）。"""
@@ -7010,6 +7123,8 @@ class ChatPanel(QtWidgets.QWidget):
         if hasattr(self, "_model_menu"):
             self._sync_popup_width()
         self._place_background()
+        if hasattr(self, "_sidebar_button"):
+            self._apply_sidebar()
         self._place_jump()
         QtCore.QTimer.singleShot(0, self._refit_user_lines)
         QtCore.QTimer.singleShot(0, self._place_msg_bars)

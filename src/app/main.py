@@ -201,12 +201,13 @@ if QtWidgets is None:  # pragma: no cover
 
 from backends import catalog
 from app.chat_panel import ChatPanel
+from app.approval_dialog import TextDialog
 
 HEARTS = ((0.40, 13.0, 0.0), (0.57, 16.0, 0.12), (0.48, 11.0, 0.30), (0.66, 12.0, 0.42), (0.35, 14.0, 0.58))
 from app.speech_speaker import Speaker
 from app.engine_config import sync_engine_config, workspace_from_config
 from settings import ensure_runtime
-from app.engine_wire import EngineWire, chat_session_id
+from app.engine_wire import EngineWire
 from app.idle_video import IdleVideoPlayer
 from app.user_state import remember_session_id, remembered_session_id, window_settings
 
@@ -1248,6 +1249,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.paused_discard_requested.connect(self._discard_paused_turn)
             self.chat_panel.history_more_requested.connect(self._fetch_more_history)
             self.chat_panel.history_fill_requested.connect(self._fetch_fill_history)
+            self.chat_panel.session_switch_requested.connect(self.switch_session)
+            self.chat_panel.sessions_requested.connect(self.request_sessions)
+            self.chat_panel.session_rename_requested.connect(self.rename_session)
+            self.chat_panel.session_pin_requested.connect(self.pin_session)
+            self.chat_panel.session_delete_requested.connect(self.delete_session)
             self.chat_panel.voice_mode_changed.connect(lambda _mode: self._voice_ok())
             self.speaker.preparing.connect(self.chat_panel.speech_preparing)
             panel = self.chat_panel
@@ -1490,7 +1496,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         if remembered:
             self.client.resume_session(remembered)
             return
-        self.client.list_sessions()
+        # 没有「上一场」存档：别急着建空会话，先问要不要跑引导（引导会自己开一场）。
+        self._greet_if_needed()
 
     def _greet_if_needed(self, force: bool = False) -> None:
         """问一次「该不该开场」（引擎按 `run`/`eligible` 自己判断，做过就什么都不做）。
@@ -1679,6 +1686,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             panel.set_busy(False)
             panel.flush_queue()
         self._refresh_processes()
+        self.request_sessions()
         reply, self._reply_text = self._reply_text, ""
         if reply and not self._turn_stopped:
             self._speak_reply(reply)
@@ -1845,13 +1853,14 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         title = "需要 sudo 密码" if method == "sudo" else "需要一个密钥"
         if method == "sudo":
             prompt = prompt or "这个命令要管理员权限，请输入 sudo 密码。"
-        value, ok = QtWidgets.QInputDialog.getText(
+        value = TextDialog.ask(
             self,
             title,
             prompt + "\n（取消 = 跳过，她就不会拿到这个值）",
-            QtWidgets.QLineEdit.EchoMode.Password,
+            confirm_label="确定",
+            password=True,
         )
-        self.client.answer_secret(reply_id, str(value) if ok else "")
+        self.client.answer_secret(reply_id, value or "")
 
     def on_reaction(self, kind: str) -> None:
         """你说 ily / ♥ / 谢谢 的时候引擎会发 `reaction`：头像上飘几颗心，别的什么都不做。
@@ -1954,6 +1963,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         say(f"[会话] {sid}")
         if sid:
             remember_session_id(sid)
+            if self.chat_panel is not None:
+                self.chat_panel.set_current_session(sid)
+            self.request_sessions()
         self._start_process_watch()
         info = result.get("info") or {}
         if "reasoning_effort" in info:
@@ -1994,6 +2006,59 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                     )
                 else:
                     panel.show_notice("session", "已开新会话", ttl_ms=2500)
+
+    def request_sessions(self) -> None:
+        """左栏要的那份清单：收起时不问，省一次往返。"""
+        panel = self.chat_panel
+        if panel is None or not panel.sidebar_visible():
+            return
+        if self.client is not None and self.client.is_running():
+            self.client.request_session_list()
+
+    def on_sessions_panel(self, rows: list) -> None:
+        if self.chat_panel is not None:
+            self.chat_panel.set_sessions(rows)
+
+    def rename_session(self, session_id: str, title: str) -> None:
+        if self.client is not None and session_id and str(title or "").strip():
+            self.client.rename_session(session_id, str(title).strip())
+
+    def pin_session(self, session_id: str, pinned: bool) -> None:
+        if self.client is not None and session_id:
+            self.client.set_session_pinned(session_id, bool(pinned))
+
+    def delete_session(self, session_id: str) -> None:
+        if self.client is not None and session_id:
+            self.client.delete_session(session_id)
+
+    def on_session_changed(self, session_id: str, action: str) -> None:
+        """一场会话改完（改名 / 置顶 / 删除）重拉清单。
+
+        删掉的正是手里这场：清屏停住，不切邻场也不建会话——会话不在了就没得接着聊，
+        下一句话才新开一场（和挂不上时同一条规矩；存储 id 由 wire 那边一起放掉）。
+        """
+        self.request_sessions()
+        panel = self.chat_panel
+        if action == "delete" and panel is not None and panel.current_session() == str(session_id):
+            remember_session_id("")
+            panel.clear_conversation("删掉了正在聊的会话")
+            panel.set_current_session("")
+
+    def switch_session(self, session_id: str) -> None:
+        """点左栏里的一场：清屏挂过去，历史由 resume 的回包按页铺回来。"""
+        panel = self.chat_panel
+        if panel is None or not session_id or self.client is None or self._new_session_pending:
+            return
+        if panel.is_busy():
+            panel.show_notice("session", "这一轮还没跑完，跑完再切", level="warn", ttl_ms=3000)
+            return
+        if not self.client.resume_session(session_id):
+            return
+        self._stop_voice()
+        say(f"[会话] 切到 {session_id}")
+        self._history_initial_done = False
+        panel.clear_conversation("切换会话")
+        panel.set_current_session(session_id)
 
     def on_history_count(self, count: int) -> None:
         """resume 只报了条数（引擎按 `defer_history` 省掉正文）：历史按页从 REST 取。"""
@@ -2770,20 +2835,10 @@ def main() -> int:
         # 首屏答完就露脸；引擎哪条答不上来也别把人闷在动画里，3 秒后照常放人。
         QtCore.QTimer.singleShot(3000, window.finish_boot)
 
-    def _after_sessions(rows: list) -> None:
-        """没有「上一场」存档：挑最新一场真正的对话（跳过定时任务/子代理跑出来的）。"""
-        sid = chat_session_id(rows)
-        if sid:
-            wire.resume_session(sid)
-        else:
-            # 没有上一场时别急着建空会话：先问要不要跑引导，引导会自己开一场。开场就建的话
-            # 会多出一场空聊天，界面停在那一场上，引导的问候和名字卡全落在另一场里看不见。
-            # 确定不跑引导时，`onboarding.state` 的回包会补建一场。
-            wire.greet()
-
     wire.ready.connect(_after_ready)
     wire.attachment_failed.connect(window._attachment_problem)
-    wire.sessions_listed.connect(_after_sessions)
+    wire.sessions_panel.connect(window.on_sessions_panel)
+    wire.session_changed.connect(window.on_session_changed)
     wire.session_ready.connect(window.on_session_ready)
     wire.history_count.connect(window.on_history_count)
     wire.history_page.connect(window.on_history_page)
