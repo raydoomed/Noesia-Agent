@@ -135,15 +135,16 @@ def newest_conversation(platform: str, user_id: str = "") -> Optional[dict]:
     """这个平台上最近还在用的那场对话（``deliver=latest`` 用）。
 
     排序和界面同一个来源：state.db 的会话列表，按链尾最近活动倒序。跳过 cron 自己的运行
-    会话——那是每次运行新开的临时壳，投进去没人看得到。给 ``user_id`` 时只认同一个人，
-    多用户机器上不会把别人的会话当成投递目标。
+    会话——那是每次运行新开的临时壳，投进去没人看得到。刚点开、还没说话的新会话也算：它的
+    最近活动就是被创建的时刻。给 ``user_id`` 时只认同一个人，多用户机器上不会把别人的会话当
+    成投递目标。
     """
     try:
         from noesia_state_registry import acquire, release_or_close
         db = acquire()
         try:
             rows = db.list_sessions_rich(
-                order_by_last_active=True, limit=50, min_message_count=1,
+                order_by_last_active=True, limit=50,
                 exclude_sources=["cron", "subagent"])
         finally:
             release_or_close(db)

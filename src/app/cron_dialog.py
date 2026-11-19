@@ -701,8 +701,12 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         deliver_box = QtWidgets.QComboBox(page)
         deliver_box.addItem("origin", "origin")
         deliver_box.addItem("latest", "latest")
+        deliver_box.addItem("local", "local")
         deliver_box.setFixedWidth(104)
-        deliver_box.setToolTip("origin = 只投回建这条任务的那场对话；\nlatest = 投到运行那一刻最近还在聊的那场")
+        deliver_box.setToolTip(
+            "origin = 只投回建这条任务的那场对话；\n"
+            "latest = 投到运行那一刻最近还在聊的那场；\n"
+            "local = 不投到任何对话，结果只留在运行记录里")
         self._deliver_box = deliver_box
         tail.addWidget(repeat_caption)
         tail.addWidget(self._repeat_edit)

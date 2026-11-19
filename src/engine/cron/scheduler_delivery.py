@@ -220,6 +220,9 @@ def _maybe_mirror_cron_delivery(
         ok = mirror_to_session(
             platform_name, str(chat_id), _cron_mirror_message(job, text),
             source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
+            # 桌面目标的 chat_id 就是会话 id，直接指给 mirror：新开的会话还没落 origin_json，
+            # 按 chat_id 反查扫不到自己，会把这条投递悄悄丢掉（运行状态还照样记 delivered）。
+            session_id=str(chat_id) if platform_name == "local" else None,
             notice={"job_id": str(job.get("id") or ""), "job_name": _cron_display_name(job)})
         if ok:
             logger.info(
