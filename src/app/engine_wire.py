@@ -1191,7 +1191,7 @@ class EngineWire(QtCore.QObject):
     def cron_trigger(self, job_id: str) -> None:
         # 面板上的「立即触发」要等这一趟真跑完才回包，可能好几分钟：标成 long_lived，
         # 别让 120 秒的在途清理把它的 tag 摘掉（摘了回包就没人认领，界面一直停在「触发中」）。
-        self._call("cron.manage", {"action": "trigger", "job_id": job_id}, tag="cron.trigger",
+        self._call("cron.manage", {"action": "trigger", "job_id": job_id}, tag=f"cron.trigger:{job_id}",
                    long_lived=True)
 
     def cron_delete(self, job_id: str) -> None:
