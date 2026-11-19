@@ -72,6 +72,7 @@ UI_PATHS: dict[str, str | tuple[str, str, str]] = {
         '<path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />'
     ),
     "check": '<path d="M20 6 9 17l-5-5" />',
+    "clock": '<circle cx="12" cy="12" r="9" /><path d="M12 7.5V12l3.2 2" />',
     "expand": (
         '<polyline points="15 3 21 3 21 9" />'
         '<polyline points="9 21 3 21 3 15" />'

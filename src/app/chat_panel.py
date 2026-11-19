@@ -41,6 +41,7 @@ from app.approval_card import ApprovalCard
 from app.approval_dialog import ConfirmDialog
 from app.photo_view import PhotoView
 from app.paused_bar import PausedBar
+from app.cron_toast import CronToast
 from app.speech_bar import SpeechBar
 from app.status_stack import StatusStack
 from app.voice_input import SILENT_PEAK, VoiceRecorder, peak_of, write_wav
@@ -1788,6 +1789,9 @@ class ChatPanel(QtWidgets.QWidget):
         self.paused_bar = PausedBar(self._frame)
         self.paused_bar.discard_requested.connect(self.paused_discard_requested.emit)
         layout.addWidget(self.paused_bar)
+
+        # 浮在正文之上，不进布局：投递进来时滑下来一条通知卡（见 app/cron_toast.py）。
+        self.toast = CronToast(self._frame)
 
     def _setup_composer(self) -> tuple[QtWidgets.QHBoxLayout, QtWidgets.QFrame, QtWidgets.QHBoxLayout]:
         row = QtWidgets.QHBoxLayout()
@@ -4020,6 +4024,10 @@ class ChatPanel(QtWidgets.QWidget):
     def clear_status_notice(self, key: str) -> None:
         """撤掉输入框上方状态条里的一条（按 key；不碰聊天正文）。"""
         self.stack.clear_notice(key)
+
+    def notify_cron_done(self, job_name: str) -> None:
+        """定时任务的投递落了盘：从顶部滑下一条通知卡（正文、历史都不动）。"""
+        self.toast.show_notice(job_name)
 
     def set_paused_turn(self, lost: object) -> None:
         """引擎说这场会话有一行丢了（`unknown`）：露出「丢弃那一轮」这条横幅，没有就收回去。"""
@@ -7006,6 +7014,8 @@ class ChatPanel(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._refit_user_lines)
         QtCore.QTimer.singleShot(0, self._place_msg_bars)
         QtCore.QTimer.singleShot(0, self._place_sticky)
+        if hasattr(self, "toast"):
+            self.toast.relayout()
         # 拖窄时正文重排变长、滚动范围跟着变大，但滚动值一格没变，`valueChanged` 不发，
         # 「跟着到底」整条链没人进：视口停在旧位置，底部被截、旧字还留在屏上（重影）。
         if self._follow:

@@ -36,6 +36,7 @@ def _origin_user_id(entry: dict) -> str:
 def mirror_to_session(
     platform: str, chat_id: str, message_text: str, source_label: str = "cli", thread_id: Optional[str] = None,
     user_id: Optional[str] = None, role: str = "assistant", session_id: Optional[str] = None,
+    notice: Optional[dict] = None,
 ) -> bool:
     """Append a delivery-mirror message to the target session's SQLite transcript.
 
@@ -51,6 +52,9 @@ def mirror_to_session(
 
     ``role`` defaults to ``"assistant"`` — correct for the interactive ``send_message`` mirror, where the
     mirrored text is the agent's own outgoing reply (a genuine assistant turn). See #2221.
+
+    ``notice`` rides along on the ``session.appended`` broadcast (job id + name for cron) so an open
+    desktop can slide down a notification card; it is not written to the transcript.
     """
     try:
         if not session_id:
@@ -65,6 +69,7 @@ def mirror_to_session(
             "role": role, "content": message_text, "timestamp": datetime.now().isoformat(),
             "mirror": True, "mirror_source": source_label,
         })
+        _emit_session_appended(session_id, notice)
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
     except Exception as e:
@@ -124,6 +129,20 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     elif len(candidates) > 1 and len({u.strip() for u in map(_origin_user_id, candidates) if u.strip()}) > 1:
         return None
     return max(candidates, key=lambda entry: entry.get("updated_at", "")).get("session_id")
+
+
+def _emit_session_appended(session_id: str, notice: Optional[dict] = None) -> None:
+    """有人往这场会话里直接写了一行：广播一声，开着的桌面滑下一张通知卡。
+
+    走全局广播而不是 `_emit`：桌面连的是 WS，只在跑这一轮时挂着「当前传输」，
+    会话缓存的 transport 在后台线程里查不到，`_emit` 会掉到 stdio（写进
+    gateway-stdio.log，界面收不到）。广播出去由界面按 payload 里的 session_id 认自己那场。
+    """
+    try:
+        from tui_gateway.server import _broadcast_global_event
+        _broadcast_global_event("session.appended", {"session_id": session_id, **(notice or {})})
+    except Exception as e:
+        logger.debug("session.appended 推送失败 %s: %s", session_id, e)
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:

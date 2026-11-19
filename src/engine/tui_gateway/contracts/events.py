@@ -828,6 +828,10 @@ class ChangeSignalPayload(OpenPayload):
 
 
 event("cron.changed", ChangeSignalPayload, doc="cron/jobs.json moved; refetch the cron list.")
+event("session.appended", ChangeSignalPayload,
+      doc="A row was written straight into a session transcript (cron delivery, send_message mirror). "
+          "Global broadcast: payload carries session_id plus job_id/job_name for cron; show a notice on any open "
+          "desktop (the notice is about the job, not the open session), don't merge into history.")
 event("sessions.changed", ChangeSignalPayload, doc="state.db moved; refetch the session list.")
 event("platforms.changed", ChangeSignalPayload, doc="gateway_state.json moved; refetch platform status.")
 event("projects.changed", ChangeSignalPayload, doc="projects.db moved; refetch the project list + tree.")

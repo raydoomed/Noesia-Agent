@@ -2033,6 +2033,11 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel.history_fetch_failed(tag)
             self.chat_panel.show_notice("history", reason, level="warn", ttl_ms=4000)
 
+    def on_cron_delivery(self, job_name: str) -> None:
+        """引擎说定时任务的投递落了盘：让面板从顶部滑一张通知卡（正文不动）。"""
+        if self.chat_panel is not None:
+            self.chat_panel.notify_cron_done(job_name)
+
     def _fetch_more_history(self) -> None:
         """再往前取一页更早的：从第几条要由窗口当场给（`older_offset`），引擎不另记游标。"""
         if self.client is not None and self.chat_panel is not None:
@@ -2783,6 +2788,7 @@ def main() -> int:
     wire.history_count.connect(window.on_history_count)
     wire.history_page.connect(window.on_history_page)
     wire.history_failed.connect(window.on_history_failed)
+    wire.cron_delivery.connect(window.on_cron_delivery)
     wire.user_row_stamped.connect(window.on_user_row_stamped)
     wire.delta.connect(window.on_delta)
     wire.turn_started.connect(window.on_turn_started)

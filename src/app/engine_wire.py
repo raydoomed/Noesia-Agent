@@ -365,6 +365,7 @@ class EngineWire(QtCore.QObject):
     paused_discard_failed = QtCore.Signal()
     failed = QtCore.Signal(str)
     closed = QtCore.Signal()
+    cron_delivery = QtCore.Signal(str)
 
     def __init__(self, project_root: Path, parent: QtCore.QObject | None = None,
                  workspace: Path | str | None = None) -> None:
@@ -2100,6 +2101,12 @@ class EngineWire(QtCore.QObject):
                 self.reasoning_reported.emit(str(effort), str(payload.get("reasoning_effort_wire") or ""))
         elif kind == "cron.changed":
             self.cron_changed.emit()
+        elif kind == "session.appended":
+            # 投递直接写进某场会话的行（cron）：不进正文、不并历史，只弹一张通知卡。
+            # 通知说的是「这条任务跑完了」，跟当前开着的是哪场会话无关；没有 job_id 的
+            # （send_message 镜像）不弹。
+            if payload.get("job_id"):
+                self.cron_delivery.emit(str(payload.get("job_name") or ""))
         elif kind == "approval.request":
             # 引擎把审批当「会话事件」推给本机查看器（`session_pending_controls.register`），
             # 不是 srq 服务端请求：只认 `approval.respond` 回票，帧 id 那条路在这版引擎上不会来。
