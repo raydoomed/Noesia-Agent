@@ -426,6 +426,15 @@ class _RunDetailDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self.transcript.setHtml(_transcript_html(list(rows or [])))
 
 
+def _run_is_running(row: dict) -> bool:
+    """运行记录里这一行是不是真的还在跑。引擎的 ``is_active`` 只是 300 秒活动窗口——被前置检查
+    拦下的运行会留下一条没关闭的会话，5 分钟里都读成活跃；同一份数据里还有 ``scheduler_owned``，
+    说的是调度器是不是还握着这一趟，以它为准（脚本任务的记录没有这个字段，按原来的算）。"""
+    if not isinstance(row, dict) or not row.get("is_active"):
+        return False
+    return row.get("scheduler_owned") is not False
+
+
 class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
     """定时任务面板。引擎的 `cron_result` 回包按 tag 分派，`cron_changed` 让清单自己刷新。"""
 
@@ -455,6 +464,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._current = ""
         self._editing = ""
         self._firing: dict[str, tuple[float, float]] = {}  # job_id → (点下去的 monotonic, 墙钟)
+        self._status_error_text = ""  # 详情区那句「上次失败：…」，好让它该消失时消失
         self._active_job = ""
         self._note_serial = 0
         self._poll = QtCore.QTimer(self)
@@ -688,15 +698,17 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._repeat_edit.setFixedWidth(120)
         deliver_caption = QtWidgets.QLabel("投递至", page)
         deliver_caption.setObjectName("cron-section")
-        deliver_value = QtWidgets.QLabel(_deliver_text(None), page)
-        deliver_value.setObjectName("cron-meta")
-        deliver_value.setWordWrap(True)
-        self._deliver_value = deliver_value
+        deliver_box = QtWidgets.QComboBox(page)
+        deliver_box.addItem("origin", "origin")
+        deliver_box.addItem("latest", "latest")
+        deliver_box.setFixedWidth(104)
+        deliver_box.setToolTip("origin = 只投回建这条任务的那场对话；\nlatest = 投到运行那一刻最近还在聊的那场")
+        self._deliver_box = deliver_box
         tail.addWidget(repeat_caption)
         tail.addWidget(self._repeat_edit)
         tail.addSpacing(10)
         tail.addWidget(deliver_caption)
-        tail.addWidget(deliver_value)
+        tail.addWidget(deliver_box)
         tail.addStretch(1)
         layout.addLayout(tail)
 
@@ -760,7 +772,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
             self._paint_runs(rows)
             # 有活着的运行（比如别处刚点过触发、或这条正在跑）就把这条当「运行中」；
             # 关窗再开时看不到在途的回包，只能靠运行记录里这面旗。
-            active = self._current if any(isinstance(row, dict) and row.get("is_active") for row in rows) else ""
+            active = self._current if any(_run_is_running(row) for row in rows) else ""
             if active != self._active_job:
                 self._active_job = active
                 record = self._records.get(self._current)
@@ -921,8 +933,15 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._pause_button.setText("恢复" if paused else "暂停")
         self._apply_busy()
         if record.get("last_error"):
-            self._status.setText(f"上次失败：{record.get('last_error')}")
+            self._status_error_text = f"上次失败：{record.get('last_error')}"
+            self._status.setText(self._status_error_text)
             self._status.setStyleSheet(self.NOTE_ERROR)
+        elif self._status_error_text and self._status.text() == self._status_error_text:
+            # 上次失败已经过去（后面成功跑过一趟，last_error 被清空）：这条红字得跟着消失，
+            # 不然它会一直挂到面板重开。只清自己写的那句，别的提示照旧留着。
+            self._status.setText("")
+            self._status.setStyleSheet("")
+            self._status_error_text = ""
 
     def _paint_runs(self, runs: list) -> None:
         self._runs.clear()
@@ -939,7 +958,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
             except (TypeError, ValueError):
                 when = "—"
             title = str(run.get("title") or run.get("session_id") or "一次运行")
-            if run.get("is_active"):
+            if _run_is_running(run):
                 title = "运行中 · " + title
             line = f"{when}　{title}"
             session_id = str(run.get("id") or "") if str(run.get("source") or "") == "cron" else ""
@@ -1095,7 +1114,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._editor_note.clear()
         self._editor_note.setStyleSheet("")
         self._sync_schedule_widgets()
-        self._deliver_value.setText(_deliver_text(None))
+        self._set_deliver(None)
         self._pages.setCurrentIndex(1)
         self._name_edit.setFocus()
 
@@ -1117,7 +1136,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._fill_schedule(record)
         self._editor_note.clear()
         self._editor_note.setStyleSheet("")
-        self._deliver_value.setText(_deliver_text(record))
+        self._set_deliver(record)
         self._pages.setCurrentIndex(1)
         self._prompt_edit.setFocus()
 
@@ -1126,6 +1145,16 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._save_button.setEnabled(True)
         self._save_button.setText("创建定时任务")
         self._pages.setCurrentIndex(0)
+
+    def _set_deliver(self, record: dict | None) -> None:
+        """选中这条记录的投递目标。记录里是 origin/latest 以外的值（local、platform:chat_id…）
+        就临时加一项照原文显示——面板上的字必须能和存储逐字核对，不能显示成一个它其实不是的值。"""
+        text = _deliver_text(record)
+        index = self._deliver_box.findData(text)
+        if index < 0:
+            self._deliver_box.addItem(text, text)
+            index = self._deliver_box.count() - 1
+        self._deliver_box.setCurrentIndex(index)
 
     def _fill_schedule(self, record: dict) -> None:
         raw = record.get("schedule")
@@ -1195,7 +1224,8 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return
         name = self._name_edit.text().strip()
         repeat_text = self._repeat_edit.text().strip()
-        fields: dict = {"name": name or _preview(prompt, 18), "prompt": prompt, "schedule": schedule}
+        fields: dict = {"name": name or _preview(prompt, 18), "prompt": prompt, "schedule": schedule,
+                        "deliver": self._deliver_box.currentData()}
         if repeat_text:
             if not repeat_text.isdigit() or int(repeat_text) <= 0:
                 self._editor_note.setText("重复次数要写正整数，或者留空表示一直跑。")

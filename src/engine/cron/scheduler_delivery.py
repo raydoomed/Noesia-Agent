@@ -123,7 +123,7 @@ def _target_matches_origin(origin: dict, platform_name: str, chat_id: str,
 
 # Provenance rank for the dedup OR-merge in _resolve_delivery_targets (higher = stronger mirror
 # claim). Broadcasts rank 0 so "origin,all"/"all,origin" keep the origin tag regardless of order.
-_MIRROR_PROVENANCE_RANK = {"origin": 3, "origin_fallback": 2, "home": 2, "explicit": 1}
+_MIRROR_PROVENANCE_RANK = {"latest": 4, "origin": 3, "origin_fallback": 2, "home": 2, "explicit": 1}
 
 
 def _target_mirror_eligible(
@@ -143,6 +143,9 @@ def _target_mirror_eligible(
     if origin_match:
         return True
     resolved_from = target.get("_resolved_from")
+    if resolved_from == "latest":
+        # 用户明确说了「投到正在聊的那场」：投递本身就是往那场会话里写，不写进会话等于没投。
+        return True
     if resolved_from in ("origin_fallback", "home"):
         # Same precedence as _cron_mirror_delivery_enabled (keep in sync): a per-job False must
         # beat a global True even for callers that don't pre-merge `global_mirror`.
@@ -591,6 +594,19 @@ def _home_target(platform_name: str, chat_id: str, resolved_from: Optional[str] 
     return target
 
 
+def _newest_conversation_target(job: dict) -> Optional[dict]:
+    """``deliver=latest`` → 最近还在用的那场对话。平台跟任务 origin 走（脚本建的任务没有
+    origin，就取本机桌面），同一个人（``user_id``）才算数。"""
+    from gateway.mirror import newest_conversation
+    origin = _resolve_origin(job) or {}
+    found = newest_conversation(
+        str(origin.get("platform") or "local"), user_id=str(origin.get("user_id") or ""))
+    if not found:
+        return None
+    return {"platform": found["platform"], "chat_id": found["chat_id"],
+            "thread_id": None, "_resolved_from": "latest"}
+
+
 def _resolve_single_delivery_target(
     job: dict, deliver_value: str, *, from_broadcast: bool = False
 ) -> Optional[dict]:
@@ -607,6 +623,16 @@ def _resolve_single_delivery_target(
     bot_chat_profile = parse_bot_chat_deliver_token(deliver_value)
     if bot_chat_profile is not None:
         return _resolve_bot_chat_target(job, bot_chat_profile)
+
+    if deliver_value == "latest":
+        target = _newest_conversation_target(job)
+        if target:
+            return target
+        # 一场可以投的对话都没有（比如桌面从没聊过）：按「跟着人走」的本意退回 origin。
+        logger.info(
+            "Job '%s': deliver=latest but no live conversation found — falling back to origin",
+            job.get("name", job.get("id", "?")))
+        return _resolve_single_delivery_target(job, "origin", from_broadcast=from_broadcast)
 
     if deliver_value == "origin":
         if origin:
@@ -1747,16 +1773,16 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
     deliver_value = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver_value == "local":
         return None
-    if deliver_value == "origin":
+    if deliver_value in ("origin", "latest"):
         logger.info(
             # deliver=origin with no resolvable origin and no configured home channels: treat as local
             # rather than reporting an error. CLI-created jobs never capture a {platform, chat_id} origin,
             # so failing here would make every CLI `deliver=origin` (or auto-detect) job emit a spurious "no
             # delivery target resolved" error on every run (#43014). The output is still persisted in
             # last_output for `cron list`/resume.
-            "Job '%s': deliver=origin but no origin or home channels — "
+            "Job '%s': deliver=%s but no origin or home channels — "
             "skipping delivery (output saved in last_output)",
-            job.get("name", job.get("id", "?")))
+            job.get("name", job.get("id", "?")), deliver_value)
         return None
     msg = f"no delivery target resolved for deliver={deliver_value}"
     logger.warning("Job '%s': %s", job["id"], msg)

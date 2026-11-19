@@ -131,6 +131,43 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
     return max(candidates, key=lambda entry: entry.get("updated_at", "")).get("session_id")
 
 
+def newest_conversation(platform: str, user_id: str = "") -> Optional[dict]:
+    """这个平台上最近还在用的那场对话（``deliver=latest`` 用）。
+
+    排序和界面同一个来源：state.db 的会话列表，按链尾最近活动倒序。跳过 cron 自己的运行
+    会话——那是每次运行新开的临时壳，投进去没人看得到。给 ``user_id`` 时只认同一个人，
+    多用户机器上不会把别人的会话当成投递目标。
+    """
+    try:
+        from noesia_state_registry import acquire, release_or_close
+        db = acquire()
+        try:
+            rows = db.list_sessions_rich(
+                order_by_last_active=True, limit=50, min_message_count=1,
+                exclude_sources=["cron", "subagent"])
+        finally:
+            release_or_close(db)
+    except Exception as e:
+        logger.debug("newest_conversation: session list failed: %s", e)
+        return None
+    for row in rows or []:
+        try:
+            origin = json.loads(row.get("origin_json") or "{}")
+        except Exception:
+            origin = {}
+        row_platform = str(origin.get("platform") or "").strip().lower()
+        if row_platform != str(platform or "").strip().lower():
+            continue
+        chat_id = str(origin.get("chat_id") or row.get("chat_id") or "")
+        if not chat_id:
+            continue
+        row_user = str(row.get("user_id") or "")
+        if user_id and row_user and row_user != str(user_id):
+            continue
+        return {"platform": row_platform, "chat_id": chat_id, "user_id": row_user}
+    return None
+
+
 def _emit_session_appended(session_id: str, notice: Optional[dict] = None) -> None:
     """有人往这场会话里直接写了一行：广播一声，开着的桌面滑下一张通知卡。
 

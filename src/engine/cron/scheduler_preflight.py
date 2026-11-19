@@ -234,7 +234,7 @@ class SharedRouteAdapters:
 
 
 def _preflight_check_delivery(job: dict) -> Optional[str]:
-    """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
+    """Check delivery targets resolve to configured platforms. ``local``/``origin``/``latest``/``all`` are
     never checked (no gateway-config load). Unknown platform always blocks; known platform blocks
     only if the gateway config loads AND reports it unconnected; config load failures fail OPEN.
     ``failure_deliver`` gets the same rules — a typo'd failure platform would otherwise only
@@ -249,7 +249,7 @@ def _preflight_check_delivery(job: dict) -> Optional[str]:
     for lane_value in lane_values:
         for part in lane_value.split(","):
             part = part.strip()
-            if not part or part.lower() in {"local", "origin", "all"}:
+            if not part or part.lower() in {"local", "origin", "latest", "all"}:
                 continue
             # bot-chat targets deliver via a local subprocess; failures land in last_delivery_error.
             if _delivery.parse_bot_chat_deliver_token(part) is not None:
