@@ -936,12 +936,18 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         paused = record.get("state") == "paused" or record.get("enabled") is False
         self._pause_button.setText("恢复" if paused else "暂停")
         self._apply_busy()
+        # 跑完但东西没送到也算失败：last_error 是 agent 报错，投递失败记在 last_delivery_error。
+        text = ""
         if record.get("last_error"):
-            self._status_error_text = f"上次失败：{record.get('last_error')}"
-            self._status.setText(self._status_error_text)
+            text = f"上次失败：{record.get('last_error')}"
+        elif record.get("last_delivery_error"):
+            text = f"上次投递失败：{record.get('last_delivery_error')}"
+        if text:
+            self._status_error_text = text
+            self._status.setText(text)
             self._status.setStyleSheet(self.NOTE_ERROR)
         elif self._status_error_text and self._status.text() == self._status_error_text:
-            # 上次失败已经过去（后面成功跑过一趟，last_error 被清空）：这条红字得跟着消失，
+            # 上次失败已经过去（后面成功跑过一趟，两个字段都被清空）：这条红字得跟着消失，
             # 不然它会一直挂到面板重开。只清自己写的那句，别的提示照旧留着。
             self._status.setText("")
             self._status.setStyleSheet("")

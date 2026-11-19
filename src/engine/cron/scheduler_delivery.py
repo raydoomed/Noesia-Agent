@@ -197,17 +197,18 @@ def _cron_mirror_message(job: dict, text: str) -> str:
 def _maybe_mirror_cron_delivery(
     job: dict, platform_name: str, chat_id: str, mirror_text: str, thread_id: Optional[str] = None,
     user_id: Optional[str] = None, *, enabled: bool = False,
-) -> None:
+) -> bool:
     """Best-effort mirror of a cron delivery into the origin chat's session. No-op unless
     ``enabled`` (caller resolves it, scoped to the origin target). Rides the same
     ``mirror_to_session`` path as ``send_message``, passing ``user_id`` so user-isolated group
-    chats resolve to the scheduling member. All failures swallowed — a successful delivery must
-    never be reported failed because the mirror broke."""
+    chats resolve to the scheduling member. Failures are swallowed — a successful delivery must
+    never be reported failed because the mirror broke — EXCEPT the desktop lane, where this write
+    IS the delivery, so it returns False and the caller records a delivery error."""
     if not enabled:
-        return
+        return True
     text = (mirror_text or "").strip()
     if not text:
-        return
+        return True
     try:
         from gateway.mirror import mirror_to_session
         # USER role + labelled prefix, NOT assistant: an assistant-role mirror lands
@@ -233,11 +234,13 @@ def _maybe_mirror_cron_delivery(
                 "Job '%s': delivery mirror skipped for %s:%s "
                 "(no matching gateway session — cold start)",
                 job.get("id", "?"), platform_name, chat_id)
+        return bool(ok)
     except Exception as e:
         logger.debug(
             "Job '%s': delivery mirror failed for %s:%s: %s", job.get("id", "?"), platform_name,
             chat_id, e,
         )
+        return False
 
 
 # chat_type slot a platform's adapter puts on a NON-DM in-thread reply. Discord (and the default)
@@ -1657,10 +1660,11 @@ def _deliver_standalone(
         delivery_errors.append(msg)
     logger.info("Job '%s': delivered to %s:%s", job["id"], t.platform_name, t.chat_id)
     # Thread seeding only happens on the live lane, so no thread_seeded gate applies here.
-    _maybe_mirror_cron_delivery(
-        job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
-        user_id=t.origin_user_id,
-        enabled=t.mirror_this_target)
+    if not _maybe_mirror_cron_delivery(
+            job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
+            user_id=t.origin_user_id, enabled=t.mirror_this_target) and t.platform_name == "local":
+        # 桌面这条会话记录就是投递本身：没写进去就是没投到，不能记成 ok。
+        delivery_errors.append(f"delivery error: desktop session write failed (target {t.where})")
 
 
 def _prepare_target_delivery(
