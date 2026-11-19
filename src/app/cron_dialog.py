@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import re
+import threading
 import time
 from datetime import datetime, timedelta
+from html import escape
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -34,7 +36,15 @@ EXTRA_STYLE = """
 }
 #cron-search:focus, #cron-custom:focus { border-color: rgba(240, 178, 210, 150); }
 #cron-list, #cron-runs { background: transparent; border: none; outline: none; color: rgba(246, 223, 234, 218); }
-#cron-runs::item { color: rgba(246, 223, 234, 218); padding: 4px 2px; }
+#cron-runs::item { color: rgba(246, 223, 234, 218); padding: 2px; }
+#cron-run-line { color: rgba(246, 223, 234, 218); font-size: 12px; background: transparent; }
+#cron-run-detail { padding: 1px 9px; font-size: 11px; }
+#run-transcript {
+    background-color: rgba(255, 255, 255, 6);
+    border: 1px solid rgba(255, 255, 255, 22);
+    border-radius: 10px;
+    color: #f6dfea;
+}
 #cron-list::item { border-radius: 10px; margin: 1px 0; }
 #cron-list::item:selected { background: rgba(240, 178, 210, 34); }
 #cron-list::item:hover { background: rgba(255, 255, 255, 14); }
@@ -302,6 +312,120 @@ class _JobRow(QtWidgets.QWidget):
         layout.addWidget(meta)
 
 
+_ROLE_NAMES = {"user": "你", "assistant": "Noesia", "tool": "工具", "system": "系统"}
+
+def _deliver_text(record: dict | None) -> str:
+    """投递目标照 `jobs.json` 里的原文显示，不翻译——面板上的字必须能和存储逐字核对。
+
+    新建任务时引擎按「带着 origin 建」落值，所以新建页写 `origin`；老记录没有这个字段时，
+    投递侧取的是 `local`（`job.get("deliver", "local")`），照它显示。
+    """
+    if record is None:
+        return "origin"
+    return str(record.get("deliver") or "").strip() or "local"
+
+
+def _transcript_html(rows: list) -> str:
+    """历史行 → 只读 HTML：谁说的在前，正文保留换行；工具行画名字和参数预览，失败的带 ✗。"""
+    parts = [
+        "<style>"
+        "body { background: transparent; color: #f6dfea; font-size: 12px; }"
+        ".who { color: rgba(240, 178, 210, 225); font-size: 11px; margin: 12px 0 2px 0; }"
+        ".said { margin: 0; white-space: pre-wrap; }"
+        "</style>"
+    ]
+    said_any = False
+    for row in rows:
+        role = str(row.get("role") or "")
+        if role == "system":
+            continue
+        if role == "tool":
+            who = f"工具 · {row.get('name') or 'tool'}"
+            said = str(row.get("context") or "")
+            if row.get("ok") is False:
+                who += " ✗"
+        else:
+            who = _ROLE_NAMES.get(role, role or "消息")
+            said = str(row.get("text") or "")
+        if not said.strip():
+            continue
+        said_any = True
+        parts.append(f'<p class="who">{escape(who)}</p>')
+        parts.append(f'<p class="said">{escape(said)}</p>')
+    if not said_any:
+        parts.append('<p class="said">这场运行没有留下消息</p>')
+    return "".join(parts)
+
+
+class _RunDetailDialog(QtWidgets.QDialog):  # type: ignore[misc]
+    """一次运行的完整内容：只读，整份取那场会话的历史，不动当前正在聊的那场。"""
+
+    loaded = QtCore.Signal(list, str)
+
+    def __init__(self, engine, session_id: str, heading: str, parent=None) -> None:
+        super().__init__(
+            parent,
+            QtCore.Qt.WindowType.Window
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint,
+        )
+        self.setWindowTitle("运行记录")
+        self.setWindowModality(QtCore.Qt.WindowModality.ApplicationModal)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_QuitOnClose, False)
+        self.setStyleSheet(STYLE + EXTRA_STYLE)
+        _apply_dark_palette(self)
+        self.resize(720, 560)
+        self.session_id = session_id
+
+        frame = QtWidgets.QFrame(self)
+        frame.setObjectName("dialog-card")
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.addWidget(frame)
+        layout = QtWidgets.QVBoxLayout(frame)
+        layout.setContentsMargins(20, 15, 20, 16)
+        layout.setSpacing(10)
+
+        bar = QtWidgets.QHBoxLayout()
+        bar.setSpacing(8)
+        title = QtWidgets.QLabel(heading or "运行记录", frame)
+        title.setObjectName("dialog-title")
+        title.setWordWrap(True)
+        close = QtWidgets.QToolButton(frame)
+        close.setObjectName("closebtn")
+        close.setText("✕")
+        close.setToolTip("关掉（Esc 也行）")
+        close.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        close.clicked.connect(self.reject)
+        bar.addWidget(title, 1)
+        bar.addWidget(close)
+        layout.addLayout(bar)
+
+        self.transcript = QtWidgets.QTextBrowser(frame)
+        self.transcript.setObjectName("run-transcript")
+        self.transcript.setOpenExternalLinks(False)
+        self.transcript.setPlainText("读取中…")
+        layout.addWidget(self.transcript, 1)
+
+        self.loaded.connect(self.paint)
+        threading.Thread(target=self._fetch, args=(engine,), name="cron-run-detail", daemon=True).start()
+
+    def _fetch(self, engine) -> None:
+        try:
+            rows = engine.read_session_messages(self.session_id)
+        except Exception as exc:  # noqa: BLE001 — 取不到就把原因写给人看，别让窗口空着
+            self.loaded.emit([], f"历史没取到：{exc}")
+            return
+        self.loaded.emit(list(rows or []), "")
+
+    def paint(self, rows: list, error: str) -> None:
+        if error:
+            self.transcript.setHtml(f'<p class="said">{escape(error)}</p>')
+            return
+        self.transcript.setHtml(_transcript_html(list(rows or [])))
+
+
 class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
     """定时任务面板。引擎的 `cron_result` 回包按 tag 分派，`cron_changed` 让清单自己刷新。"""
 
@@ -567,8 +691,10 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._repeat_edit.setFixedWidth(120)
         deliver_caption = QtWidgets.QLabel("投递至", page)
         deliver_caption.setObjectName("cron-section")
-        deliver_value = QtWidgets.QLabel("此桌面", page)
+        deliver_value = QtWidgets.QLabel(_deliver_text(None), page)
         deliver_value.setObjectName("cron-meta")
+        deliver_value.setWordWrap(True)
+        self._deliver_value = deliver_value
         tail.addWidget(repeat_caption)
         tail.addWidget(self._repeat_edit)
         tail.addSpacing(10)
@@ -820,11 +946,15 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
             if run.get("is_active"):
                 title = "运行中 · " + title
             line = f"{when}　{title}"
-            preview = _preview(run.get("preview"), 90)
-            text = f"{line}\n{preview}" if preview else line
-            item = QtWidgets.QListWidgetItem(text)
+            session_id = str(run.get("id") or "") if str(run.get("source") or "") == "cron" else ""
+            if session_id:
+                item = QtWidgets.QListWidgetItem()
+                item.setSizeHint(QtCore.QSize(0, 26))
+                self._runs.addItem(item)
+                self._runs.setItemWidget(item, self._run_row(line, session_id, title))
+                continue
+            item = QtWidgets.QListWidgetItem(line)
             item.setForeground(QtGui.QColor(246, 223, 234, 218))
-            item.setToolTip(str(run.get("preview") or title))
             self._runs.addItem(item)
         # 刚点下「立即触发」那一趟还没落地成运行记录：先替它占一行（照桌面的「排队中的运行」）。
         # 运行记录里出现不早于点击时刻的那一行就算落地，排队行撤掉；一直不落地到 90 秒也撤掉。
@@ -839,6 +969,28 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 pending = QtWidgets.QListWidgetItem(f"{time.strftime('%m-%d %H:%M')}　排队中的运行")
                 pending.setForeground(QtGui.QColor(246, 223, 234, 170))
                 self._runs.insertItem(0, pending)
+
+    def _run_row(self, line: str, session_id: str, title: str) -> QtWidgets.QWidget:
+        """运行记录一行：左边时间+标题，右边「详情」——点开看这一趟跑的完整内容。"""
+        row = QtWidgets.QWidget(self._runs)
+        lay = QtWidgets.QHBoxLayout(row)
+        lay.setContentsMargins(2, 1, 2, 1)
+        lay.setSpacing(8)
+        label = QtWidgets.QLabel(line, row)
+        label.setObjectName("cron-run-line")
+        button = QtWidgets.QPushButton("详情", row)
+        button.setObjectName("cron-run-detail")
+        button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        button.setToolTip("看这一趟跑的完整内容")
+        button.clicked.connect(lambda _=False, sid=session_id, head=title: self._show_run_detail(sid, head))
+        lay.addWidget(label, 1)
+        lay.addWidget(button)
+        return row
+
+    def _show_run_detail(self, session_id: str, heading: str) -> None:
+        """只读详情窗：整份取那场运行的历史，不动当前正在聊的那场。"""
+        # 窗是 ApplicationModal，开着的时候点不到列表，不会有第二个——不用自己记着谁开着。
+        _RunDetailDialog(self._engine, session_id, heading, self).show()
 
     # ── 操作 ────────────────────────────────────────────────────────────────
     def _toggle_paused(self) -> None:
@@ -944,6 +1096,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._editor_note.clear()
         self._editor_note.setStyleSheet("")
         self._sync_schedule_widgets()
+        self._deliver_value.setText(_deliver_text(None))
         self._pages.setCurrentIndex(1)
         self._name_edit.setFocus()
 
@@ -965,6 +1118,7 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._fill_schedule(record)
         self._editor_note.clear()
         self._editor_note.setStyleSheet("")
+        self._deliver_value.setText(_deliver_text(record))
         self._pages.setCurrentIndex(1)
         self._prompt_edit.setFocus()
 

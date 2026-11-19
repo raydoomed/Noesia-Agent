@@ -608,18 +608,22 @@ class EngineWire(QtCore.QObject):
         threading.Thread(target=self._fetch_history_job, args=(base, sid, int(offset), page, tag),
                          name=f"history-page-{tag}", daemon=True).start()
 
+    def _rest_json(self, url: str, timeout: int) -> dict:
+        """带本机票据取一条 REST JSON（历史和运行详情共用一口子），失败原样抛给对方判。"""
+        headers = {"Accept": "application/json"}
+        ticket = self._link.native_http_ticket()
+        if ticket:
+            # 本地桌面的 REST 凭证：网关按「本机同用户」认这张一次性票据，不认裸请求。
+            headers["x-noesia-gateway-ticket"] = ticket
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+
     def _fetch_history_job(self, base: str, session_id: str, offset: int, page: int, tag: str) -> None:
         url = (f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/messages"
                f"?limit={int(page)}&offset={offset}&order=latest&include_compacted=true")
         try:
-            ticket = self._link.native_http_ticket()
-            headers = {"Accept": "application/json"}
-            if ticket:
-                # 本地桌面的 REST 凭证：网关按「本机同用户」认这张一次性票据，不认裸请求。
-                headers["x-noesia-gateway-ticket"] = ticket
-            request = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(request, timeout=15) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+            payload = self._rest_json(url, timeout=15)
         except Exception as exc:  # noqa: BLE001 — 取不到就报给界面，别把开窗卡在这儿
             code = getattr(exc, "code", "")
             if str(code) == "404":
@@ -647,6 +651,33 @@ class EngineWire(QtCore.QObject):
         self._history_recover = 0
         # 够不够一页由服务端说：回来的条数少于这一页的 limit，就是再往前没有了。
         self.history_page.emit(rows, returned >= limit, tag)
+
+    def read_session_messages(self, session_id: str, max_rows: int = 2000) -> list:
+        """整份读一场会话的历史：详情窗看一次运行的内容，只读、不碰当前会话。
+
+        和 `fetch_history` 同一个口子，但按 `order=oldest` 从头往后翻（服务端单页上限 500），
+        取不到就抛，界面把原因写给人看。
+        """
+        sid = str(session_id or "").strip()
+        base = str(getattr(self._link, "api_origin", "") or "")
+        if not sid:
+            raise ValueError("这条运行记录没有会话 id")
+        if not base:
+            raise RuntimeError("引擎还没连上")
+        rows: list = []
+        while len(rows) < max_rows:
+            url = (f"{base}/api/sessions/{urllib.parse.quote(sid, safe='')}/messages"
+                   f"?limit=500&offset={len(rows)}&order=oldest&include_compacted=true")
+            try:
+                raw = self._rest_json(url, timeout=20).get("messages") or []
+            except urllib.error.HTTPError as exc:
+                if int(exc.code or 0) == 404:
+                    raise LookupError("库里找不到这场运行的会话") from exc
+                raise
+            rows.extend(self._page_rows(raw))
+            if len(raw) < 500:
+                break
+        return rows[:max_rows]
 
     def _resume_stale_session(self, stored_id: str) -> None:
         """历史 404：按存储 id 重挂那场会话（`history_stale` 从取数线程发过来，这里是主线程）。"""
