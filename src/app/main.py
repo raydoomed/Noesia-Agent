@@ -625,7 +625,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         from app.model_dialog import ModelDialog
 
         if self.client is not None:
-            self.client.request_provider_rows(refresh=True)
+            self.client.request_provider_rows()
         try:
             rows = self.model_choices()
         except Exception as exc:  # noqa: BLE001

@@ -364,6 +364,11 @@ def _(rid, params: dict) -> dict:
     if api_key != previous:  # a same-key re-save connects nothing new
         from noesia_cli.observability.shared_metrics_setup import record_provider_setup_done
         record_provider_setup_done(_resolve_session_platform(), slug, background=True)
+    from noesia_cli.models import cached_provider_model_ids
+    try:
+        cached_provider_model_ids(slug, force_refresh=True)
+    except Exception:  # noqa: BLE001
+        pass
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
     from noesia_cli.inventory import build_models_payload
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)

@@ -1852,7 +1852,7 @@ class EngineWire(QtCore.QObject):
         if tag.startswith("model.save_key"):
             row = result.get("provider") or {}
             self.notice.emit(f"已保存 {row.get('slug') or '密钥'}")
-            self.request_provider_rows(refresh=True)
+            self.request_provider_rows()
             self._models_after_settings = True
             self.key_saved.emit(str(row.get("slug") or ""))
             self.save_result.emit(tag, {"ok": True,
