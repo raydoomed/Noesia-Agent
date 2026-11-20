@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -233,11 +232,13 @@ def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
     # kept and the loop stops before the next model call.
     from agent.interrupt_control import _REASON_NEW_MESSAGE
     from tools.setup_beat_tool import setup_beat_tool
+    from agent.user_profile_name import saved_name
 
     result = setup_beat_tool(
         args, db=getattr(agent, "_session_db", None), session_id=getattr(agent, "session_id", None) or "",
         tool_call_id=ctx.tool_call_id or "", callback=getattr(agent, "setup_beat_callback", None),
         end_turn=lambda: agent.interrupt(tool_reason=_REASON_NEW_MESSAGE),
+        known_name=saved_name(),
     )
     _remember_name(agent, result)
     return result
@@ -253,34 +254,18 @@ def _remember_name(agent, result: Any) -> None:
     store = getattr(agent, "_memory_store", None)
     if store is None or not getattr(store, "user_profile_enabled", True):
         return
+    from agent.user_profile_name import write_name
     try:
         payload = json.loads(result) if isinstance(result, str) else result
     except ValueError:
         return
     if not isinstance(payload, dict) or payload.get("error"):
         return
-    name = str((payload.get("answer") or {}).get("name") or "").strip()
-    if not name:
-        return
-    entries = [str(entry) for entry in (getattr(store, "user_entries", []) or [])]
-    named = [entry for entry in entries if _name_entry(entry)]
+    name = str((payload.get("answer") or {}).get("name") or "")
     try:
-        if not named:
-            store.add("user", f"Name: 「{name}」")
-            return
-        if _name_entry(named[0]) == name and len(named) == 1:
-            return
-        store.replace("user", named[0], f"Name: 「{name}」")
-        for stale in named[1:]:
-            store.remove("user", stale)
+        write_name(store, name)
     except Exception:  # noqa: BLE001
         logger.warning("写用户档案失败（名字 %s）", name, exc_info=True)
-
-
-def _name_entry(entry: str) -> str:
-    """这条档案里记的名字，不是名字条目就返回空串（认 `Name:` / `名字：`）。"""
-    found = re.match(r"^[ \t]*(?:name|名字)[ \t]*[:：][ \t]*(.+?)[ \t]*$", entry, re.IGNORECASE)
-    return " ".join(found.group(1).split()) if found else ""
 
 
 def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:

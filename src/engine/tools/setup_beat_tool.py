@@ -66,10 +66,12 @@ def _card(beat: str, step: flow.Step, args: Mapping[str, Any]) -> dict:
 
 def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", tool_call_id: str = "",
                     callback: Callable[[dict], dict | None] | None = None,
-                    end_turn: Callable[[], object] | None = None) -> str:
+                    end_turn: Callable[[], object] | None = None, known_name: str = "") -> str:
     """``callback(payload) -> {answer?} | {said} | {wrote_instead: true} | None`` asks the desktop to show
     ``{beat, question, card}`` and blocks until the user answers or the card closes. ``end_turn`` ends the
-    agent's turn once this result is in: a card the user wrote past, whose message is the next turn."""
+    agent's turn once this result is in: a card the user wrote past, whose message is the next turn.
+    ``known_name``: the name the profile already carries (typed in Settings); the name beat settles on
+    it instead of asking again."""
     from agent import onboarding_record as records
 
     beat = args.get("beat")
@@ -85,6 +87,10 @@ def setup_beat_tool(args: Mapping[str, Any], *, db=None, session_id: str = "", t
         if beat is None:
             return json.dumps({"next": "done", "reminder": finish_reminder(record)} if flow.is_active(record)
                               else {"error": "Onboarding is over in this chat; it is a normal chat now."})
+    if beat == "name" and known_name:
+        # The profile already carries a name (typed in Settings): no card, and no second writer that
+        # could overwrite it with whatever the card suggests.
+        return _result(records.advance(db, session_id, flow.Answered(beat, {"name": known_name})), beat)
     if callback is None:
         return tool_error("setup_beat cards show only in the Noesia desktop app.")
     shown = records.advance(db, session_id, flow.Shown(beat, tool_call_id))
