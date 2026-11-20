@@ -1,8 +1,8 @@
-"""用户叫什么：从 memories/USER.md 里挑出名字。
+"""用户叫什么：只认 memories/USER.md 里那条 `Name: 「某某」`。
 
-引擎起名那一轮会把名字写成一条 `Name: 「某某」`，模型自己记也照这个形状，所以名字一律在引号里；
-引号前还得挨着 `Name:` / 「名字」「叫」这类词，随口一句引号不算。档案还没写、读不到、或者挑不出来，
-一律退回「你」——宁可叫「你」，不能叫错。按文件 mtime 做缓存，USER.md 不改就不重读。
+起名卡和设置页「记忆」里的名字框都只写这一条，所以档案里名字只有一处、一种写法；正文里写的任何
+东西（「现用名/昵称『某某』」「会叫『宝宝』」）一概不看——聊天时她怎么称呼他是模型自己的事，
+界面文案不跟着猜。读不到就叫「你」：宁可叫「你」，不能叫错。按文件 mtime 做缓存，不改就不重读。
 """
 
 from __future__ import annotations
@@ -18,49 +18,45 @@ _CACHE: dict[str, object] = {"stamp": None, "name": ""}
 FALLBACK_NAME = "你"
 
 
-#: 名字一律写在引号里：`Name: 「某某」`、`用户的名字叫「某某」`。引号内才是名字。
-_QUOTED = re.compile(r"[「【《]([^」】》]{1,40})[」】》]")
-
-#: 引号前面紧挨着这些词的，是旧名字（「以前叫『某某』」「此前记录为『某某』」），跳过。
-_STALE = re.compile(r"以前|此前|之前|原来|原本|原名|曾|旧名")
-
-#: 引号前面得挨着这些词才算名字，否则只是随手一个引号（「她说『好的』」「迷上了『咖啡』」）。
-_NAMED = re.compile(
-    r"(?:name\s*(?:is|[:：])|名字\s*[:：]?|名字(?:是|叫)|称呼\s*[他她我]?|叫我?|称为)\s*$",
-    re.IGNORECASE,
+#: 名字那一行：行首（可带 `-`、可带粗体）写 `Name:` / `名字:` / `姓名:` / `称呼:`，冒号后面就是名字。
+NAME_LINE = re.compile(
+    r"^[ \t]*(?:[-*·][ \t]*)?(?:\*\*)?[ \t]*(?:name|名字|姓名|称呼)[ \t]*(?:\*\*)?[ \t]*[:：][ \t]*"
+    r"(?:\*\*[ \t]*)?(.+?)[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
-#: 行首的字段写法：`Name: 「某某」`、`- 名字：某某`。这是「在讲名字」的写法，优先级最高——
-#: 正文里顺口一句「会叫『宝宝』」也符合下面的 `_NAMED`，但不该盖掉档案里写明的名字。
-_FIELD = re.compile(r"^\s*(?:[-*·]\s*)?(?:name|名字|称呼)\s*(?:是|叫|为|[:：])?\s*$", re.IGNORECASE)
+#: 名字外面可能包着引号/书名号（手改过的未必带），剥掉再比。
+_BRACKETS = "「」『』《》\"'“”‘’"
 
-#: 判断旧名字时往前看几个字。
-_LOOKBEHIND = 8
+#: 模板占位：`_(pick something)_` 这类不算名字。
+_PLACEHOLDER = re.compile(r"^_\(.*\)_$")
+
+
+def clean_name(value: str) -> str:
+    """名字收拾成能写进档案的样子：去掉两端引号/书名号、换行和条目分隔符 `§`。"""
+    return " ".join(value.strip().strip(_BRACKETS).replace("§", " ").split())
+
+
+def format_name(value: str) -> str:
+    """名字在档案里那行的写法：`Name: 「某某」`。写盘和设置页用同一处。"""
+    return f"Name: 「{clean_name(value)}」"
+
+
+def is_name_entry(entry: str) -> bool:
+    """整条都是名字行才算（正文里顺带一句的不算），改名字时用它把旧的那条挑出来。"""
+    found = NAME_LINE.match(entry)
+    return bool(found) and found.end() == len(entry)
 
 
 def profile_name(text: str) -> str:
-    """从 USER.md 正文里挑出名字：行首字段优先，其次看引号前面的线索词。
-
-    档案抬头的 `Name: 「Ray」` 就是当前名字；没有这种字段行时，才退回去看「名字叫『X』」这类
-    句子，最后出现的那个当前名字算数。正文里顺口一句「会叫『宝宝』」不算名字——
-    有字段行时一律以字段为准。哪一个是当前的由引号前面的词决定，不是位置：「以前叫『某某』」
-    「此前记录为『某某』」是旧名字，跳过。超过八个字当句子，不算名字。
-    """
-    field_name = ""
-    prose_name = ""
-    for line in text.splitlines():
-        for found in _QUOTED.finditer(line):
-            head = line[max(0, found.start() - _LOOKBEHIND):found.start()]
-            if _STALE.search(head):
-                continue
-            candidate = found.group(1).strip()
-            if not (1 <= len(candidate) <= 8):
-                continue
-            if _FIELD.match(line[:found.start()]):
-                field_name = candidate
-            elif _NAMED.search(head):
-                prose_name = candidate
-    return field_name or prose_name
+    """挑出名字：只认名字行，正文一概不看；有多条时取最后一条（档案是往下追加的）。"""
+    name = ""
+    for found in NAME_LINE.finditer(text):
+        value = found.group(1).strip().strip(_BRACKETS).strip()
+        if not value or len(value) > 40 or _PLACEHOLDER.match(value):
+            continue
+        name = " ".join(value.split())
+    return name
 
 
 def user_display_name() -> str:

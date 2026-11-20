@@ -22,6 +22,7 @@ import PySide6.QtWidgets as QtWidgets
 
 from app.engine_config import workspace_from_config
 from app.env_keys import env_file
+from app.user_name import FALLBACK_NAME, clean_name, format_name, is_name_entry, profile_name
 from settings import ROOT, ConfigError, runtime_settings
 
 
@@ -67,6 +68,15 @@ def _memory_entries(text: str) -> list[str]:
 def _memory_text(entries: list[str]) -> str:
     """条目拼回文件内容；计数、比较、写盘都用这一份，三处口径不会跑偏。"""
     return MEMORY_DELIMITER.join(entries)
+
+
+def _with_name(text: str, name: str) -> str:
+    """把名字并进用户画像：整份档案只留一条 `Name: 「…」`，放在最前面；名字清空就把那条删掉。"""
+    entries = [entry for entry in _memory_entries(text) if not is_name_entry(entry)]
+    clean = clean_name(name)
+    if clean:
+        entries.insert(0, format_name(clean))
+    return _memory_text(entries)
 
 
 def _default_soul() -> str:
@@ -1013,6 +1023,12 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if self._text_blocks:
             self._models_empty.setText("还没有可选的模型：先在「密钥设置」里填好 Key 并点确定。")
             self._models_empty.setStyleSheet("")
+        else:
+            self._models_empty.setText(
+                "正在拉取供应商清单…"
+                if not self._choices
+                else "还没有可选的模型：先在「密钥设置」里填好 Key 并点确定。"
+            )
         self._models_empty.setVisible(not self._text_blocks)
         if hasattr(self, "_live_text") and self._live_text is not None:
             self._live_text.setText(self._live_text_line())
@@ -2291,10 +2307,13 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         return getattr(self, "_saved_workspace", "")
 
     def _build_memory_page(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
-        """她「记得什么」：`NOESIA_HOME/memories/` 下的 USER.md / MEMORY.md，加两个上限。
+        """她「记得什么」：名字 + `NOESIA_HOME/memories/` 下的 USER.md / MEMORY.md，加两个上限。
 
         条目之间是单独一行 `§`——就是引擎写出来的样子。两个上限对应引擎配置 `memory` 段里的
         `user_char_limit` / `memory_char_limit`，不在这儿另存一份。
+
+        名字框是这块地方唯一的名字入口：保存时在画像里生成一条 `Name: 「…」`（旧的那条替换掉，
+        永远只有一条），界面文案只认这一条。画像正文里手写的名字行会被这条覆盖——名字只从这儿改。
         """
         from app.engine_config import memory_limits
 
@@ -2302,6 +2321,18 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(8)
+
+        name_row = QtWidgets.QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(6)
+        name_row.addWidget(_field_label("她怎么叫你", page))
+        self._name_edit = QtWidgets.QLineEdit(page)
+        self._name_edit.setPlaceholderText(f"留空就叫「{FALLBACK_NAME}」")
+        self._name_edit.setMaxLength(40)
+        self._name_edit.setText(profile_name(_read_memory_file("USER.md")))
+        self._name_edit.textChanged.connect(self._on_memory_edited)
+        name_row.addWidget(self._name_edit, 1)
+        layout.addLayout(name_row)
 
         memory_limit, user_limit = memory_limits(ROOT / runtime_settings().engine.core_path, _engine_home())
         self._limits_at_open = (user_limit, memory_limit)
@@ -2355,13 +2386,14 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             values.append(int(raw))
         return values[0], values[1]
 
-    def _memory_snapshot(self) -> tuple[str, str, str, str]:
-        """这一页的现值：两份记忆的规范化文本 + 两个上限框。没改动就不写盘。"""
+    def _memory_snapshot(self) -> tuple[str, str, str, str, str]:
+        """这一页的现值：两份记忆的规范化文本 + 两个上限框 + 名字框。没改动就不写盘。"""
         return (
             _memory_text(_memory_entries(self._user_edit.toPlainText())),
             _memory_text(_memory_entries(self._note_edit.toPlainText())),
             self._user_limit.text().strip(),
             self._note_limit.text().strip(),
+            self._name_edit.text().strip(),
         )
 
     def _on_memory_edited(self) -> None:
@@ -2400,8 +2432,9 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return "fail"
 
         user_limit, memory_limit = limits
+        user_name = self._name_edit.text().strip()
         plan = (
-            ("USER.md", self._user_edit.toPlainText(), user_limit, "用户画像"),
+            ("USER.md", _with_name(self._user_edit.toPlainText(), user_name), user_limit, "用户画像"),
             ("MEMORY.md", self._note_edit.toPlainText(), memory_limit, "记忆"),
         )
         prepared: list[tuple[str, str, str, str]] = []
@@ -2446,7 +2479,11 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         for name, text, old, _label in prepared:
             if old and not text:
                 self._save_notices.append(f"{name} 已经清空——她这方面现在一条都不记得了。")
+        if self._user_edit.toPlainText() != prepared[0][1]:
+            self._user_edit.setPlainText(prepared[0][1])
         labels = [label for _name, text, old, label in prepared if text != old]
+        if user_name != self._initial["memory"][4]:
+            labels.append("称呼")
         if user_limit != self._limits_at_open[0]:
             labels.append("用户画像上限")
         if memory_limit != self._limits_at_open[1]:
@@ -2468,11 +2505,12 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         labels = list(getattr(self, "_memory_labels", []) or [])
         if not labels:
             return ""
-        tail = (
-            "已改——新建会话生效。"
-            if any(x.endswith("上限") for x in labels)
-            else "已保存——新建会话才带进上下文。"
-        )
+        when = []
+        if "称呼" in labels:
+            when.append("下次启动生效")
+        if any(x.endswith("上限") for x in labels):
+            when.append("新建会话生效")
+        tail = f"已改——{'、'.join(when)}。" if when else "已保存——新建会话才带进上下文。"
         return f"{'、'.join(labels)}{tail}"
 
     def saved_tab(self) -> int:
@@ -2535,6 +2573,9 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         from app import text_prefs
 
         if not self._text_blocks:
+            if not self._choices:
+                # 供应商清单还在拉取：这一页本来就空着、没有可动的东西，别当成「没配 Key」报红字
+                return "ok"
             self._save_notes.append("模型设置这一页没动：还没存过任何 Key，先在「密钥设置」里配一家。")
             return "ok"
         data = self.selection()

@@ -56,27 +56,82 @@ def _ease(now: float, span: tuple[float, float]) -> float:
     return 1.0 - (1.0 - t) ** 3
 
 
+#: 招呼那行一行最多压到原字号的这个比例（再小就不如排两行）。
+GREET_MIN_RATIO = 0.85
+GREET_MAX_LINES = 2
+
+
+def _greet_font(px: float) -> QtGui.QFont:
+    """招呼那行的字体：加粗、字距略开。"""
+    font = QtGui.QFont("Microsoft YaHei UI")
+    font.setPixelSize(max(1, int(px)))
+    font.setBold(True)
+    font.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing, px * 0.03)
+    return font
+
+
+def _wrapped(metrics: QtGui.QFontMetricsF, text: str, box_w: float) -> tuple[int, float]:
+    """这段字在框里排几行、最宽多少。"""
+    rect = metrics.boundingRect(
+        QtCore.QRectF(0, 0, box_w, 0), int(QtCore.Qt.TextFlag.TextWordWrap), text
+    )
+    lines = max(1, round(rect.height() / max(metrics.lineSpacing(), 1.0)))
+    return lines, rect.width()
+
+
+def fit_greeting(text: str, box_w: float, base_px: float) -> tuple[QtGui.QFont, str, int]:
+    """把招呼那行塞进它的框：先试一行（字号最多压到 85%），压到底还不行就排两行，
+    两行还装不下（名字长得离谱）就把字砍到正好两行、末尾加省略号。宁可字号小一点、多一行，
+    也不把半句话裁掉。返回 (字体, 真正要画的字, 行数)——画的时候按这个行数给高度。"""
+    floor = base_px * GREET_MIN_RATIO
+    px = base_px
+    while px >= floor:
+        font = _greet_font(px)
+        if QtGui.QFontMetricsF(font).horizontalAdvance(text) <= box_w:
+            return font, text, 1
+        px -= 1.0
+    font = _greet_font(floor)
+    metrics = QtGui.QFontMetricsF(font)
+    lines, _width = _wrapped(metrics, text, box_w)
+    if lines <= GREET_MAX_LINES:
+        return font, text, lines
+    keep = text
+    while keep and _wrapped(metrics, keep + "…", box_w)[0] > GREET_MAX_LINES:
+        keep = keep[:-1]
+    return font, f"{keep}…", GREET_MAX_LINES
+
+
+#: 开场那句按小时分六档，从早到晚。每一句都是损他的（白混、废、没出息），
+#: 不带一句安慰——他什么时候开机，就听哪一句。
+GREETING_BY_HOUR: tuple[tuple[int, str], ...] = (
+    (0, "凌晨还不睡，你也没什么正事"),
+    (5, "醒了？还以为你睡死了"),
+    (11, "中午了，正事一件没干"),
+    (13, "下午了，你这一天算完了"),
+    (18, "回来了，你也就这点出息"),
+    (23, "还不睡，明天打算接着废"),
+)
+
+
+def greeting_body(hour: int) -> str:
+    """这个点该说哪句：表里取最后一个起点不大于 hour 的档。"""
+    body = GREETING_BY_HOUR[0][1]
+    for start, text in GREETING_BY_HOUR:
+        if hour >= start:
+            body = text
+    return body
+
+
 def _greeting() -> str:
     """开场那句招呼：先认人，再挑一句不客气的。
 
-    名字放最前面（「Ray，又是你」），不是缀在句末——先叫人再看你一眼，比贴着句尾更像当面说。
+    名字放最前面（「Ray，你也就这点出息」），不是缀在句末——先叫人再看你一眼，比贴着句尾更像当面说。
     「你就是新来的？」那种情形（USER.md 里还没写下名字）没有名字可叫，另说。
     """
     name = user_display_name()
     if name == FALLBACK_NAME:
         return "你就是新来的？"
-    hour = time.localtime().tm_hour
-    if 5 <= hour < 11:
-        body = "醒了？还以为你睡死了"
-    elif 11 <= hour < 13:
-        body = "中午了，你这哪国时差"
-    elif 13 <= hour < 18:
-        body = "下午了，你还活着呢"
-    elif 18 <= hour < 23:
-        body = "你还知道回来"
-    else:
-        body = "又是你"
-    return f"{name}，{body}"
+    return f"{name}，{greeting_body(time.localtime().tm_hour)}"
 
 
 class BootSplash(QtWidgets.QWidget):
@@ -380,10 +435,7 @@ class BootSplash(QtWidgets.QWidget):
         sub_font = QtGui.QFont("Microsoft YaHei UI")
         sub_font.setPixelSize(int(sub_px))
 
-        greet_font = QtGui.QFont("Microsoft YaHei UI")
-        greet_font.setPixelSize(int(greet_px))
-        greet_font.setBold(True)
-        greet_font.setLetterSpacing(QtGui.QFont.SpacingType.AbsoluteSpacing, greet_px * 0.03)
+        greet_font = _greet_font(greet_px)
 
         title_h = QtGui.QFontMetricsF(title_font).height()
         kicker_h = QtGui.QFontMetricsF(kicker_font).height()
@@ -473,14 +525,27 @@ class BootSplash(QtWidgets.QWidget):
 
         greet = _ease(now, T_GREET)
         if greet > 0:
+            fit_key = (self._greeting, int(box_w), int(greet_px))
+            if getattr(self, "_greet_fit_key", None) != fit_key:
+                self._greet_fit = fit_greeting(self._greeting, box_w, greet_px)
+                self._greet_fit_key = fit_key
+            font, shown, lines = self._greet_fit
+            flags = int(QtCore.Qt.AlignmentFlag.AlignLeft) | int(QtCore.Qt.AlignmentFlag.AlignVCenter)
+            if lines > 1:
+                flags |= int(QtCore.Qt.TextFlag.TextWordWrap)
             painter.save()
             painter.setOpacity(greet)
-            painter.setFont(greet_font)
+            painter.setFont(font)
             painter.setPen(CREAM)
             painter.drawText(
-                QtCore.QRectF(left, y + (1 - greet) * 8 * u, box_w, greet_h),
-                QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter,
-                self._greeting,
+                QtCore.QRectF(
+                    left,
+                    y + (1 - greet) * 8 * u,
+                    box_w,
+                    QtGui.QFontMetricsF(font).lineSpacing() * lines + 2 * u,
+                ),
+                flags,
+                shown,
             )
             painter.restore()
 
