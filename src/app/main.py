@@ -1684,7 +1684,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             panel.append_chunk(text)
 
     def on_complete(self, payload: dict) -> None:
-        """message.complete：正文早就按增量进了气泡，这里只收尾。"""
+        """message.complete：正文大多按增量进了气泡，这里补上没到的部分再收尾。"""
         panel = self.chat_panel
         if panel is not None:
             panel.bind_turn_receipt(payload.get("persisted_turn") or {})
@@ -1696,6 +1696,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 if failure:
                     panel.show_notice("turn", failure, level="error")
             else:
+                text = str(payload.get("text") or "")
+                if text and not payload.get("response_previewed"):
+                    panel.show_interim(text)
                 panel.clear_status_notice("turn")
             panel.end_assistant()
             panel.set_busy(False)
