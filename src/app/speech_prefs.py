@@ -4,8 +4,8 @@
 - 音色 / 档位 / 开关 / 语音形态（纯语音 or 语音互动）都是**界面的选择**，全在这里；
 - API Key 是**凭证**，和其他供应商的键放在同一个 `data/NoesiaHome/.env`，不放 json。
 
-以前 `app.json` 里还有一份 `tts` 段当「出厂默认」，于是同一个键两处都有、谁盖谁全看代码，
-而且里面一半的键（output_format / sample_rate）根本没人读——已经整段删掉，只留这一处。
+以前 `app.json` 里还有一份 `tts` 段当「出厂默认」，于是同一个键两处都有、谁盖谁全看代码；
+其中 `output_format` / `sample_rate` 两个键从没有人读过（四家的采样率各自写在代码里），已经一并删掉。
 首次运行由 `_TEMPLATE` 写全所有键；文件在但缺键就当场报错，不拿代码默认值悄悄兜底。
 
 这里不 import 引擎的 `noesia_cli.config`：那是引擎进程的包（只有 `src/engine` 在它的 sys.path
@@ -47,12 +47,23 @@ class SpeechError(RuntimeError):
 DOUBAO_URL = doubao_voices.url()
 DOUBAO_SAMPLE_RATE = 48000
 
+# DeepSeek 只有一把 API Key（platform.deepseek.com 拿）。`.env` 里分两个变量名，是为了让
+# 「语音」和「语言模型」各管各的：这里的 DEEPSEEK_TTS_API_KEY 只给语音读，模型的
+# DEEPSEEK_API_KEY 归引擎那张表，两边互不代填。
+DEEPSEEK_URL = "https://api.deepseek.com/v1/tools/tts"
+DEEPSEEK_SAMPLE_RATE = 24000
+DEEPSEEK_VOICES: tuple[dict, ...] = (
+    {"id": "stella", "name": "Stella（官方默认）"},
+    {"id": "tide", "name": "Tide"},
+)
+
 PROVIDERS = [
     ("elevenlabs", "ElevenLabs（按字符计费）"),
     ("doubao", "豆包语音 2.0（按字数计费）"),
+    ("deepseek", "DeepSeek 语音（按字符计费）"),
     ("edge", "Edge 在线朗读（免费）"),
 ]
-KEYED_PROVIDERS = ("elevenlabs", "doubao")
+KEYED_PROVIDERS = ("elevenlabs", "doubao", "deepseek")
 DOUBAO_VOICES: tuple[dict, ...] = DOUBAO_LIST
 EDGE_VOICES = [
     {"id": "zh-CN-XiaoxiaoNeural", "name": "晓晓 · 女 · 温柔"},
@@ -71,16 +82,11 @@ _TEMPLATE: dict = {
     "voice_id": "",
     "voice_name": "",
     "model_id": "eleven_v3",
-    "output_format": "pcm_16000",
-    "sample_rate": 16000,
     "voices": [],
     "voice_history": {},
     "model_history": {},
 }
-_REQUIRED = (
-    "enabled", "mode", "provider", "voice_id", "voice_name", "model_id",
-    "output_format", "sample_rate",
-)
+_REQUIRED = ("enabled", "mode", "provider", "voice_id", "voice_name", "model_id")
 
 
 def path() -> Path:
@@ -96,6 +102,8 @@ def load() -> dict:
     stored = read_json(target, _REQUIRED, hint="（语音设置只有这一份，缺键不猜）")
     data = dict(_TEMPLATE)
     data.update(stored)
+    for stale in ("output_format", "sample_rate"):
+        data.pop(stale, None)
     data["voices"] = list(data.get("voices") or [])
     data["voice_history"] = dict(data.get("voice_history") or {})
     data["model_history"] = dict(data.get("model_history") or {})
@@ -144,7 +152,9 @@ def save(**changes) -> dict:
             models[provider] = str(data.get("model_id") or "").strip()
         elif "provider" in changes:
             data["model_id"] = models.get(provider) or (
-                doubao_voices.default_resource() if provider == "doubao" else _TEMPLATE["model_id"]
+                doubao_voices.default_resource() if provider == "doubao"
+                else "" if provider == "deepseek"
+                else _TEMPLATE["model_id"]
             )
         data["model_history"] = models
         if "provider" in changes and "voice_id" not in changes:
@@ -197,6 +207,8 @@ def current() -> dict:
         default_voice = EDGE_VOICES[0]["id"]
     elif provider == "doubao":
         default_voice = DOUBAO_VOICES[0]["id"]
+    elif provider == "deepseek":
+        default_voice = DEEPSEEK_VOICES[0]["id"]
     else:
         default_voice = DEFAULT_ELEVENLABS_VOICE
     if provider not in ("edge", "doubao") and data["voice_id"] in {
@@ -213,10 +225,9 @@ def current() -> dict:
         "model_id": (
             _doubao_model_id(models.get("doubao") or data.get("model_id"))
             if provider == "doubao"
+            else "" if provider == "deepseek"
             else (str(models.get(provider) or "") or _TEMPLATE["model_id"])
         ),
-        "output_format": data["output_format"],
-        "sample_rate": int(data["sample_rate"]),
         "voices": list(data["voices"]),
         "history": dict(history) if isinstance(history, dict) else {},
     }
@@ -271,6 +282,32 @@ def doubao_error_message(code: int, message: str = "") -> str:
         return f"豆包服务器出错（{code}），过一会儿再试。"
     detail = f"：{message[:200]}" if message else ""
     return f"豆包返回 {code}{detail}"
+
+
+def deepseek_error_message(code: int, message: str = "") -> str:
+    """把 DeepSeek 语音的返回码翻成人话：400 多半是内容审核，429 是并发顶了。"""
+    text = f"{message or ''}"
+    if code == 400:
+        if "risk" in text.lower() or "审核" in text:
+            return (
+                "这段文字被 DeepSeek 的内容审核拦下了（400）：换个说法再念，"
+                "或者这一句先跳过。"
+            )
+        return "DeepSeek 没有可念的内容（400）" + (f"：{text[:200]}" if text else "")
+    if code in (401, 403):
+        return (
+            f"DeepSeek 不认这把 Key（{code}）：检查 DEEPSEEK_TTS_API_KEY 有没有填错、"
+            "以及这个账号还能不能用。"
+        )
+    if code == 429:
+        return "并发到顶了（429）：DeepSeek 限制同时合成的请求数，等十几秒再试。"
+    if code == 503:
+        return "DeepSeek 语音服务繁忙（503），过一会儿再试。"
+    if code == 504:
+        return "DeepSeek 合成超时（504）：这段太长或者服务端排队，过一会儿再试。"
+    if 500 <= code < 600:
+        return f"DeepSeek 服务器出错（{code}），过一会儿再试。"
+    return f"DeepSeek 返回 {code}" + (f"：{text[:200]}" if text else "")
 
 
 def fetch_voices(api_key: str = "") -> list[dict]:
@@ -374,6 +411,12 @@ def missing_key_message(provider: str = "") -> str:
     if (provider or load()["provider"]) == "doubao":
         return (
             "缺少 API Key：在「设置 → 语音」里填豆包的 Key（DOUBAO_API_KEY）；"
+            "也可以改选免费的 Edge TTS（不用 Key），或者直接关掉语音开关。"
+        )
+    if (provider or load()["provider"]) == "deepseek":
+        return (
+            "缺少 API Key：在「设置 → 语音」的 DeepSeek 那块填 DeepSeek 的 API Key"
+            "（DEEPSEEK_TTS_API_KEY）。跟模型那边是同一把 Key，只是分两个变量名各管各的。"
             "也可以改选免费的 Edge TTS（不用 Key），或者直接关掉语音开关。"
         )
     return "缺少 API Key：在「设置 → 语音」里填 ElevenLabs 的 Key；也可以改选免费的 Edge TTS（不用 Key），或者直接关掉语音开关。"

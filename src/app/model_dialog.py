@@ -1364,7 +1364,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             use.setChecked(True)
 
     def _build_voice_page(self, parent: QtWidgets.QWidget) -> QtWidgets.QWidget:
-        """语音模型页：三家引擎各一块，Key、语言、音色、档位各归各段。
+        """语音模型页：四家引擎各一块，Key、语言、音色、档位各归各段。
 
         跟文本页同一个规矩——一次能把几家的 Key 都填上、一次保存全部落进 `.env`；
         右边单选决定现在是谁在说话，其余家只记自己选过的音色。
@@ -1396,7 +1396,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         self._voice_fetch_timer.timeout.connect(self._maybe_fetch_voices)
 
         hint = QtWidgets.QLabel(
-            "三家各管各的：Key 和音色各存各家，几家的 Key 可以一次填完、一次保存；"
+            "四家各管各的：Key 和音色各存各家，几家的 Key 可以一次填完、一次保存；"
             "圈了「启用」的那家才会发声。",
             page,
         )
@@ -1405,7 +1405,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         layout.addWidget(hint)
         now = speech_prefs.current()
         running = str(now.get("provider") or "")
-        speaking = {"elevenlabs": "ElevenLabs", "doubao": "豆包", "edge": "Edge"}.get(running, running)
+        speaking = {"elevenlabs": "ElevenLabs", "doubao": "豆包", "deepseek": "DeepSeek", "edge": "Edge"}.get(running, running)
         voice_shown = now.get("voice_name") or now.get("voice_id") or "默认音色"
         has_key, _key_status = speech_prefs.key_status(running)
         if running in speech_prefs.KEYED_PROVIDERS and not has_key:
@@ -1563,7 +1563,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         return f"{text} · {hint}" if hint else text
 
     def _voice_choices(self, provider: str | None = None) -> list[dict]:
-        """这一家能选哪些音色：ElevenLabs 来自账号、豆包按语言筛、Edge 是固定的那几个。"""
+        """这一家能选哪些音色：ElevenLabs 来自账号、豆包按语言筛、Edge 和 DeepSeek 是固定的那几个。"""
         from app import speech_prefs
 
         provider = provider or self._voice_use
@@ -1573,6 +1573,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return [voice for voice in speech_prefs.DOUBAO_VOICES if not lang or voice["lang"] == lang]
         if provider == "edge":
             return list(speech_prefs.EDGE_VOICES)
+        if provider == "deepseek":
+            return list(speech_prefs.DEEPSEEK_VOICES)
         return list(self._voices)
 
     def _wanted_voice(self, provider: str) -> str:
@@ -1588,6 +1590,8 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
             return speech_prefs.EDGE_VOICES[0]["id"]
         if provider == "doubao":
             return speech_prefs.DOUBAO_VOICES[0]["id"]
+        if provider == "deepseek":
+            return speech_prefs.DEEPSEEK_VOICES[0]["id"]
         return ""
 
     def _voice_lang(self, provider: str) -> str:

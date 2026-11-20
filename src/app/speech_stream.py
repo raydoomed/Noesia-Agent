@@ -3,10 +3,11 @@
 纯语音和语音互动两档都从这里拿流：拿到第一片就能出声、能推给 Vidu 驱动口型。
 provider 复用同一套设置（speech_prefs.current()），所以换音色/换引擎两边同步生效。
 
-三家的流式来源各不相同：
+四家的流式来源各不相同：
 - 豆包：`/api/v3/tts/unidirectional` 本身就是分行 JSON + base64 PCM（48k），直接边读边给
 - Edge：edge-tts 的音频本来就是 chunk，但只有 mp3，得用 ffmpeg 管道增量解码
 - ElevenLabs：HTTP 流式响应（pcm_16000），边读边重采样到 24k
+- DeepSeek：`/v1/tools/tts` 指定 `format=pcm` 时回的就是 24k 单声道，读多少给多少
 """
 
 from __future__ import annotations
@@ -130,6 +131,8 @@ def stream_pcm(text: str) -> Iterator[bytes]:
         synth = _stream_edge
     elif provider == "doubao":
         synth = _stream_doubao
+    elif provider == "deepseek":
+        synth = _stream_deepseek
     else:
         synth = _stream_elevenlabs
     segments = _split_for_tts(text)
@@ -194,6 +197,50 @@ def _stream_doubao(text: str, chosen: dict) -> Iterator[bytes]:
         raise SpeechError(doubao_error_message(exc.code, detail)) from exc
     except urllib.error.URLError as exc:
         raise SpeechError(f"连不上豆包：{exc.reason}") from exc
+
+
+def _stream_deepseek(text: str, chosen: dict) -> Iterator[bytes]:
+    from app.speech_prefs import (
+        DEEPSEEK_SAMPLE_RATE,
+        DEEPSEEK_URL,
+        _api_key,
+        deepseek_error_message,
+    )
+
+    body = json.dumps(
+        {"text": text, "voice_id": chosen["voice_id"], "format": "pcm"}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        DEEPSEEK_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {_api_key('deepseek')}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    resampler = Resampler(DEEPSEEK_SAMPLE_RATE)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            expected = int(response.headers.get("Content-Length") or 0)
+            received = 0
+            while True:
+                block = response.read(8192)
+                if not block:
+                    break
+                received += len(block)
+                pcm = resampler.push(block)
+                if pcm:
+                    yield pcm
+            if expected and received < expected:
+                raise SpeechError(
+                    "DeepSeek 这段音频没传完就断了：响应提前结束就算失败，这一句再念一次。"
+                )
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        raise SpeechError(deepseek_error_message(exc.code, detail)) from exc
+    except urllib.error.URLError as exc:
+        raise SpeechError(f"连不上 DeepSeek：{exc.reason}") from exc
 
 
 def _stream_edge(text: str, chosen: dict) -> Iterator[bytes]:

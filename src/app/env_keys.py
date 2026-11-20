@@ -19,6 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROVIDERS: tuple[tuple[str, str, str, str], ...] = (
     ("elevenlabs", "ElevenLabs", "ELEVENLABS_API_KEY", "speech"),
     ("doubao", "豆包", "DOUBAO_API_KEY", "speech"),
+    ("deepseek", "DeepSeek", "DEEPSEEK_TTS_API_KEY", "speech"),
     ("vidu", "Vidu（组件版数字人）", "VIDU_TOKEN", "avatar"),
 )
 
