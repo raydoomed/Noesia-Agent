@@ -1468,7 +1468,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
                 lang.addItem("全部语言", "")
                 for item in doubao_voices.languages():
                     lang.addItem(item, item)
-                lang.setCurrentIndex(max(lang.findData("中文"), 0))
+                lang.setCurrentIndex(max(lang.findData(self._voice_lang("doubao")), 0))
                 lang.currentIndexChanged.connect(lambda _index, p=provider: self._fill_voices(p))
                 box.addWidget(lang)
 
@@ -1589,6 +1589,19 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if provider == "doubao":
             return speech_prefs.DOUBAO_VOICES[0]["id"]
         return ""
+
+    def _voice_lang(self, provider: str) -> str:
+        """语言下拉停在「这家记住的那个音色」的语言上，别一律从中文开始数。
+
+        存的是日语音色时，中文那一段里没有它，音色下拉就会被兜底成中文第一个。
+        """
+        from app import speech_prefs
+
+        remembered = self._wanted_voice(provider)
+        for voice in speech_prefs.DOUBAO_VOICES:
+            if voice["id"] == remembered:
+                return str(voice["lang"])
+        return "中文"
 
     def _fill_voices(self, provider: str) -> None:
         """把这一家的音色填进它自己的下拉，停在「上次选的那一个」上。"""
