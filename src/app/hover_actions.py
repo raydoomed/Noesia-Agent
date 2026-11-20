@@ -124,7 +124,7 @@ class HoverActionButton(QtWidgets.QToolButton):
         self.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.setStyleSheet(
-            "QToolButton { border: none; background: transparent; padding: 0; }"
+            "QToolButton { border: none; background: transparent; padding: 0; font-size: 9.75pt; }"
         )
         self.retarget(icon_name, tooltip, slot, done_tooltip)
         self.clicked.connect(self._clicked)

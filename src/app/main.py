@@ -1094,8 +1094,22 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
         elif option_id:
             say(f"[模型] 请求启用 {option_id}（密钥不动）")
             self.client.set_model(option_id, token=str(ctx["round"]))
-        if ctx["waiting"] == 0 and not ctx["switch_pending"]:
-            self._finish_save(True)
+        if ctx["switch_pending"] and not self.client.session_id:
+            # 没有会话：`session.mutate model` 没处挂、不会来回执，等下去只会在超时报「引擎没回应」。
+            # 选择得落成 profile 默认（引擎没有无会话改默认模型的口子，只能界面写），不然它一直
+            # 认为没有可用模型（eligible=false），首装引导不会起；补发的切换见 `_resp_session_chain`。
+            ctx["switch_pending"] = False
+            if not self.client.persist_default_model(option_id):
+                ctx["all_ok"] = False
+                ctx["lines"].append("模型没写进配置：引擎还认不出它，引导起不来")
+            elif self.chat_panel is not None:
+                # 无会话时不会刷模型清单，「去配模型」那条横幅没人替它撤。
+                self.chat_panel.clear_status_notice("setup")
+                self.chat_panel.show_notice("model", "模型已记下：开始对话后就切到它", ttl_ms=6000)
+            if not typed:
+                # 这次没存密钥，`key_saved` 不会来：补问一次开场——默认模型刚落上，引导该起了。
+                self._greet_if_needed(force=True)
+        self._maybe_finish_save()
 
     def on_save_result(self, tag: str, payload: dict) -> None:
         """引擎回执：设置窗口点了「保存并启用」之后在等这两条（写 Key / 切模型）。"""
@@ -1116,7 +1130,8 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
                 callback(ok, lines)
         if not ctx:
             return
-        if time.monotonic() - float(ctx.get("stamp") or 0.0) > 9.0:
+        # 和设置窗那个计时器同一条线（model_dialog 的 20 秒）：比它先放手就会静默丢回执。
+        if time.monotonic() - float(ctx.get("stamp") or 0.0) > 20.0:
             return
         if tag.startswith("model.save_key"):
             slug = tag.split(":", 1)[1] if ":" in tag else str(data.get("slug") or "")
@@ -1756,19 +1771,7 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             return
         if str(event.get("name") or "") == "setup_beat" or str(event.get("toolset") or "") == "onboarding":
             return
-        from app.tool_view.adapter import view_for
-        from app.tool_view.delegate import DELEGATE_TOOL
-        from app.tool_view.model import tool_copy_payload
-
-        view, part = view_for(event)
-        panel.show_tool_view(
-            view,
-            tool_id=str(part.tool_call_id or ""),
-            tool_name=part.tool_name,
-            pending=str(event.get("kind")) == "tool.start",
-            copy_payload=tool_copy_payload(part, view),
-            delegate_event=event if part.tool_name == DELEGATE_TOOL else None,
-        )
+        panel.show_tool_event(event)
 
     def on_subagent_event(self, event: dict) -> None:
         """`subagent.*`：子代理跑起来后调了什么工具、跑到哪一步，刷到那张子代理卡片上。"""

@@ -211,6 +211,9 @@ class StatusStack(QtWidgets.QFrame):
             session_id = str(row.get("session_id") or "")
             widget = self._bg_row(row)
             self._bg_box.addWidget(widget)
+            # 隐着的控件不计入布局的尺寸提示：不 show 就按 0 高算，卡片停在上一轮的高度，
+            # 行与行压在同一处（收起再展开才正常，因为那次激活重排了）。
+            widget.show()
             if not session_id:
                 continue
             self._bg_rows[session_id] = widget

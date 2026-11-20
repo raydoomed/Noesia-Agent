@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from noesia_cli.config import get_noesia_home
 
+from tools.process_job import active_processes, assign_to_job, close_job
 from tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
 from tools.process_registry_checkpoint import ProcessCheckpointMixin
@@ -554,6 +555,7 @@ class ProcessSession:
     cwd: Optional[str] = None
     started_at: float = 0.0                     # time.time() of spawn
     host_start_time: Optional[int] = None       # kernel start ticks (/proc/<pid>/stat f22) — PID-reuse guard
+    job_handle: int = 0                         # Windows Job Object holding the tree (0 = none, never persisted)
     exited: bool = False
     exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
     exit_code: Optional[int] = None             # None while running
@@ -1168,6 +1170,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         pty_proc = _PtyProcessCls.spawn(pty_argv, cwd=session.cwd, env=pty_env, dimensions=(30, 120))
         session.pid = pty_proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
+        session.job_handle = assign_to_job(session.pid)
         session._pty = pty_proc
         self._track_started(session, self._pty_reader_loop, f"proc-pty-reader-{session.id}")
         return session
@@ -1232,6 +1235,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session.process, session.output_log = proc, str(log or "")
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
+        session.job_handle = assign_to_job(session.pid)
         try:
             self._track_started(session, self._log_reader_loop if log else self._reader_loop, f"proc-reader-{session.id}")
         except Exception:
@@ -1251,6 +1255,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # spawn before signalling: pgid == pid would only prove the pid leads a
             # group, and a reaped child can be recycled onto an unrelated leader.
             self._terminate_host_pid(proc.pid, session.host_start_time)
+            self._release_job(session)
         with suppress(Exception):
             proc.wait(timeout=5)
 
@@ -1267,6 +1272,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
+        session.job_handle = assign_to_job(session.pid)
         session.notify_on_complete = notify_on_complete
         if output_so_far:
             session.append_output(output_so_far)
@@ -1623,6 +1629,17 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             "termination_source": session.termination_source,
         }
 
+    @staticmethod
+    def _release_job(session: ProcessSession) -> None:
+        """Close the session's Job Object: kill-on-close takes the tree down.
+
+        Authoritative on Windows, where ``taskkill /T`` misses MSYS-emulated forks
+        (their ppid is not the shell).
+        """
+        if session.job_handle:
+            close_job(session.job_handle)
+            session.job_handle = 0
+
     def _release_finished_handles(self, session: ProcessSession):
         """Close a finished session's OS handles (Popen pipes / PTY master).
 
@@ -1632,6 +1649,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         kill anything — the child has already exited — it only releases the
         parent's pipe FDs, which is exactly the retained-resource leak.
         """
+        # Nothing left inside means closing is free; a deliberately backgrounded
+        # daemon keeps the job open, as before.
+        if session.job_handle and active_processes(session.job_handle) == 0:
+            self._release_job(session)
         reader = session._reader_thread
         if (session._pty is None and reader is not None and reader.is_alive()
                 and reader is not threading.current_thread()):
@@ -2159,6 +2180,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # cgroup and escalates to SIGKILL after TimeoutStopSec. This is additive — the PID-based kill
             # above already handled the main process; this catches stragglers.
             scope_stopped = self._stop_scope(session)
+            self._release_job(session)
             with session._lock:
                 result = self._exit_snapshot(session, "already_exited")
                 finalizing = self._reader_finalizing(session)
@@ -2174,8 +2196,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             if early is not None:
                 return early
             # Additive to the PID kill: stopping the scope reaps double-forked
-            # descendants reparented inside the cgroup.
+            # descendants, closing the job reaps the ones the parent chain can't see.
             scope_stopped = self._stop_scope(session)
+            self._release_job(session)
             # Post-kill verification (#115490): the signals above can leave
             # survivors (SIGTERM-ignoring daemons, scope escapees). A kill that
             # leaves a live tree must not write a killed receipt or prune the

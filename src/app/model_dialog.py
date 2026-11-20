@@ -2641,7 +2641,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
         timer = QtCore.QTimer(self)
         timer.setSingleShot(True)
         timer.timeout.connect(self._engine_save_timed_out)
-        timer.start(9000)
+        timer.start(20000)
         self._save_timer = timer
         try:
             if self._engine_save is not None:
@@ -2670,7 +2670,7 @@ class ModelDialog(QtWidgets.QDialog):  # type: ignore[misc]
     def _engine_save_timed_out(self) -> None:
         self.engine_save_done(
             False,
-            ["引擎 9 秒没回话：不确定成没成。重开一次设置，看副标题那行「引擎现在在跑」对不对。"],
+            ["引擎 20 秒没回话：不确定成没成。重开一次设置，看副标题那行「引擎现在在跑」对不对。"],
         )
 
     def _on_avatar_checked(self, ok: bool, message: str, token: str = "") -> None:

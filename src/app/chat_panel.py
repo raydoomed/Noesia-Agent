@@ -413,7 +413,8 @@ from app.tool_view.fmt import format_duration_seconds
 from app.tool_view.helpers import is_file_edit_tool, strip_ansi
 from app.tool_view.icons import icon_svg
 from app.tool_view.codicon_icons import codicon_for_filename
-from app.tool_view.model import count_diff_line_stats, looks_redundant, tool_meta
+from app.tool_view.adapter import view_for
+from app.tool_view.model import count_diff_line_stats, looks_redundant, tool_copy_payload, tool_meta
 from app.model_menu import current_label, fill_menu, group_models
 from app.window_geometry import (
     cursor_for,
@@ -487,7 +488,7 @@ STYLE = """
 }
 #statusgroup QToolButton {
     color: #e2e9f6;
-    font-size: 11.5px;
+    font-size: 8.625pt;
     font-weight: 600;
     background: transparent;
     border: none;
@@ -498,7 +499,7 @@ STYLE = """
     background: transparent;
     border: none;
     color: rgba(255, 255, 255, 150);
-    font-size: 11px;
+    font-size: 8.25pt;
     padding: 0 4px;
 }
 #statusrow QToolButton:hover { color: #ffd7e6; }
@@ -513,7 +514,7 @@ STYLE = """
     border: 1px solid rgba(255, 255, 255, 36);
     border-radius: 6px;
     color: rgba(255, 215, 230, 235);
-    font-size: 11px;
+    font-size: 8.25pt;
     padding: 2px 6px;
     text-align: left;
 }
@@ -592,7 +593,7 @@ QMenu::indicator { width: 14px; height: 14px; }
 #speechclock { color: rgba(240, 221, 232, 140); font-size: 11px; }
 #speechprogress { background: rgba(255, 255, 255, 22); border: none; border-radius: 2px; }
 #speechprogress::chunk { background: rgba(247, 182, 210, 210); border-radius: 2px; }
-#speechbar QToolButton { color: rgba(240, 221, 232, 190); font-size: 11px; }
+#speechbar QToolButton { color: rgba(240, 221, 232, 190); font-size: 8.25pt; }
 /* 上一轮被重启打断：淡琥珀色，和语音条同一种细横幅，一眼看出是在等一个拍板 */
 #pausedbar {
     background: rgba(255, 196, 120, 18);
@@ -600,7 +601,7 @@ QMenu::indicator { width: 14px; height: 14px; }
     border-radius: 9px;
 }
 #pausedtitle { color: #f3e2cd; font-size: 12px; }
-#pausedbar QToolButton { color: rgba(255, 214, 160, 225); font-size: 11px; }
+#pausedbar QToolButton { color: rgba(255, 214, 160, 225); font-size: 8.25pt; }
 #pausedbar QToolButton:hover { color: #ffffff; }
 #pausedbar QToolButton:disabled { color: rgba(255, 214, 160, 110); }
 /* 输入框里的图标键：审批盾牌 / 思考火花，低调，别跟「发送」抢眼 */
@@ -618,7 +619,7 @@ QMenu::indicator { width: 14px; height: 14px; }
     border: 1px solid rgba(255, 255, 255, 34);
     border-radius: 6px;
     color: rgba(255, 255, 255, 190);
-    font-size: 11px;
+    font-size: 8.25pt;
     padding: 2px 8px;
 }
 #mini:hover { border: 1px solid rgba(240, 178, 210, 120); color: #ffffff; }
@@ -1761,6 +1762,8 @@ class ChatPanel(QtWidgets.QWidget):
         # 补页要清屏重画，重画后按这张单子摆回原位——否则一滚工具和思考就整片消失。
         self._fold_log: list[dict] = []
         self._fold_entries: dict[int, dict] = {}
+        # 这次派发的结局（从批次完成通知里数出来的）：历史里的子代理卡不能停「运行中」。
+        self._settled_delegations: dict[str, list[dict]] = {}
         self._replaying_fold = False
         self._md_block: list[str] = []
         self._para_break = False
@@ -3002,6 +3005,17 @@ class ChatPanel(QtWidgets.QWidget):
         self._replaying_fold = True
         try:
             rows = list(items)
+            # 派发当时存进历史的结果里没有结局（`status=dispatched`）：批次完成通知里有每条任务
+            # 的状态和用时，先在这里数出来，画卡片时补回去，免得历史里的子代理卡永远「运行中」。
+            self._settled_delegations = {}
+            for item in rows + list(live):
+                if str(item.get("display_kind") or "") != _DELEGATION_DISPLAY_KIND:
+                    continue
+                note = str(item.get("text") or "")
+                key = delegate_view.notice_delegation_id(note)
+                found = delegate_view.notice_results(note)
+                if key and found:
+                    self._settled_delegations[key] = found
             # 排序用单子里的原对象、不复制：`_replay_fold` 会把重画出来的卡重新挂到这条单子上，
             # 后面追加的输出才写得回日志（复制一份的话，下一次重铺就只剩当初那截）。
             pending = sorted(self._fold_log, key=lambda e: int(e.get("at") or 0))
@@ -3114,21 +3128,55 @@ class ChatPanel(QtWidgets.QWidget):
                 entry["open"] = bool(fold.open)
                 entry["pinned"] = bool(fold.pinned)
 
+    def _delegation_settled(self, raw):
+        """子代理卡的结果换成这批的结局（历史里存的只是派发那一刻的 `dispatched`）。"""
+        if not self._settled_delegations:
+            return raw
+        try:
+            record = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            return raw
+        if not isinstance(record, dict):
+            return raw
+        settled = self._settled_delegations.get(str(record.get("delegation_id") or ""))
+        if not settled:
+            return raw
+
+        return {**record, "results": settled}
+
     def _paint_history_item(self, item) -> None:
         """铺一条：工具行照名字+预览画成折叠行，思考段先落，其余按你我分两路。"""
         text = str(item.get("text") or "")
         stamp = item.get("timestamp")
         self._next_at = stamp if stamp is not None else None
         if str(item.get("role") or "") == "tool":
-            # 引擎回灌的工具行没有正文，只有名字和 80 字预览——那一行本来就是照这两个画的。
+            # 历史行带着参数和结果原文（`engine_wire._page_rows`），照当场那条路画成同一张卡；
+            # 老行只有名字和 80 字预览（没有结果）时退回一行芯片。
             name = str(item.get("name") or "").strip()
             if name == "setup_beat":
                 # 引导的名字卡：历史里照卡片画（问题 + 答过的名字），不是一行工具芯片。
                 if self._paint_setup_receipt(item):
                     return
             if name:
-                context = str(item.get("context") or "").strip()
-                self.show_tool(name, context or name, ok=item.get("ok", True) is not False)
+                ok = item.get("ok", True) is not False
+                raw = item.get("content")
+                if name == "delegate_task":
+                    raw = self._delegation_settled(raw)
+                if raw is not None:
+                    self.show_tool_event(
+                        {
+                            "kind": "tool.complete",
+                            "name": name,
+                            "args": item.get("args"),
+                            "result": raw,
+                            "is_error": not ok,
+                            "tool_call_id": item.get("tool_call_id") or "",
+                        },
+                        now=stamp if isinstance(stamp, (int, float)) else None,
+                    )
+                else:
+                    context = str(item.get("context") or "").strip()
+                    self.show_tool(name, context or name, ok=ok)
             return
         reasoning = str(item.get("reasoning") or "").strip()
         # 有的供应商把整轮回答当思考存回来（见 `show_reasoning_block` 的实测记录）：
@@ -3920,7 +3968,7 @@ class ChatPanel(QtWidgets.QWidget):
             ("photo", key), "download", "下载", lambda k=key: self._download_photo(k), flash=False
         )
         button.setStyleSheet(
-            "QToolButton { border: none; border-radius: 6px;"
+            "QToolButton { border: none; border-radius: 6px; font-size: 9.75pt;"
             " background: rgba(16, 18, 24, 150); padding: 0; }"
             "QToolButton:hover { background: rgba(16, 18, 24, 225); }"
         )
@@ -4430,6 +4478,22 @@ class ChatPanel(QtWidgets.QWidget):
             return True
         return False
 
+    def show_tool_event(self, event: dict, now: float | None = None) -> None:
+        """一条 `tool.start` / `tool.complete` 帧 → 工具卡。
+
+        实时帧（`main.on_tool_event`）和翻历史时的回放（`chat_panel._paint_history_item` 补了
+        参数和结果原文）都走这一条，画法只有一份。
+        """
+        view, part = view_for(event, now)
+        self.show_tool_view(
+            view,
+            tool_id=str(part.tool_call_id or ""),
+            tool_name=part.tool_name,
+            pending=str(event.get("kind") or "") == "tool.start",
+            copy_payload=tool_copy_payload(part, view),
+            delegate_event=event if part.tool_name == delegate_view.DELEGATE_TOOL else None,
+        )
+
     def show_tool_view(
         self,
         view,
@@ -4485,10 +4549,11 @@ class ChatPanel(QtWidgets.QWidget):
         glyph = self._tool_glyph(view, pending=pending, file_edit=is_file_edit)
         fold = self._tool_folds.get(tool_id) if tool_id else None
         if fold is None:
+            # 卡片一律收起：摊开的内容会把正文往下顶，要看就点开。
             fold = self._folds.new(
                 "tool",
                 label,
-                open_=bool(view.inline_diff) or delegate_event is not None,
+                open_=False,
                 glyph=glyph,
                 accent=self._title_accent(view, pending),
             )
@@ -4556,8 +4621,6 @@ class ChatPanel(QtWidgets.QWidget):
             self._diff_texts[fold.key] = (path, view.inline_diff)
             self._register_body(fold.key)
             self._folds.append_runs(fold, self._diff_rows(view.inline_diff, path=path))
-            if not fold.pinned and not fold.open:
-                self._folds.set_open(fold, True)
 
         self._append_detail(fold, view)
         self._settle_insert()
@@ -7202,6 +7265,22 @@ class ChatPanel(QtWidgets.QWidget):
         self._edge_cursor_shape = edge
         return True
 
+    def _take_input_press(self, event, place_caret: bool) -> None:
+        """点在输入框上，这一下就落光标。
+
+        窗口刚从别的程序切回来时，那一下常常只把窗口激活、光标没进来，得再点一次——
+        看着就像输入框被锁住了。光标按点到的位置放，跟正常点击一致。
+        """
+        if event.type() is not QtCore.QEvent.Type.MouseButtonPress:
+            return
+        if event.button() is not QtCore.Qt.MouseButton.LeftButton:
+            return
+        if self.input.hasFocus():
+            return
+        self.input.setFocus()
+        if place_caret:
+            self.input.setTextCursor(self.input.cursorForPosition(event.position().toPoint()))
+
     def _handle_input_drag(self, event) -> bool:
         """拖文件/图进输入框：接成附件，不往正文里塞一串路径。
 
@@ -7377,7 +7456,7 @@ class ChatPanel(QtWidgets.QWidget):
                     lambda key=name: self._download_photo(key), flash=False,
                 )
                 button.setStyleSheet(
-                    "QToolButton { border: none; border-radius: 6px;"
+                    "QToolButton { border: none; border-radius: 6px; font-size: 9.75pt;"
                     " background: rgba(16, 18, 24, 150); padding: 0; }"
                     "QToolButton:hover { background: rgba(16, 18, 24, 225); }"
                 )
@@ -8332,6 +8411,7 @@ class ChatPanel(QtWidgets.QWidget):
             return super().eventFilter(obj, event)
         if obj is getattr(self, "input", None):
             kind = event.type()
+            self._take_input_press(event, False)
             if kind is QtCore.QEvent.Type.MouseMove:
                 self._sync_edge_cursor(self.input.mapTo(self, event.position().toPoint()))
             if kind is QtCore.QEvent.Type.FocusIn:
@@ -8371,6 +8451,7 @@ class ChatPanel(QtWidgets.QWidget):
                 self._fit_input_height()
             return super().eventFilter(obj, event)
         if getattr(self, "input", None) is not None and obj is self.input.viewport():
+            self._take_input_press(event, True)
             if self._handle_input_drag(event):
                 return True
             return super().eventFilter(obj, event)

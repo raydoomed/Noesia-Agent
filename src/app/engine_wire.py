@@ -441,6 +441,30 @@ class EngineWire(QtCore.QObject):
         """数据根（和写进网关环境变量的是同一个值）。"""
         return _engine_home_path(self._root)
 
+    def persist_default_model(self, option_id: str) -> bool:
+        """没有会话时把「启用这个模型」落到 profile 默认（`config.yaml` 的 `model.*`）。
+
+        引擎的 `config.set model` 在没有会话时直接拒（4001：桌面这条只能靠会话承载），
+        而首装引导要等这个默认模型才算还没跑完——不落盘的话「保存并启用」只是个假动作：
+        引擎一直回 `eligible=false`，引导永远不起。所以这一笔由界面写进配置（跟「工作目录」
+        同一个写入口），下一次 `onboarding.state` 就能看到选的模型。
+        """
+        slug, sep, name = str(option_id or "").partition(":")
+        if not sep or not slug or not name:
+            return False
+        try:
+            from settings import load_settings
+            from backends.catalog import engine_core
+            from app.engine_config import set_engine_config
+            cfg, resolver = load_settings(root=Path(self._root))
+            set_engine_config(engine_core(cfg, resolver.root), self._engine_home(),
+                              {"model.provider": slug, "model.default": name})
+            logger.info("没有会话：默认模型已写进配置 %s / %s", slug, name)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("写默认模型失败：%s", option_id)
+            return False
+
     def _reset_transport_state(self) -> None:
         """重新拉引擎之前，把上一趟的传输状态清干净（第一次启动时它们本来就是空的）。
 
@@ -721,6 +745,7 @@ class EngineWire(QtCore.QObject):
                 stamp = None
             if role == "tool":
                 name = str(row.get("tool_name") or "tool")
+                args = args_by_call.get(row.get("tool_call_id")) or {}
                 out.append({
                     "role": "tool",
                     "text": "",
@@ -728,16 +753,17 @@ class EngineWire(QtCore.QObject):
                     "row_id": row.get("id"),
                     "timestamp": stamp,
                     "name": name,
-                    "context": EngineWire._tool_preview(
-                        name, args_by_call.get(row.get("tool_call_id")) or {}
-                    ),
+                    # 有结果原文时正文走原文，80 字预览没人读，不必算。
+                    "context": "" if row.get("content") is not None else EngineWire._tool_preview(name, args),
+                    "args": args,
+                    # 结果原文一起带上：展开行要铺正文（`tool_view.model.tool_detail_text`），
+                    # 只给 80 字预览的话点开是空的。
+                    "content": row.get("content"),
                     "tool_call_id": row.get("tool_call_id"),
                     "labels": None,
                     "reasoning": "",
                     # 成败跟着结果走：REST 只给原文，`{"error": …}` 就是失败，历史行要画成 ✗。
                     "ok": not EngineWire._tool_row_failed(row.get("content")),
-                    # 名字卡要从结果里取回写进去的名字（`chat_panel._paint_setup_receipt`）。
-                    **({"content": row.get("content")} if name == "setup_beat" else {}),
                 })
                 continue
             shown = row.get("display_content")
@@ -1076,26 +1102,27 @@ class EngineWire(QtCore.QObject):
         self._switch_model(model, token)
 
     def _switch_model(self, model: str, token: str = "") -> None:
-        """切换模型；先保证有会话。
+        """切换模型；没有会话就等会话，不替用户开一场。
 
         走 `/api/ws` 时 `config.set key=model` 会被直接拒（`use_session_mutation_model`）：
         canonical 换模型是 `session.mutate operation="model"`，payload 里 provider 和模型名分开给。
 
-        没会话时 mutate 没有 session_id 可挂，所以先建会话，等 `session_ready` 回来再切：
-        这才是「保存并启用」该走的顺序。
+        没会话时 mutate 没有 session_id 可挂：只把选择记进 `_pending_switch`，等第一场真会话
+        `session_ready`（见 `_resp_session_chain`）再发。以前这里会顺手 `create_session("")` 拿一场
+        空会话当载体——首装「保存密钥并启用模型」时引导还没开场，那场空会话就留在侧栏里成了
+        「无标题会话」，模型选择也落在它身上，引导反而跑默认模型。
         """
         if not model:
             return
         self._pending_switch = model
         self._pending_switch_token = token
-        if self._session_id:
-            self._pending_switch = ""
-            self._pending_switch_token = ""
-            self._switch_payload = _model_payload(model)
-            self._switch_token = token
-            self._send_switch_model()
-        else:
-            self.create_session("")
+        if not self._session_id:
+            return
+        self._pending_switch = ""
+        self._pending_switch_token = ""
+        self._switch_payload = _model_payload(model)
+        self._switch_token = token
+        self._send_switch_model()
 
     def _send_switch_model(self) -> None:
         """把待切的模型发出去。payload 要留着：撞版本号时拿新 revision 再发一次。"""
@@ -1128,12 +1155,14 @@ class EngineWire(QtCore.QObject):
 
         `config.set reasoning` 在 `/api/ws` 上仍可用，但它只改当前会话的显示值；策略档位要走
         mutate，而且这类操作必须带 `expected_generation`，少了它引擎直接判 invalid_params。
+
+        没会话时只记住档位，不建会话：`_resp_session_chain` 在 `session_ready` 里补发（跟 `_switch_model`
+        同一条规矩——首装引导期间不许因为一个设置多出一场空会话）。
         """
         if not level:
             return
         if not self._session_id:
             self._pending_reasoning = level
-            self.create_session("")
             return
         self._reasoning_level = level
         self._mutate("reasoning", {"effort": level}, tag="reasoning.set",

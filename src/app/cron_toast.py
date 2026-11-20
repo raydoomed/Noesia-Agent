@@ -39,7 +39,7 @@ QLabel#toastbody { color: rgba(255, 255, 255, 0.42); font-size: 11.5px; }
 QLabel#toasttime { color: rgba(255, 255, 255, 0.34); font-size: 10.5px; }
 QToolButton#toastclose {
     border: none; background: transparent; color: rgba(255, 255, 255, 0.34);
-    font-size: 14px; padding: 0 2px;
+    font-size: 10.5pt; padding: 0 2px;
 }
 QToolButton#toastclose:hover { color: rgba(255, 255, 255, 0.78); }
 """

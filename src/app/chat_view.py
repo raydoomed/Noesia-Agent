@@ -132,16 +132,14 @@ class ChatView(QtWidgets.QTextBrowser):
             block = block.next()
         return blocks
 
-    NEAR_CHARS = 400
-
     def _relayout_tools(self) -> None:
         """长内容按它在正文里占的那块空位摆好；收起时整块不显示。
 
-        显隐看的是「空位那块矩形还在不在屏上」，不是字符区间：空位块自己只有一行字，
+        显隐只看「空位那块矩形还在不在屏上」，不靠字符区间筛：空位块自己只有一行字，
         但它占的高度有几百像素——视口顶落在空位的后半段时，`cursorForPosition` 已经
         指到下一块，按字符区间判就说它不在屏上，框被藏掉、空位空着（要滚一下才回来）。
-        字符区间只用来先筛掉远处那些：这里挂在每次插入和滚动上，工具框一多，每帧全量
-        量一遍矩形就把滚动拖卡了。
+        字符区间还会在正文刚变、排版没跟上时给出离谱的范围，一样会把屏上的框藏掉。
+        只剩展开着的折叠要量（收起的在上面就返回了），几十张全量一遍不到 1ms。
 
         `reserve` 认的是「空位块拿 `setLineHeight(FixedHeight)` 留的高度」（`disclosure._sync_slot`）：
         这种块 `blockBoundingRect` 只回一行那十几像素，空位真正的两百多像素只能从
@@ -153,7 +151,6 @@ class ChatView(QtWidgets.QTextBrowser):
             return
         dy = -self.verticalScrollBar().value()
         layout = self.document().documentLayout()
-        window = self.visible_range()
         height = self.viewport().height()
         for fold in folds.all():
             widget = getattr(fold, "scroll", None)
@@ -161,15 +158,6 @@ class ChatView(QtWidgets.QTextBrowser):
                 continue
             slot = getattr(fold, "slot", None)
             if not fold.open or slot is None or not slot.isValid():
-                if widget.isVisible():
-                    widget.hide()
-                continue
-            pos = slot.position()
-            if (
-                not folds.in_window(fold, window)
-                and abs(pos - window[0]) > self.NEAR_CHARS
-                and abs(pos - window[1]) > self.NEAR_CHARS
-            ):
                 if widget.isVisible():
                     widget.hide()
                 continue

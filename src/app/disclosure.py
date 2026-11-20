@@ -402,14 +402,21 @@ class Folds:
 
     def _sync_slot(self, fold: Fold) -> None:
         """让正文里那块空位和控件一样高——版面按空位算，滚到它时才对得上。"""
-        width = max(1, int(self._doc.pageSize().width()) - 2 * int(self._doc.documentMargin()))
+        width = int(self._doc.pageSize().width()) - 2 * int(self._doc.documentMargin())
         scroll = fold.scroll
         if scroll is None:
             return
         fit: Callable[[int], float] | None = getattr(scroll, "fit", None)
         if fit is None:
             return
-        height = float(fit(width))
+        if width <= 1:
+            # 面板还没上屏（切会话时正文宽是 0）：这会儿量，控件会被钉成 1px 宽、
+            # 空位按一列字的高度撑到上限，看着就是一块空白。空位照样建出来（不留高度），
+            # 只是先不量——不建的话 `in_window` 找不到它，滚进来也补不上。
+            fold.needs_fit = True
+            height = 0.0
+        else:
+            height = float(fit(width))
         block = fold.slot
         if block is None or not block.isValid():
             cursor = self._body_cursor(fold)
@@ -572,6 +579,11 @@ class Folds:
 
     def set_open(self, fold: Fold, open_: bool) -> None:
         fold.open = bool(open_)
+        if fold.open and fold.needs_fit:
+            # 还没按当前宽度量过（切会话时面板没上屏、或者一直没滚到它）：点开的这一刻量一次，
+            # 不然空位没高度、框也就没地方摆，点了像没反应，得滚一下才出来。
+            fold.needs_fit = False
+            self._sync_slot(fold)
         self.sync_visibility()
 
     def _parents_open(self, fold: Fold) -> bool:

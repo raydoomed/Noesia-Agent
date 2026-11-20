@@ -30,28 +30,37 @@ _NAMED = re.compile(
     re.IGNORECASE,
 )
 
+#: 行首的字段写法：`Name: 「某某」`、`- 名字：某某`。这是「在讲名字」的写法，优先级最高——
+#: 正文里顺口一句「会叫『宝宝』」也符合下面的 `_NAMED`，但不该盖掉档案里写明的名字。
+_FIELD = re.compile(r"^\s*(?:[-*·]\s*)?(?:name|名字|称呼)\s*(?:是|叫|为|[:：])?\s*$", re.IGNORECASE)
+
 #: 判断旧名字时往前看几个字。
 _LOOKBEHIND = 8
 
 
 def profile_name(text: str) -> str:
-    """从 USER.md 正文里挑出名字：逐行看引号，跳过旧名字，最后出现的那个当前名字算数。
+    """从 USER.md 正文里挑出名字：行首字段优先，其次看引号前面的线索词。
 
-    名字一律用引号包着写（引导填名字、模型自己记，都是这个形状），所以只看引号内的内容；引号前面
-    得挨着 `Name:`、「名字」「叫」这类词，随口一句引号（「她说『好的』」）不算。哪一个是当前的由
-    引号前面的词决定，不是位置：写着「以前叫『某某』」「此前记录为『某某』」的是旧名字，跳过。
-    行与行之间靠后的是新写的，所以后面覆盖前面。超过八个字当句子，不算名字。
+    档案抬头的 `Name: 「Ray」` 就是当前名字；没有这种字段行时，才退回去看「名字叫『X』」这类
+    句子，最后出现的那个当前名字算数。正文里顺口一句「会叫『宝宝』」不算名字——
+    有字段行时一律以字段为准。哪一个是当前的由引号前面的词决定，不是位置：「以前叫『某某』」
+    「此前记录为『某某』」是旧名字，跳过。超过八个字当句子，不算名字。
     """
-    name = ""
+    field_name = ""
+    prose_name = ""
     for line in text.splitlines():
         for found in _QUOTED.finditer(line):
             head = line[max(0, found.start() - _LOOKBEHIND):found.start()]
-            if _STALE.search(head) or not _NAMED.search(head):
+            if _STALE.search(head):
                 continue
             candidate = found.group(1).strip()
-            if 1 <= len(candidate) <= 8:
-                name = candidate
-    return name
+            if not (1 <= len(candidate) <= 8):
+                continue
+            if _FIELD.match(line[:found.start()]):
+                field_name = candidate
+            elif _NAMED.search(head):
+                prose_name = candidate
+    return field_name or prose_name
 
 
 def user_display_name() -> str:

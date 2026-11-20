@@ -5,6 +5,7 @@ JS 正则里的 `\\d` / `\\b` 是 ASCII 语义，相应 pattern 统一加 `re.A`
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from datetime import datetime
@@ -1153,7 +1154,53 @@ def file_search_detail(part: ToolPart, result_record: dict[str, Any], limit: int
     return "\n".join(lines[:limit])
 
 
+def nested_calls(args: dict[str, Any]) -> list[dict[str, Any]]:
+    """`tool_call`（内层工具的转发壳）里的调用清单：`calls: [{name, arguments}, …]`。"""
+    calls = args.get("calls")
+    if not isinstance(calls, list):
+        return []
+
+    return [call for call in map(parse_maybe_object, calls) if isinstance(call, dict)]
+
+
+def nested_call_names(args: dict[str, Any]) -> list[str]:
+    """内层叫的是谁：`process_manage wait`、`process_list` 这种，一行一个。"""
+    labels = []
+    for call in nested_calls(args):
+        name = first_string_field(call, ["name"])
+        action = first_string_field(parse_maybe_object(call.get("arguments")), ["action"])
+        label = f"{name} {action}".strip() if action else name
+        if label:
+            labels.append(label)
+
+    return labels
+
+
+def nested_call_detail(args: dict[str, Any], result: Any) -> str:
+    """转发壳的正文：内层调用的参数 + 引擎回的原样结果（不然这一行点开只剩一句计数）。"""
+    lines = []
+    for call in nested_calls(args):
+        name = first_string_field(call, ["name"])
+        params = call.get("arguments")
+        if isinstance(params, dict):
+            shown = json.dumps(params, ensure_ascii=False)
+        elif params is None:
+            shown = ""
+        else:
+            shown = str(params)
+        lines.append(f"{name} {shown}".strip())
+    if isinstance(result, (dict, list)) and result:
+        lines.append(json.dumps(result, ensure_ascii=False, indent=2))
+    elif isinstance(result, str) and result.strip():
+        lines.append(result.strip())
+
+    return "\n\n".join(line for line in lines if line)
+
+
 def tool_detail_text(part: ToolPart, args_record: dict[str, Any], result_record: dict[str, Any]) -> str:
+    if part.tool_name == "tool_call":
+        return nested_call_detail(args_record, tool_result_record(part))
+
     if part.tool_name == "browser_snapshot":
         snapshot = first_string_field(result_record, ["snapshot"])
 
@@ -1378,6 +1425,13 @@ def dynamic_title(
 
     if skill_title:
         return ToolTitleParts(title=skill_title)
+
+    if part.tool_name == "tool_call":
+        # 转发壳自己没名字：抬头写内层叫了谁（`process_manage wait`），不然只看得见「Tool Call」。
+        names = nested_call_names(args)
+
+        if names:
+            return ToolTitleParts(title="、".join(names))
 
     def verb(gerund: str, past: str) -> str:
         return gerund if part.result is None else past

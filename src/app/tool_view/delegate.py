@@ -310,6 +310,48 @@ def card_view(view, part):
     )
 
 
+def notice_delegation_id(content: Any) -> str:
+    """批次完成通知属于哪次派发：`[ASYNC DELEGATION BATCH COMPLETE — deleg_xxx]`。"""
+    match = _DELEGATION_ID.search(_text(content))
+
+    return match.group(0) if match else ""
+
+
+def _task_rows(content: Any) -> list[dict]:
+    """完成通知里的任务行：`--- TASK 1/3: goal (status=completed, 12.3s) ---`。"""
+    rows: list[dict] = []
+    for raw in _text(content).splitlines():
+        head = _TASK_HEAD.match(raw.strip())
+        if head is None:
+            continue
+        detail = head.group(4)
+        status = _STATUS_IN_HEAD.search(detail)
+        seconds = _SECONDS_IN_HEAD.search(detail)
+        rows.append(
+            {
+                "index": head.group(1),
+                "total": head.group(2),
+                "goal": head.group(3),
+                "status": status.group(1) if status else "",
+                "seconds": float(seconds.group(1)) if seconds else None,
+            }
+        )
+
+    return rows
+
+
+def notice_results(content: Any) -> list[dict]:
+    """批次完成通知 → `rows()` 认的那份结果：每条任务的状态和用时。
+
+    历史里只存了派发那一刻的结果（`status=dispatched`，没有 `results`），卡片就永远停在
+    「运行中」；完成通知里有每条任务的结局，拿它补上。
+    """
+    return [
+        {"goal": row["goal"], "status": row["status"] or "completed", "duration_seconds": row["seconds"]}
+        for row in _task_rows(content)
+    ]
+
+
 def completion_lines(content: Any) -> list[str]:
     """后端那条「ASYNC DELEGATION BATCH COMPLETE」消息 → 中文几行（它是给模型看的，不念原文）。"""
     text = _text(content)
@@ -323,16 +365,9 @@ def completion_lines(content: Any) -> list[str]:
     if model:
         lines[0] += f" · {model.group(1)}"
 
-    for raw in text.splitlines():
-        head = _TASK_HEAD.match(raw.strip())
-        if head is None:
-            continue
-        index, total_tasks, goal = head.group(1), head.group(2), head.group(3)
-        detail = head.group(4)
-        status = _STATUS_IN_HEAD.search(detail)
-        seconds = _SECONDS_IN_HEAD.search(detail)
-        row = f"· 任务 {index}/{total_tasks} {_compact(goal, GOAL_MAX)} — {status_label(status.group(1) if status else '')}"
-        if seconds:
-            row += f" · {float(seconds.group(1)):.1f}s"
-        lines.append(row)
+    for row in _task_rows(text):
+        line = f"· 任务 {row['index']}/{row['total']} {_compact(row['goal'], GOAL_MAX)} — {status_label(row['status'])}"
+        if row["seconds"]:
+            line += f" · {row['seconds']:.1f}s"
+        lines.append(line)
     return lines
