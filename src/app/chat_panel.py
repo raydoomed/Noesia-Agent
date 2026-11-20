@@ -7278,6 +7278,15 @@ class ChatPanel(QtWidgets.QWidget):
         if self.input.hasFocus():
             return
         self.input.setFocus()
+        if not self.input.hasFocus() or not self.isActiveWindow():
+            logger.warning(
+                "输入框没拿到焦点：窗口激活=%s 焦点控件=%s 活动模态窗=%s 鼠标下控件=%s 设完后hasFocus=%s",
+                self.isActiveWindow(),
+                type(QtWidgets.QApplication.focusWidget()).__name__,
+                type(QtWidgets.QApplication.activeModalWidget()).__name__,
+                type(QtWidgets.QApplication.widgetAt(QtGui.QCursor.pos())).__name__,
+                self.input.hasFocus(),
+            )
         if place_caret:
             self.input.setTextCursor(self.input.cursorForPosition(event.position().toPoint()))
 

@@ -2368,7 +2368,9 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             image = QtGui.QImage()
         region = hit_region(image, self.size())
         self._hit_region = None if region.isEmpty() else region
-        self._hit_size = size
+        # 没描出轮廓的空结果不许进缓存：缓存键只有尺寸，一旦记下这个尺寸，后来的真帧
+        # 就再也不会重算，整个矩形从此刻起吃掉所有点击（桌面图标、旁边的聊天窗一起中招）。
+        self._hit_size = None if region.isEmpty() else size
 
     def nativeEvent(self, event_type, message):  # noqa: N802 (Qt
         """透明的地方不挡鼠标：点在她身上才算点她，空白处交给下面的窗口（比如桌面图标）。
