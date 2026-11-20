@@ -100,10 +100,27 @@ class Resampler:
         return b""
 
 
+def _silent_reason(chosen: dict, name: str) -> str:
+    """一句都没合成出来时说清为什么。
+
+    豆包的英语音色（Dacey/Stokie 这些）只认英文：中文文本过去它回 `code=20000000 OK`
+    加零字节音频，不报错、不出声，看着像程序坏了。
+    """
+    if chosen.get("provider") == "doubao":
+        from app.speech_prefs import DOUBAO_VOICES
+
+        voice_id = str(chosen.get("voice_id") or "")
+        lang = next((str(v["lang"]) for v in DOUBAO_VOICES if v["id"] == voice_id), "")
+        if "英语" in lang:
+            return f"{name} 一个字节都没合成出来——豆包的英语音色只念英文，中文的回答它念不出来。换成中文音色就能念。"
+    return f"{name} 一个字节都没合成出来，换个音色再试。"
+
+
 def stream_pcm(text: str) -> Iterator[bytes]:
     """按当前语音设置流式合成，产出 24k 单声道 s16le 分片。
 
     整段文字多长都念完：超过 SEGMENT_CHARS 就分段合成，一段接一段，中间不断。
+    有字要念、却一个字节都没合成出来，就是失败——不能让它安安静静跑完。
     """
     from app.speech_prefs import current
 
@@ -115,8 +132,15 @@ def stream_pcm(text: str) -> Iterator[bytes]:
         synth = _stream_doubao
     else:
         synth = _stream_elevenlabs
-    for segment in _split_for_tts(text):
-        yield from synth(segment, chosen)
+    segments = _split_for_tts(text)
+    produced = 0
+    for segment in segments:
+        for chunk in synth(segment, chosen):
+            produced += len(chunk)
+            yield chunk
+    if segments and not produced:
+        name = str(chosen.get("voice_name") or chosen.get("voice_id") or "这个音色")
+        raise SpeechError(_silent_reason(chosen, name))
 
 
 def _stream_doubao(text: str, chosen: dict) -> Iterator[bytes]:
