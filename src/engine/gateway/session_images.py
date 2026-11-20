@@ -17,7 +17,13 @@ async def attach_bytes(connection, ref, params):
     authorize(connection, ref, params, 'session:submit')
     # The owner, never the caller or ambient process profile, selects staging.
     directory = Path(connection.authority.profile_id) / 'cache' / 'images'
-    return await asyncio.to_thread(_stage, directory, params)
+    staged = await asyncio.to_thread(_stage, directory, params)
+    # The next turn consumes this queue (``_native_image_run_message`` reads and clears it);
+    # staging alone leaves the pixels on disk with nothing pointing at them.
+    live = connection.authority.sessions[ref.session_id]
+    connection.authority.runner._session_state(live.route).persistent.native_image_paths.append(
+        staged['path'])
+    return staged
 
 
 def _stage(directory, params):

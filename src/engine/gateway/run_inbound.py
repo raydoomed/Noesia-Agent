@@ -1662,11 +1662,15 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # Prefer the caller's resolved session key so this write key matches the consume key at the
         # run_conversation site; derive it here only for tests and legacy standalone callers.
         session_key = session_key or self._session_key_for_source(source)
-        # Reset only this session's per-call buffer; other sessions may be concurrently preparing.
-        self._consume_pending_native_image_paths(session_key)
+        # Take (not drop) this session's per-call buffer: image.attach_bytes stages desktop uploads
+        # there for the turn that follows. Whatever this turn does not use is cleared by the consume
+        # below, so a stale buffer never rides into a later one.
+        staged_images = self._consume_pending_native_image_paths(session_key)
 
         message_text = self._prefix_inbound_sender_context(event, source, message_text)
         image_paths, audio_paths, audio_file_paths, video_paths = self._classify_inbound_media(event, _pending_stt_prepared)
+        if staged_images:
+            image_paths = [*staged_images, *image_paths]
         if image_paths:
             message_text = await self._enrich_inbound_images(source, session_key, message_text, image_paths)
         if audio_paths:
