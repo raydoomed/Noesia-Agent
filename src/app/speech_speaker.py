@@ -24,12 +24,52 @@ import PySide6.QtMultimedia as QtMultimedia
 
 from app.speech_stream import TARGET_RATE, SpeechError, stream_pcm
 
-_CODE_FENCE = re.compile(r"```.*?```", re.S)
-_INLINE_CODE = re.compile(r"`[^`]*`")
-_MEDIA_TOKEN = re.compile(r"MEDIA:\S+")
-_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-_URL = re.compile(r"https?://\S+")
-_MARK = re.compile(r"[*_>#|]+")
+_CODE_FENCE = re.compile(r"```.*?(?:```|\Z)", re.S)
+_VERIFIER_FOOTER = re.compile(
+    r"^[ \t]*\u26a0\ufe0f?\s*(?:文件修改校验器|File-mutation verifier)[:：][^\n]*"
+    r"(?:\n[ \t]*\u2022[^\n]*)*",
+    re.M,
+)
+_AUTOLINK = re.compile(r"<((?:https?|mailto):[^>\s]+)>")
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
+_HTML_TAG = re.compile(r"</?[A-Za-z][^>\n]*>")
+_INLINE_CODE = re.compile(r"`([^`]*)`")
+_MEDIA_LINE = re.compile(r"^[ \t]*(?:[-*+][ \t]+)?`?MEDIA:[^\n]*$", re.M)
+_MEDIA_TOKEN = re.compile(r"MEDIA:[^\s，。！？；：、]+")
+_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_LINK = re.compile(r"\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\((?:[^()]|\([^()]*\))*\)")
+_URL = re.compile(
+    r"https?://(?:www\.)?([0-9A-Za-z.-]+)"
+    r"((?::\d+)?(?:[/?#][^\s，。！？；：、（）【】「」()\[\]{}<>\"']*)?)",
+    re.IGNORECASE,
+)
+_IP_HOST = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}|localhost", re.IGNORECASE)
+_STRIKE = re.compile(r"~~(.+?)~~")
+_EMPH = re.compile(r"(?<![0-9A-Za-z])(\*{1,3}|_{1,3})(?=[^\s*_])(.+?)(?<=[^\s*_])\1(?![0-9A-Za-z])")
+_HEADING = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.M)
+_QUOTE = re.compile(r"^[ \t]*>+[ \t]?", re.M)
+_TASK_BOX = re.compile(r"^[ \t]*\[[ xX]\][ \t]+", re.M)
+_LIST_MARK = re.compile(r"^[ \t]*(?:[-*+]|(\d{1,2})[.)])[ \t]+", re.M)
+_RULE_LINE = re.compile(r"^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$", re.M)
+_PIPE = re.compile(r"\|")
+
+
+def _url_to_speech(m: re.Match[str]) -> str:
+    host, tail = m.group(1), m.group(2) or ""
+    return host + tail if _IP_HOST.fullmatch(host) else host
+
+
+def _link_text(m: re.Match[str]) -> str:
+    return re.sub(r"[\[\]]", "", m.group(1))
+
+
+def _media_to_speech(m: re.Match[str]) -> str:
+    token = m.group(0)
+    trail = ""
+    while token and token[-1] in ".,;:!?)]":
+        trail = token[-1] + trail
+        token = token[:-1]
+    return " " + trail
 
 _PREROLL_MS = 250  # 蓝牙（A2DP）和刚醒的声卡会吞掉最先写进去的 150–300ms，先拿静音喂饱它
 _TAIL_MS = 250  # 声卡排空不代表耳机播完，立刻停会把最后一个字切掉
@@ -54,12 +94,26 @@ def speakable(text: str) -> str:
     长回答会在中途停住、后面整段没声音；超长文本的分段交给 speech_stream。
     """
     cleaned = _CODE_FENCE.sub(" ", text)
-    cleaned = _MEDIA_TOKEN.sub(" ", cleaned)
-    cleaned = _INLINE_CODE.sub(" ", cleaned)
-    cleaned = _LINK.sub(r"\1", cleaned)
-    cleaned = _URL.sub(" ", cleaned)
-    cleaned = _MARK.sub(" ", cleaned)
+    cleaned = _VERIFIER_FOOTER.sub("", cleaned)
+    cleaned = _RULE_LINE.sub("", cleaned)
+    cleaned = _AUTOLINK.sub(r"\1", cleaned)
+    cleaned = _HTML_COMMENT.sub(" ", cleaned)
+    cleaned = _HTML_TAG.sub(" ", cleaned)
+    cleaned = _MEDIA_LINE.sub("", cleaned)
+    cleaned = _MEDIA_TOKEN.sub(_media_to_speech, cleaned)
+    cleaned = _IMAGE.sub(r"\1", cleaned)
+    cleaned = _INLINE_CODE.sub(r"\1", cleaned)
+    cleaned = _LINK.sub(_link_text, cleaned)
+    cleaned = _STRIKE.sub(r"\1", cleaned)
+    cleaned = _EMPH.sub(r"\2", cleaned)
+    cleaned = _HEADING.sub("", cleaned)
+    cleaned = _QUOTE.sub("", cleaned)
+    cleaned = _LIST_MARK.sub(r"\1 ", cleaned)
+    cleaned = _TASK_BOX.sub("", cleaned)
+    cleaned = _PIPE.sub(" ", cleaned)
+    cleaned = _URL.sub(_url_to_speech, cleaned)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    cleaned = re.sub(r"^[ \t]+", "", cleaned, flags=re.M)
     cleaned = re.sub(r"\s+([，。！？；：、])", r"\1", cleaned)
     cleaned = re.sub(r"\n{2,}", "\n", cleaned).strip()
     return cleaned
