@@ -932,7 +932,9 @@ class CronDialog(QtWidgets.QDialog):  # type: ignore[misc]
         if left:
             schedule = f"{schedule}（还会跑 {left} 次）" if schedule else f"还会跑 {left} 次"
         self._detail_schedule.setText(f"排程：{schedule or '—'}")
-        self._detail_prompt.setPlainText(str(record.get("prompt") or ""))
+        prompt_text = str(record.get("prompt") or "")
+        if self._detail_prompt.toPlainText() != prompt_text:
+            self._detail_prompt.setPlainText(prompt_text)
         paused = record.get("state") == "paused" or record.get("enabled") is False
         self._pause_button.setText("恢复" if paused else "暂停")
         self._apply_busy()

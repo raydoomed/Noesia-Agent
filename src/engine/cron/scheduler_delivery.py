@@ -1419,7 +1419,7 @@ def _live_send_media(
         delivery_errors.append(f"{_me} (target {t.where})")
 
 
-def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> None:
+def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> bool:
     """After a confirmed live send, seed continuation session(s) and run the generic mirror.
     Thread seeding is deferred here so open-succeeds/deliver-fails never seeds an unseen brief."""
     job = t.job
@@ -1462,7 +1462,7 @@ def _seed_live_delivery_sessions(t: _TargetDelivery, delivered_message_id) -> No
             "skipped; the plain mirror below may still apply",
             job["id"], t.platform_name, t.chat_id,
             origin.get("platform"), origin.get("chat_id"), origin.get("thread_id"))
-    _maybe_mirror_cron_delivery(
+    return _maybe_mirror_cron_delivery(
         job, t.platform_name, t.chat_id, t.mirror_text, thread_id=t.thread_id,
         user_id=t.origin_user_id,
         enabled=t.mirror_this_target and not thread_seeded and not inchannel_seeded)
@@ -1524,7 +1524,9 @@ def _deliver_via_live_adapter(
                 route_thread_id if route_thread_id is not None else "-",
                 delivered_message_id if delivered_message_id is not None else "-")
             delivered = True
-            _seed_live_delivery_sessions(t, delivered_message_id)
+            if not _seed_live_delivery_sessions(t, delivered_message_id) and t.platform_name == "local":
+                delivery_errors.append(
+                    f"delivery error: desktop session write failed (target {t.where})")
     except Exception as e:
         err_msg = f"live adapter delivery to {t.where} failed: {e}"
         if not any(err_msg in err for err in target_errors):
@@ -1691,8 +1693,11 @@ def _prepare_target_delivery(
 
     # Mirror: origin, origin-less home fallback, user-written home, or explicit-target opt-in.
     origin_target = _target_matches_origin(origin, platform_name, chat_id, thread_id)
-    mirror_this_target = mirror_enabled and _target_mirror_eligible(
-        job, target, global_mirror=mirror_enabled, origin_match=origin_target)
+    if platform_name == "local":
+        mirror_this_target = True
+    else:
+        mirror_this_target = mirror_enabled and _target_mirror_eligible(
+            job, target, global_mirror=mirror_enabled, origin_match=origin_target)
     # Resolved for ANY origin match (not just mirror-enabled): the in_channel seed needs it too.
     origin_user_id = origin.get("user_id") if origin_target else None
 
