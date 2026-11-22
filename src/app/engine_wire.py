@@ -310,6 +310,8 @@ class EngineWire(QtCore.QObject):
     history_failed = QtCore.Signal(str, str)
     history_stale = QtCore.Signal(str)
     user_row_stamped = QtCore.Signal(int)
+    reaction_written = QtCore.Signal(dict)
+    reaction_failed = QtCore.Signal(dict)
     sessions_panel = QtCore.Signal(list)
     session_changed = QtCore.Signal(str, str)
     config_value = QtCore.Signal(str, str)
@@ -385,6 +387,7 @@ class EngineWire(QtCore.QObject):
         self._voice_jobs: dict[int, str] = {}
         self._next_id = 0
         self._pending: dict[int, str] = {}
+        self._reactions: dict[int, tuple] = {}
         self._session_id = ""
         self._session_ids: set[str] = set()
         self._pending_switch = ""
@@ -913,6 +916,17 @@ class EngineWire(QtCore.QObject):
     def request_display(self) -> None:
         """要一份 config.yaml 的 display 段：界面照它决定画不画思考段、工具行。"""
         self._call("config.get", {"key": "full", "session_id": self._session_id}, tag="config.get:full")
+
+    def react_to_message(self, params: dict, msg, before: list) -> None:
+        """把这一下写进库：先画的那颗已经上屏，回来那份列表才是准数。"""
+        if self._needs_attach():
+            self._ensure_session()
+            self.reaction_failed.emit({"msg": msg, "before": before})
+            return
+        payload = dict(params)
+        payload["session_id"] = self._session_id
+        rid = self._call("message.react", payload, tag="message.react")
+        self._reactions[rid] = (msg, before)
 
     def submit(self, text: str, queued: bool = True) -> None:
         """发一句话。会话没好（或正在起）就先攒着并去起会话，好了再发。
@@ -1711,6 +1725,14 @@ class EngineWire(QtCore.QObject):
                 self._attaching = False
             if isinstance(rid, int):
                 self._sent.pop(rid, None)
+            failed_reaction = self._reactions.pop(rid, None) if isinstance(rid, int) else None
+            if failed_reaction is not None:
+                msg, before = failed_reaction
+                logger.info("message.react 没写进去 id=%s %s", rid, message)
+                self.reaction_failed.emit(
+                    {"msg": msg, "before": before, "error": str(message)}
+                )
+                return
             if self._resp_error_head(tag, err, message):
                 return
             if self._resp_error_prompt(tag, err, code, message):
@@ -1739,8 +1761,23 @@ class EngineWire(QtCore.QObject):
             return
         if self._resp_model_chain(tag, rid, result):
             return
+        if self._resp_reaction(rid, result):
+            return
         if self._resp_tail_chain(tag, rid, result):
             return
+
+    def _resp_reaction(self, rid, result: dict) -> bool:
+        """引擎认了这一下：把它给的整份列表交给面板，顺手把行号认下来。"""
+        held = self._reactions.pop(rid, None) if isinstance(rid, int) else None
+        if held is None:
+            return False
+        msg, _before = held
+        self.reaction_written.emit({
+            "row_id": result.get("row_id"),
+            "reactions": result.get("reactions") or [],
+            "msg": msg,
+        })
+        return True
 
     def _resp_session_chain(self, tag: str, rid, result: dict) -> bool:
         if tag in {"session.create", "session.resume"}:

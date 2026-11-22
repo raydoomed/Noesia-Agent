@@ -22,7 +22,7 @@ import PySide6.QtCore as QtCore
 import PySide6.QtGui as QtGui
 import PySide6.QtWidgets as QtWidgets
 
-from app.tool_view.icons import ui_icon_svg
+from app.tool_view.icons import UI_PATHS, ui_icon_svg
 
 COPIED_RESET_MS = 1500
 
@@ -174,9 +174,19 @@ class HoverActionButton(QtWidgets.QToolButton):
         super().leaveEvent(event)
 
     def _set_icon(self, color: str) -> None:
-        """按给定颜色重画图标。刚点过还在显示 ✓ 的那 1.5 秒里不动它。"""
+        """按给定颜色重画图标。刚点过还在显示 ✓ 的那 1.5 秒里不动它。
+
+        图标名不是我们那套描边图标时，就当它是一颗字符（emoji）直接印上去。
+        """
         if self._flash and self._reset.isActive():
             return
+        if self._icon_name not in UI_PATHS:
+            self.setIcon(QtGui.QIcon())
+            self.setText(self._icon_name)
+            self.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonTextOnly)
+            return
+        self.setToolButtonStyle(QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.setText("")
         self.setIcon(svg_icon(self._icon_name, color, self.ICON_PX))
 
     def _show_tip(self) -> None:
@@ -213,12 +223,12 @@ class HoverActionButton(QtWidgets.QToolButton):
     def _clicked(self) -> None:
         self._slot()
         QtWidgets.QToolTip.hideText()
-        if not self._flash:
+        if not self._flash or self._icon_name not in UI_PATHS:
             return
         self.setIcon(svg_icon("check", self.DONE_COLOR, self.ICON_PX))
         self.setToolTip(self._done_tooltip)
         self._reset.start()
 
     def _back_to_idle(self) -> None:
-        self.setIcon(svg_icon(self._icon_name, self.IDLE_COLOR, self.ICON_PX))
+        self._set_icon(self.IDLE_COLOR)
         self.setToolTip(self._idle_tooltip)

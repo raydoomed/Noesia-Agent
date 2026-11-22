@@ -30,6 +30,7 @@ from app import (
     global_hotkey,
     markdown_render,
     media_links,
+    reactions,
     voice_input_prefs,
 )
 from app.chat_view import ChatView
@@ -1457,6 +1458,7 @@ class ChatPanel(QtWidgets.QWidget):
     """打字对话窗。"""
 
     submitted = QtCore.Signal(str, str)
+    reaction_requested = QtCore.Signal(dict, object, list)
     model_chosen = QtCore.Signal(str)
     models_refresh_requested = QtCore.Signal()
     model_settings_requested = QtCore.Signal()
@@ -3421,39 +3423,57 @@ class ChatPanel(QtWidgets.QWidget):
             self._hide_jump()
 
     @staticmethod
-    def _reaction_emojis(meta) -> list[str]:
-        """`display_metadata.reactions` → 要画的 emoji，按加上的先后、同一个只留一次。"""
-        out: list[str] = []
+    def _reaction_entries(meta) -> list[dict]:
+        """`display_metadata.reactions` → [{emoji, author}]，同一个人只算最后那一条。"""
+        out: list[dict] = []
         for entry in (meta or {}).get("reactions") or ():
-            if isinstance(entry, dict):
-                emoji = str(entry.get("emoji") or "").strip()
-                if emoji and emoji not in out:
-                    out.append(emoji)
+            if not isinstance(entry, dict):
+                continue
+            emoji = str(entry.get("emoji") or "").strip()
+            if not emoji:
+                continue
+            author = "agent" if entry.get("author") == "agent" else "user"
+            out = [e for e in out if e.get("author") != author]
+            out.append({"emoji": emoji, "author": author})
         return out
 
-    def append_reaction(self, meta, row_id: int | None = None) -> None:
-        """在这条你发的消息末尾补一行 emoji：气泡排版照旧，只在最后多一行小字。
+    def _reaction_html(self, msg: dict, entries: list[dict]) -> str:
+        """自己加的那颗能点回去（取消），Noesia 给的只显示。"""
+        index = next((i for i, item in enumerate(self._msgs) if item is msg), -1)
+        parts: list[str] = []
+        for slot, entry in enumerate(entries):
+            char = html.escape(str(entry.get("emoji") or ""))
+            if not char:
+                continue
+            if entry.get("author") == "user" and index >= 0:
+                parts.append(
+                    f"<a href='#rm:{index}:{slot}' style='text-decoration:none;'"
+                    f" title='点一下取消'>{char}</a>"
+                )
+            else:
+                parts.append(f"<span title='Noesia 加的'>{char}</span>")
+        return " ".join(parts)
 
-        实时来的（`message.reaction`）和历史重铺走同一条路，所以同一条消息被铺两遍也
-        只会有这一行：画过的 emoji 记在消息上，再来同一个就跳过。
-        """
-        fresh = self._reaction_emojis(meta)
-        if not fresh:
-            return
-        msg = None
+    def _find_msg_for_row(self, row_id: int | None) -> dict | None:
+        """这条行号落在哪条消息上：刚发出去那条还没回填行号，就认最近的一条。"""
         for item in reversed(self._msgs):
             if item.get("role") != "user":
                 continue
             if row_id is None or item.get("row_id") == row_id:
-                msg = item
-                break
-        if msg is None and row_id is not None:
-            # 刚发出去那条还没拿到行号（要等引擎回执才回填）：引擎的 react_to_message 点的就是
-            # 最近一条用户消息，精确匹配落空时认它，否则实时反应画不出来、切会话重铺才有。
-            for item in reversed(self._msgs):
-                if item.get("role") == "user" and item.get("row_id") is None:
-                    msg = item
-                    break
+                return item
+        if row_id is None:
+            return None
+        for item in reversed(self._msgs):
+            if item.get("role") == "user" and item.get("row_id") is None:
+                return item
+        return None
+
+    def append_reaction(self, meta, row_id: int | None = None) -> None:
+        """把这条消息身上的表情整体画一遍：历史和实时走同一条路，画几遍都长一个样。"""
+        entries = self._reaction_entries(meta)
+        if not entries:
+            return
+        msg = self._find_msg_for_row(row_id)
         if msg is None:
             logger.info(
                 "reaction 未匹配 row_id=%s 面板最近=%s",
@@ -3461,15 +3481,32 @@ class ChatPanel(QtWidgets.QWidget):
                 [item.get("row_id") for item in self._msgs][-5:],
             )
             return
-        drawn = list(msg.get("reactions") or ())
-        new = [emoji for emoji in fresh if emoji not in drawn]
-        if not new:
+        self.set_reactions(msg, entries)
+
+    def set_reactions(self, msg: dict, entries: list[dict]) -> None:
+        """回答那条：反应就长在表情按钮上，不另起一行；自己那条才在气泡下方落一行。"""
+        msg["reactions"] = entries
+        if msg.get("role") != "user":
+            self._refresh_bar_face(msg)
             return
+        text = self._reaction_html(msg, entries)
         block = msg.get("reaction_block")
+        if not text:
+            if block is not None and block.isValid():
+                cursor = QtGui.QTextCursor(block)
+                cursor.select(QtGui.QTextCursor.SelectionType.BlockUnderCursor)
+                cursor.removeSelectedText()
+                msg["reaction_block"] = None
+            self._refresh_bar_face(msg)
+            return
         if block is not None and block.isValid():
             cursor = QtGui.QTextCursor(block)
-            cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock)
-            cursor.insertText(" " + " ".join(new))
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.StartOfBlock)
+            cursor.movePosition(
+                QtGui.QTextCursor.MoveOperation.EndOfBlock,
+                QtGui.QTextCursor.MoveMode.KeepAnchor,
+            )
+            cursor.insertHtml(text)
         else:
             frame = msg.get("frame")
             if frame is None:
@@ -3477,11 +3514,31 @@ class ChatPanel(QtWidgets.QWidget):
             cursor = frame.lastCursorPosition()
             cursor.insertBlock()
             fmt = QtGui.QTextBlockFormat()
-            fmt.setTopMargin(2)
+            fmt.setTopMargin(4)
             cursor.setBlockFormat(fmt)
-            cursor.insertText(" ".join(new))
+            cursor.insertHtml(text)
             msg["reaction_block"] = cursor.block()
-        msg["reactions"] = drawn + new
+            self._rebind_bar_block(msg)
+        self._refresh_bar_face(msg)
+
+    def _rebind_bar_block(self, msg: dict) -> None:
+        """在动作条前面插了一行，那一块的位置就变了：按标记重新认回来。"""
+        block = msg.get("head_block")
+        while block is not None and block.isValid():
+            data = block.userData()
+            if isinstance(data, _BarMark) and data.msg is msg:
+                msg["bar_block"] = block
+                return
+            block = block.next()
+
+    def _refresh_bar_face(self, msg: dict) -> None:
+        """反应变了，动作条上那颗按钮跟着换：笑脸 ↔ 那颗 emoji。"""
+        buttons = msg.get("bar_buttons") or []
+        if not buttons or msg.get("role") != "assistant":
+            return
+        buttons[0].retarget(
+            self._reaction_face(msg), "表情", lambda: self._open_reaction_picker(msg)
+        )
 
     def _append_user_attachment(self, item: dict) -> None:
         """你发的附件留在气泡里：图片给缩略图，其它给一行文件名。"""
@@ -4236,7 +4293,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._insert_html(media_links.media_link_html(raw_path, self._media_roots) + "<br>")
 
     def _on_anchor(self, url: QtCore.QUrl) -> None:
-        """文档里的链接：折叠段的抬头（`#fold:N`）就地开合，其余是附件（用默认程序打开）。"""
+        """文档里的链接：折叠段的抬头（`#fold:N`）就地开合，表情点回去取消，其余是附件。"""
         target = url.fragment()
         if target.startswith("fold:"):
             fold = self._folds.get(int(target.split(":", 1)[1]))
@@ -4247,7 +4304,67 @@ class ChatPanel(QtWidgets.QWidget):
                 if following:
                     self._scroll_to_end_later()
             return
+        if target.startswith("rm:"):
+            self._retract_reaction(target)
+            return
         self._open_media(url)
+
+    def _double_click_reaction(self, pos: QtCore.QPoint) -> bool:
+        """双击一条回答就加那颗心；你发的话不接这个手势，压在链接或按钮上也不抢。"""
+        if self.view.anchorAt(pos) or self._over_hover_button():
+            return False
+        msg = self._msg_at_pos(pos)
+        if msg is None or msg.get("role") != "assistant":
+            return False
+        self.toggle_reaction(msg, reactions.DOUBLE_CLICK_REACTION)
+        return True
+
+    def _retract_reaction(self, target: str) -> None:
+        """点自己加的那颗：再点一次同一个就是取消。"""
+        parts = target.split(":")
+        if len(parts) != 3:
+            return
+        try:
+            index, slot = int(parts[1]), int(parts[2])
+        except ValueError:
+            return
+        if not 0 <= index < len(self._msgs):
+            return
+        msg = self._msgs[index]
+        entries = [dict(e) for e in (msg.get("reactions") or ()) if isinstance(e, dict)]
+        if not 0 <= slot < len(entries) or entries[slot].get("author") != "user":
+            return
+        self.toggle_reaction(msg, str(entries[slot].get("emoji") or ""))
+
+    def toggle_reaction(self, msg: dict, emoji: str | None) -> None:
+        """点了就先画上，随后落库；引擎回来的那份列表才算准，失败再退回原来的。"""
+        before: list[dict] = [dict(e) for e in (msg.get("reactions") or ()) if isinstance(e, dict)]
+        after = reactions.apply_reaction(before, emoji, "user")
+        if after == before:
+            return
+        self.set_reactions(msg, after)
+        params: dict = {"emoji": emoji, "author": "user"}
+        if msg.get("row_id") is None:
+            params["newest_role"] = msg.get("role") or "user"
+        else:
+            params["row_id"] = int(msg["row_id"])
+        self.reaction_requested.emit(params, msg, before)
+
+    def apply_reaction_result(self, payload: dict) -> None:
+        """引擎回的权威列表：顺手把行号回填到那条上，表情照它重画。"""
+        row_id = payload.get("row_id")
+        msg = self._find_msg_for_row(row_id)
+        if msg is None:
+            return
+        if row_id is not None and msg.get("row_id") is None:
+            msg["row_id"] = int(row_id)
+        self.set_reactions(msg, self._reaction_entries({"reactions": payload.get("reactions") or ()}))
+
+    def rollback_reaction(self, msg, before: list[dict]) -> None:
+        """落库没成：把刚才那一下画回去。"""
+        if msg is None:
+            return
+        self.set_reactions(msg, list(before or ()))
 
     def _open_media(self, url: QtCore.QUrl) -> None:
         path = url.toLocalFile()
@@ -8105,16 +8222,62 @@ class ChatPanel(QtWidgets.QWidget):
         return buttons
 
     def _bar_specs(self, msg: dict) -> list[tuple[str, str, Callable[[], None]]]:
-        """一条回答上摆「复制 + 刷新」，你发的那条摆「复制 + 重新发送」。"""
+        """答案上摆「表情 + 复制 + 刷新」；你发的那条只有「复制 + 重新发送」，表情走双击。"""
         if msg.get("role") == "user":
             return [
                 ("copy", "复制", lambda: self._copy_message(msg)),
                 ("resend", "重新发送", lambda: self._resend_message(msg)),
             ]
         return [
+            (self._reaction_face(msg), "表情", lambda: self._open_reaction_picker(msg)),
             ("copy", "复制", lambda: self._copy_message(msg)),
             ("refresh", "刷新", lambda: self._refresh_message(msg)),
         ]
+
+    @staticmethod
+    def _reaction_face(msg: dict) -> str:
+        """按钮上画什么：还没人加过就是笑脸，加过就把落到这条上的表情都印上去。"""
+        faces = [
+            str(entry["emoji"])
+            for entry in msg.get("reactions") or ()
+            if isinstance(entry, dict) and entry.get("emoji")
+        ]
+        return "".join(faces) if faces else "smile"
+
+    def _open_reaction_picker(self, msg: dict, at: QtCore.QPoint | None = None) -> None:
+        """弹挑选器：给了位置就落在鼠标那儿（右键），没给就落在消息左下角（表情按钮）。"""
+        spot = at
+        if spot is None:
+            buttons = msg.get("bar_buttons") or []
+            if not buttons:
+                return
+            head = buttons[0]
+            spot = head.mapTo(
+                self.view.viewport(), QtCore.QPoint(head.width(), 0)
+            )
+        mine = next((e for e in (msg.get("reactions") or ()) if e.get("author") == "user"), None)
+        picker = reactions.ReactionPicker(
+            self.view.viewport(), str((mine or {}).get("emoji") or "")
+        )
+        picker.picked.connect(lambda char, m=msg: self.toggle_reaction(m, char))
+        picker.adjustSize()
+        area = self.view.viewport().rect()
+        x = min(max(0, spot.x() - picker.width()), max(0, area.width() - picker.width()))
+        y = spot.y() - picker.height() - 6
+        if y < 0:
+            y = min(spot.y() + 8, max(0, area.height() - picker.height()))
+        picker.move(self.view.viewport().mapToGlobal(QtCore.QPoint(x, y)))
+        picker.show()
+
+    def _context_reaction(self, pos: QtCore.QPoint) -> bool:
+        """右键落在你发的那条上就弹表情挑选器；选中了字还是原来的复制菜单。"""
+        if self.view.textCursor().hasSelection():
+            return False
+        msg = self._msg_at_pos(pos)
+        if msg is None or msg.get("role") != "user":
+            return False
+        self._open_reaction_picker(msg, pos)
+        return True
 
     def _place_msg_bars(self) -> None:
         """请求摆一次动作条（入口）：同一拍里叫多少次都攒成一次。
@@ -8505,6 +8668,12 @@ class ChatPanel(QtWidgets.QWidget):
             return super().eventFilter(obj, event)
         if obj is self.view.viewport():
             kind = event.type()
+            if kind is QtCore.QEvent.Type.MouseButtonDblClick:
+                if self._double_click_reaction(event.position().toPoint()):
+                    return True
+            if kind is QtCore.QEvent.Type.ContextMenu:
+                if self._context_reaction(event.pos()):
+                    return True
             if kind is QtCore.QEvent.Type.Resize:
                 QtCore.QTimer.singleShot(0, self._place_msg_bars)
             if kind is QtCore.QEvent.Type.MouseMove:

@@ -1250,6 +1250,10 @@ class FloatingAvatar(QtWidgets.QWidget):  # type: ignore[misc]
             self.chat_panel = ChatPanel(None)
             self.chat_panel.set_media_roots(media_roots())
             self.chat_panel.submitted.connect(self._send_user_text)
+            self.chat_panel.reaction_requested.connect(
+                lambda params, msg, before: self.client
+                and self.client.react_to_message(params, msg, before)
+            )
             self.chat_panel.model_chosen.connect(self.choose_model)
             self.chat_panel.models_refresh_requested.connect(self.refresh_models)
             self.chat_panel.new_session_requested.connect(self.request_new_session)
@@ -2924,6 +2928,13 @@ def main() -> int:
     wire.message_reaction.connect(
         lambda payload: window.chat_panel and window.chat_panel.append_reaction(
             payload, row_id=payload.get("row_id") if isinstance(payload.get("row_id"), int) else None)
+    )
+    wire.reaction_written.connect(
+        lambda payload: window.chat_panel and window.chat_panel.apply_reaction_result(payload)
+    )
+    wire.reaction_failed.connect(
+        lambda payload: window.chat_panel and window.chat_panel.rollback_reaction(
+            payload.get("msg"), payload.get("before") or [])
     )
     wire.processes.connect(lambda rows: window.chat_panel and window.chat_panel.set_processes(rows))
     wire.voice_text.connect(
