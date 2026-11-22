@@ -580,12 +580,18 @@ class EngineWire(QtCore.QObject):
         """挂回一场已有会话；返回「这一帧真发出去了没有」（同 `create_session`）。"""
         if self._attaching:
             return False
+        # 切到别场才算换：同一场重挂（引导里引擎换 id、历史 404 重挂）得把认过的 id 留着。
+        switching = bool(session_id) and session_id != self._stored_id
         self._stored_id = session_id or self._stored_id
         self._attaching = True
         self._attach_since = time.monotonic()
         # 这一条挂载想要的会话：迟到的旧挂载回包不能把 `_session_id` 拉回上一场
         # （开场新建会话后，启动时那条 resume 的回包晚到，之后打的字就进了旧聊天）。
         self._attach_want = session_id or ""
+        # 切到别场：集合当场上只剩这一场，上一场的帧（后台 cron、别的聊天）从这一刻起丢，
+        # 不然它们会画在刚打开的面板上。
+        if switching:
+            self._session_ids = {session_id}
         self.reasoning_pending.emit(True)
         rid = self._call("session.resume", {"session_id": session_id, "source": SESSION_SOURCE,
                                             "omit_messages": True, "defer_history": True},
@@ -1374,11 +1380,16 @@ class EngineWire(QtCore.QObject):
         if self._onboarding_started and stored_id and not same_stored and session_id:
             logger.info("skip late attach during onboarding: %s", session_id[:12])
             return False
+        if self._session_ids and stored_id and not same_stored:
+            # 落地的是另一场：上一场认过的 id 全部作废
+            self._session_ids.clear()
         self._session_id = session_id
         if session_id:
             self._session_ids.add(session_id)
         if stored_id:
             self._stored_id = stored_id
+        if self._stored_id:
+            self._session_ids.add(self._stored_id)
         logger.info("session ready stored=%s runtime=%s", self._stored_id, self._session_id)
         # 在飞的那条落地了：如果它落地的不是我们真正想待的那一场（开场新建的那场），补挂过去。
         after, self._attach_after = self._attach_after, ""
@@ -1769,7 +1780,7 @@ class EngineWire(QtCore.QObject):
             # 会话落盘那一步，之后会换一套——所以下面还要挂回去拿真的那个。
             self._session_id = str(result.get("session_id") or self._session_id)
             if self._session_id:
-                self._session_ids.add(self._session_id)
+                self._session_ids = {self._session_id}
             if stored:
                 self._stored_id = stored
             self.notice_clear.emit("setup")
@@ -2122,8 +2133,10 @@ class EngineWire(QtCore.QObject):
         kind = params.get("type") or ""
         sid = str(params.get("session_id") or "")
         if sid and self._session_ids and sid not in self._session_ids:
-            logger.info("丢帧 %s sid=%s 当前=%s", kind, sid, self._session_id)
-            return
+            # 投递回执的通知卡设计上就跟当前开着哪场无关（只弹卡、不进正文），别把它拦掉。
+            if kind != "session.appended":
+                logger.info("丢帧 %s sid=%s 当前=%s", kind, sid, self._session_id)
+                return
         payload = params.get("payload") or {}
         for holder in (params, payload):
             gen = holder.get("execution_generation") if isinstance(holder, dict) else None
