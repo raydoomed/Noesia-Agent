@@ -2244,7 +2244,13 @@ class EngineWire(QtCore.QObject):
         elif kind == "request.cancel":
             self.request_cancelled.emit(str(payload.get("method") or ""), str(payload.get("id") or ""))
         elif kind == "session.reclaimed":
-            self._session_id = ""
+            # 引擎回收任何一场会话都广播这条（外层 session_id 是空串，载荷里才带 id 和存储 id）。
+            # 不比对就清，等于别的会话一被回收就把手上这场当成没了：下一条消息先 resume 一轮
+            # （消息排队、界面闪一下），还没拿到存储 id 的会话干脆重开一场。
+            gone = str(payload.get("session_id") or "")
+            gone_stored = str(payload.get("stored_session_id") or "")
+            if (gone and gone == self._session_id) or (gone_stored and gone_stored == self._stored_id):
+                self._session_id = ""
         elif kind == "onboarding.ended":
             run_id = str(payload.get("run_id") or "")
             if not run_id or not self._onboarding_run or run_id == self._onboarding_run:
