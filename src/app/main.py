@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import ctypes
+import faulthandler
 import logging
 import os
 import threading
@@ -26,6 +27,7 @@ from .status_stack import CONFIRM_TTL_MS
 logger = logging.getLogger(__name__)
 
 _CRASH_LOGGING_INSTALLED = False
+_FAULTHANDLER_FILE = None
 
 _MENU_QSS = """
 QMenu {
@@ -2732,6 +2734,36 @@ def _install_crash_logging() -> None:
         log.log(level, "Qt: %s", message)
 
     QtCore.qInstallMessageHandler(_qt_message)
+    _install_faulthandler(log)
+
+
+def _install_faulthandler(log: logging.Logger) -> None:
+    """原生崩溃（访问违例、SIGSEGV）也要留下 Python 栈。
+
+    `sys.excepthook` 只接得住 Python 异常；Qt 里的野指针一崩，进程当场没了，
+    gui.log 停在那儿一个字不写（2026-11-22 切会话闪退就是这样，只剩一个 .dmp）。
+    faulthandler 是 C 层的处理器，崩的瞬间把**每个线程**的 Python 栈写到
+    `data/runtime/crash-python.log`，拿它去对时间点就能定位到当时在跑哪个函数。
+    """
+    global _FAULTHANDLER_FILE
+    if _FAULTHANDLER_FILE is not None:
+        return
+    try:
+        base = ""
+        for handler in logging.getLogger().handlers:
+            base = str(getattr(handler, "baseFilename", "") or "")
+            if base.endswith("gui.log"):
+                break
+        if not base:
+            log.warning("faulthandler 没装上：找不到 gui.log 的路径")
+            return
+        path = Path(base).with_name("crash-python.log")
+        handle = open(path, "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=handle, all_threads=True)
+        _FAULTHANDLER_FILE = handle
+        log.info("faulthandler 已启用：%s", path)
+    except Exception:  # noqa: BLE001 — 记不上也不能拖垮启动
+        log.exception("faulthandler 没装上")
 
 
 def main() -> int:
