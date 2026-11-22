@@ -862,14 +862,9 @@ def _hud_surface_note(session: dict) -> str:
 
 
 def _prepend_note(run_message: Any, note: str) -> Any:
-    """Prefix a per-turn note onto the MODEL INPUT, leaving the prompt alone: everything the model must know that the
-    user did not type (interrupted reply, reactions, surface) arrives this way, so no scaffolding reaches the
-    transcript and no sent message is rewritten — the cached prefix survives."""
-    if note and isinstance(run_message, str):
-        return f"{note}\n\n{run_message}"
-    if note and isinstance(run_message, list):
-        return [{"type": "text", "text": note}, *run_message]
-    return run_message
+    """Prefix a per-turn note onto the MODEL INPUT — see ``noesia_state_messages.prepend_note``."""
+    from noesia_state_messages import prepend_note
+    return prepend_note(run_message, note)
 
 
 def register(server) -> None:

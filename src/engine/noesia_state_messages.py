@@ -119,6 +119,48 @@ def _stale_holder(row, now: float) -> bool:
     return float(row["expires_at"]) <= now or _compression_lock_holder_process_is_dead(row["holder"])
 
 
+def prepend_note(run_message: Any, note: str) -> Any:
+    """Fold a per-turn note onto the MODEL INPUT, leaving the prompt and transcript alone.
+
+    Applies to every transport that hands the model more than the user typed (interrupted reply,
+    reactions, surface): the note reaches the model without being persisted or rewriting a sent
+    message, so the cached prefix survives. A content-part list keeps its shape — the note joins
+    the first text part, or leads the list when there is none."""
+    note = str(note or "").strip()
+    if not note:
+        return run_message
+    if isinstance(run_message, str):
+        return f"{note}\n\n{run_message}" if run_message else note
+    if isinstance(run_message, list):
+        parts = list(run_message)
+        for i, part in enumerate(parts):
+            if isinstance(part, dict) and part.get("type") == "text":
+                text = part.get("text", "")
+                parts[i] = {**part, "text": f"{note}\n\n{text}" if text else note}
+                return parts
+        return [{"type": "text", "text": note}, *parts]
+    return run_message
+
+
+def format_reaction_notes(pending: list[dict[str, Any]]) -> str:
+    """Model-input notes for reactions the user left, one line each.
+
+    A row with text is quoted back (trimmed to 120 chars) so the model knows which message was
+    reacted to; an attachment-only or tool-call-only row gets the unquoted form."""
+    notes = []
+    for entry in pending or ():
+        snippet = (entry.get("text") or "").strip().replace("\n", " ")
+        if len(snippet) > 120:
+            snippet = snippet[:120] + "…"
+        emoji = entry.get("emoji") or ""
+        whose = "their own" if entry.get("role") == "user" else "your"
+        if snippet:
+            notes.append(f'[The user reacted {emoji} to {whose} message: "{snippet}"]')
+        else:
+            notes.append(f"[The user reacted {emoji} to {whose} earlier message]")
+    return "\n".join(notes)
+
+
 class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
     """Message append/replace/rewind, reactions, resume conversations, replay dedupe (detached results: the base)."""
 

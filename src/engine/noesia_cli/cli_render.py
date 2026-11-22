@@ -838,25 +838,9 @@ def _cprint(text: str):
 
 
 def _prepend_note_to_message(message, note: str):
-    """Prepend a one-shot note to a user message (str, or content-part list when an image is attached).
-
-    For lists the note is folded into the first text part or inserted as a leading one.
-    Unknown shapes are returned unchanged.
-    """
-    note = str(note or "").strip()
-    if not note:
-        return message
-    if isinstance(message, str):
-        return f"{note}\n\n{message}" if message else note
-    if isinstance(message, list):
-        parts = list(message)
-        for i, part in enumerate(parts):
-            if isinstance(part, dict) and part.get("type") == "text":
-                text = part.get("text", "")
-                parts[i] = {**part, "text": f"{note}\n\n{text}" if text else note}
-                return parts
-        return [{"type": "text", "text": note}, *parts]
-    return message
+    """Prepend a one-shot note to a user message — see ``noesia_state_messages.prepend_note``."""
+    from noesia_state_messages import prepend_note
+    return prepend_note(message, note)
 
 
 def _pt_app_is_running() -> bool:

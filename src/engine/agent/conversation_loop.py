@@ -34,7 +34,7 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, runtime_host_value, stage_surface_switch_note,
 )
-from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
+from agent.turn_context import PreflightCompressionTimedOut, build_turn_context, stage_reaction_note
 from noesia_cli.observability.shared_metrics_efficiency import record_cache_break, record_prompt_rebuild
 from agent.turn_retry_state import TurnRetryState
 from agent.turn_scripted_prelude import Prelude, play_prelude
@@ -1618,6 +1618,7 @@ def _run_conversation_turn(
         logger.debug("per-turn env credential refresh failed", exc_info=True)
 
     # Per-turn setup: build_turn_context mutates ``agent`` and returns the locals the loop reads.
+    stage_reaction_note(agent)
     try:
         _ctx = build_turn_context(
             agent, user_message, system_message, conversation_history, task_id,
