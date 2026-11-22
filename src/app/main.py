@@ -2875,6 +2875,12 @@ def main() -> int:
         # 首屏答完就露脸；引擎哪条答不上来也别把人闷在动画里，3 秒后照常放人。
         QtCore.QTimer.singleShot(3000, window.finish_boot)
 
+    def _answer_window_read(payload: dict) -> None:
+        from app import window_probe
+        wire.answer_window_read(payload.get("reply_id"),
+                                window_probe.read_window_below(int(window.winId())))
+
+    wire.window_read.connect(_answer_window_read)
     wire.ready.connect(_after_ready)
     wire.attachment_failed.connect(window._attachment_problem)
     wire.sessions_panel.connect(window.on_sessions_panel)
@@ -2915,6 +2921,10 @@ def main() -> int:
     )
     wire.secret_prompt.connect(window.on_secret_request)
     wire.reaction.connect(window.on_reaction)
+    wire.message_reaction.connect(
+        lambda payload: window.chat_panel and window.chat_panel.append_reaction(
+            payload, row_id=payload.get("row_id") if isinstance(payload.get("row_id"), int) else None)
+    )
     wire.processes.connect(lambda rows: window.chat_panel and window.chat_panel.set_processes(rows))
     wire.voice_text.connect(
         lambda path, text: window.chat_panel and window.chat_panel.apply_voice_transcript(text, path)

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from noesia_cli.config_defaults import DEFAULT_CONFIG
+from tools.agent_dispatch_tools import agent_dispatched_tool_names
 from tools.registry import tool_error
 from toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSET_SESSION_PLATFORMS
 from tools.tool_search_catalog import (
@@ -147,16 +148,20 @@ _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defe
 def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
     """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
     user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
-    plugin tool). Bridge names never defer."""
+    plugin tool). Bridge names and agent-dispatched tools never defer — the bridge has no
+    agent context, so a deferred agent tool is simply gone."""
     if name in BRIDGE_TOOL_NAMES:
+        return False
+    if name in agent_dispatched_tool_names():
+        return False
+    toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
+    if toolset is None:
         return False
     if defer_tools is not None and name in defer_tools:
         return True
     if name in _core_tool_names():
         return False
-    toolset = _registry_toolset(name)  # None (unregistered/malformed) never defers
-    return toolset is not None and (
-        toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS)
+    return toolset.startswith("mcp-") or toolset not in _DIRECT_SURFACE_TOOLSETS
 
 
 def _tool_def_names(tool_defs: Iterable[dict[str, Any]]) -> Iterable[str]:

@@ -3204,7 +3204,9 @@ class ChatPanel(QtWidgets.QWidget):
             return
         if str(item.get("role") or "") == "user":
             row_id = item.get("row_id")
-            self.append_user(text, row_id=row_id if isinstance(row_id, int) else None)
+            row_id = row_id if isinstance(row_id, int) else None
+            self.append_user(text, row_id=row_id)
+            self.append_reaction(item.get("display_metadata"), row_id=row_id)
         else:
             self.append_chunk(text, replay=True)
             self.end_assistant()
@@ -3417,6 +3419,69 @@ class ChatPanel(QtWidgets.QWidget):
             self._follow = True
             self._scroll_to_end_later()
             self._hide_jump()
+
+    @staticmethod
+    def _reaction_emojis(meta) -> list[str]:
+        """`display_metadata.reactions` → 要画的 emoji，按加上的先后、同一个只留一次。"""
+        out: list[str] = []
+        for entry in (meta or {}).get("reactions") or ():
+            if isinstance(entry, dict):
+                emoji = str(entry.get("emoji") or "").strip()
+                if emoji and emoji not in out:
+                    out.append(emoji)
+        return out
+
+    def append_reaction(self, meta, row_id: int | None = None) -> None:
+        """在这条你发的消息末尾补一行 emoji：气泡排版照旧，只在最后多一行小字。
+
+        实时来的（`message.reaction`）和历史重铺走同一条路，所以同一条消息被铺两遍也
+        只会有这一行：画过的 emoji 记在消息上，再来同一个就跳过。
+        """
+        fresh = self._reaction_emojis(meta)
+        if not fresh:
+            return
+        msg = None
+        for item in reversed(self._msgs):
+            if item.get("role") != "user":
+                continue
+            if row_id is None or item.get("row_id") == row_id:
+                msg = item
+                break
+        if msg is None and row_id is not None:
+            # 刚发出去那条还没拿到行号（要等引擎回执才回填）：引擎的 react_to_message 点的就是
+            # 最近一条用户消息，精确匹配落空时认它，否则实时反应画不出来、切会话重铺才有。
+            for item in reversed(self._msgs):
+                if item.get("role") == "user" and item.get("row_id") is None:
+                    msg = item
+                    break
+        if msg is None:
+            logger.info(
+                "reaction 未匹配 row_id=%s 面板最近=%s",
+                row_id,
+                [item.get("row_id") for item in self._msgs][-5:],
+            )
+            return
+        drawn = list(msg.get("reactions") or ())
+        new = [emoji for emoji in fresh if emoji not in drawn]
+        if not new:
+            return
+        block = msg.get("reaction_block")
+        if block is not None and block.isValid():
+            cursor = QtGui.QTextCursor(block)
+            cursor.movePosition(QtGui.QTextCursor.MoveOperation.EndOfBlock)
+            cursor.insertText(" " + " ".join(new))
+        else:
+            frame = msg.get("frame")
+            if frame is None:
+                return
+            cursor = frame.lastCursorPosition()
+            cursor.insertBlock()
+            fmt = QtGui.QTextBlockFormat()
+            fmt.setTopMargin(2)
+            cursor.setBlockFormat(fmt)
+            cursor.insertText(" ".join(new))
+            msg["reaction_block"] = cursor.block()
+        msg["reactions"] = drawn + new
 
     def _append_user_attachment(self, item: dict) -> None:
         """你发的附件留在气泡里：图片给缩略图，其它给一行文件名。"""
@@ -7350,7 +7415,15 @@ class ChatPanel(QtWidgets.QWidget):
             self._open_zone(zone, block)
 
     def _zone_at(self, pos: QtCore.QPoint) -> tuple[tuple | None, QtGui.QTextBlock | None]:
-        """鼠标此刻落在哪个区域。只认区域，不碰按钮。"""
+        """鼠标此刻落在哪个区域。只认区域，不碰按钮。
+
+        工具正文那几块是盖在正文上的独立滚动控件，主文档在它们底下的位置是折叠卡抬头：
+        照文档判（`_block_at`）永远落不到正文区，鼠标一进那块按钮就没了。所以先按矩形
+        问它们一次，命中就直接是 `body`。
+        """
+        body = self._body_zone_at(pos)
+        if body is not None:
+            return body
         block = self._block_at(pos)
         if block is None or not block.isValid():
             return None, None
@@ -7363,6 +7436,25 @@ class ChatPanel(QtWidgets.QWidget):
         if isinstance(mark, disclosure._BodyMark):
             return ("body", mark.key), block
         return None, block
+
+    def _body_zone_at(self, pos: QtCore.QPoint) -> tuple[tuple, QtGui.QTextBlock | None] | None:
+        """鼠标落在某个工具正文的滚动块矩形里：那块自己算一个区域。
+
+        按控件自己的矩形认，不用里面 viewport 的：viewport 尺寸要等 `resizeEvent` 走完才
+        跟上，滚动/重排那一瞬会小一圈，边缘就会漏判成「谁都不在」。收起的折叠卡也留着这个
+        控件（只是隐藏），不跳过它就把鼠标底下那片全吞了。
+        """
+        for fold in self._folds.all():
+            scroll: Any = fold.scroll
+            if scroll is None or scroll.isHidden():
+                continue
+            top_left = scroll.mapTo(self.view.viewport(), QtCore.QPoint(0, 0))
+            if QtCore.QRect(top_left, scroll.size()).contains(pos):
+                head = fold.head_block
+                if head is None or not head.isValid():
+                    head = self.view.document().firstBlock()
+                return ("body", fold.key), head
+        return None
 
     def _open_zone(self, zone: tuple, block: QtGui.QTextBlock) -> None:
         """给当前区域亮它自己那颗按钮。别的区域的按钮在这条路径上根本不出现。"""
@@ -7379,8 +7471,8 @@ class ChatPanel(QtWidgets.QWidget):
             self._show_hover_download(zone[1], zone[2])
         elif kind == "body":
             mark = block.userData()
-            if isinstance(mark, disclosure._BodyMark):
-                self._open_body_zone(block, mark.key)
+            key = mark.key if isinstance(mark, disclosure._BodyMark) else zone[1]
+            self._open_body_zone(block, key)
 
     def _open_body_zone(self, block: QtGui.QTextBlock, key: int) -> None:
         """工具输出正文：能复制就给复制，另外有 diff 才给「看完整 diff」。"""
@@ -8164,8 +8256,8 @@ class ChatPanel(QtWidgets.QWidget):
             if head is None:
                 return None
             frame = msg.get("frame")
-            if frame is not None:
-                box = layout.frameBoundingRect(frame).translated(0, -offset)
+            box = self._msg_box(frame) if frame is not None else None
+            if frame is not None and box is not None:
                 fmt = frame.frameFormat()
                 box = box.adjusted(
                     fmt.leftMargin(), fmt.topMargin(), -fmt.rightMargin(), -fmt.bottomMargin()
@@ -8196,18 +8288,59 @@ class ChatPanel(QtWidgets.QWidget):
         return room
 
     def _msg_at_pos(self, pos: QtCore.QPoint) -> dict | None:
-        """鼠标压在哪条消息上：问光标落在哪一块，再顺着块往前找它的开头。
+        """鼠标压在哪条消息上：只认真正压在它身上。
 
-        往前找而不是往后：鼠标压在消息的正文/工具块上要认成这条消息，压在两条消息之间
-        的空白（第一条上面那种）就该是谁都不认，不能顺手把下一条算进来。
+        往前找是为了不把下面那条算进来，但「最近的一条」不等于「鼠标这一条」——鼠标在工具
+        正文上、在两条消息之间的空白里、在气泡外面的余白里，都能顺着块往前摸到上面那条，
+        于是点亮一条根本没被指着的消息。所以两件事分开做：工具正文盖在正文上，先让开；
+        摸到消息之后，还要它自己的矩形真的把鼠标包住才算。
         """
+        if self._body_zone_at(pos) is not None:
+            return None
         block = self._block_at(pos)
+        if block is None or not block.isValid():
+            return None
+        nxt = block.next()
+        if nxt is not None and nxt.isValid():
+            msg = self._msg_of_block(nxt)
+            if msg is not None and self._msg_hit(msg, pos):
+                return msg
         while block is not None and block.isValid():
             msg = self._msg_of_block(block)
             if msg is not None:
-                return msg
+                return msg if self._msg_hit(msg, pos) else None
             block = block.previous()
         return None
+
+    def _msg_hit(self, msg: dict, pos: QtCore.QPoint) -> bool:
+        """这个点在不在消息自己占的那块地方。
+
+        有框的那条（你发的）：框就是它的范围，连框里那圈内边距一起算——鼠标从字上滑到
+        框内留白不该把按钮收掉。回复没有框，整行正文按块的范围算。
+        """
+        frame = msg.get("frame")
+        if frame is not None:
+            box = self._msg_box(frame)
+            if box is not None:
+                return box.contains(pos)
+        head = msg.get("head_block")
+        if head is None or not head.isValid():
+            return True
+        bar = msg.get("bar_block")
+        end = bar if bar is not None and bar.isValid() else head
+        return self._block_rect(head, end).contains(pos)
+
+    def _msg_box(self, frame: QtGui.QTextFrame) -> QtCore.QRectF | None:
+        """消息框在视口里的整块矩形。
+
+        框本身就是这条消息的地方，框里那圈内边距也算——所以不裁 margin，直接取 frame 的
+        外框。`_msg_corner` 用它算按钮落点，那边按行高收窄是另一件事。
+        """
+        try:
+            box = self.view.document().documentLayout().frameBoundingRect(frame)
+        except RuntimeError:
+            return None
+        return box.translated(0, -self.view.verticalScrollBar().value())
 
     def _show_msg_bar(self, msg: dict | None) -> None:
         """只亮鼠标所在那条的动作条，其余收起来（按钮也是这一刻才建，见 `_mount_msg_bar`）。"""

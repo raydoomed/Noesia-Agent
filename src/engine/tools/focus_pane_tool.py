@@ -24,6 +24,7 @@ def focus_pane_tool(pane: str) -> str:
 registry.register(
     name="focus_pane",
     toolset="desktop_ui",
+    check_fn=lambda: False,
     schema={
         "name": "focus_pane",
         "description": (

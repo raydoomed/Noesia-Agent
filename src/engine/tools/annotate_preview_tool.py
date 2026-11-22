@@ -90,6 +90,7 @@ ANNOTATE_PREVIEW_SCHEMA = {
 registry.register(
     name="annotate_preview",
     toolset="desktop_ui",
+    check_fn=lambda: False,
     schema=ANNOTATE_PREVIEW_SCHEMA,
     handler=lambda args, **kw: annotate_preview_tool(
         action=args.get("action", "add"),

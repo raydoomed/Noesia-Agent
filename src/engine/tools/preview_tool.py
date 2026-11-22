@@ -72,6 +72,7 @@ PREVIEW_SCHEMA = {
 registry.register(
     name="desktop_preview",
     toolset="desktop_ui",
+    check_fn=lambda: False,
     schema=PREVIEW_SCHEMA,
     handler=_handle_preview,
     emoji="🖼️",

@@ -340,6 +340,7 @@ class EngineWire(QtCore.QObject):
     clarify_expired = QtCore.Signal(str)
     approval = QtCore.Signal(dict)
     setup_beat = QtCore.Signal(dict)
+    window_read = QtCore.Signal(dict)
     key_saved = QtCore.Signal(str)
     notice = QtCore.Signal(str)
     notice_show = QtCore.Signal(dict)
@@ -347,6 +348,7 @@ class EngineWire(QtCore.QObject):
     clarify = QtCore.Signal(dict)
     secret_prompt = QtCore.Signal(dict)
     reaction = QtCore.Signal(str)
+    message_reaction = QtCore.Signal(dict)
     approvals_cancelled = QtCore.Signal(list)
     request_cancelled = QtCore.Signal(str, str)
     processes = QtCore.Signal(list)
@@ -784,6 +786,8 @@ class EngineWire(QtCore.QObject):
                 "tool_call_id": None,
                 "labels": None,
                 "reasoning": str(row.get("reasoning") or row.get("reasoning_content") or ""),
+                # 反应（`react_to_message`）落在这一格里：历史重铺要从它把 emoji 画回气泡。
+                "display_metadata": row.get("display_metadata") or {},
             })
         return out
 
@@ -1102,6 +1106,12 @@ class EngineWire(QtCore.QObject):
         if sid:
             self._call("onboarding.skip", {"session_id": sid}, tag="onboarding.skip")
         self._reply(reply_id, {})
+
+    def answer_window_read(self, reply_id, payload: dict) -> None:
+        """`window.read` 的答复：契约是 `ValueResult`，窗口元数据以 JSON 文本放进 `value`。"""
+        if not reply_id:
+            return
+        self._reply(reply_id, {"value": json.dumps(payload, ensure_ascii=False)})
 
     def set_model(self, model: str, token: str = "") -> None:
         """`token` 只进 tag：设置窗每一轮带一个编号，迟到的上一轮回执才认得出来。"""
@@ -1667,6 +1677,9 @@ class EngineWire(QtCore.QObject):
             params["method"] = method
             params["reply_id"] = frame.get("id")
             self.secret_prompt.emit(params)
+            return
+        if method == "window.read":
+            self.window_read.emit(params)
             return
         if method == "clarify":
             # 批量提问：桌面自己提交时带 `clarify_batch: True`，引擎就把整批问题当**一个** srq 请求发，
@@ -2263,6 +2276,9 @@ class EngineWire(QtCore.QObject):
             return
         elif kind == "reaction":
             self.reaction.emit(str(payload.get("kind") or ""))
+            return
+        elif kind == "message.reaction":
+            self.message_reaction.emit(dict(payload))
             return
         elif kind in {"notice", "error"}:
             text = str(payload.get("message") or payload.get("text") or "")

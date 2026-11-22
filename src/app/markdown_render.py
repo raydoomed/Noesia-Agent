@@ -161,8 +161,10 @@ def _style_quotes(markup: str) -> str:
             depth = max(0, depth - 1)
             continue
         if depth:
+            # 段间距不能压成 0：每段各自铺一块底色，首尾相接就成了一条连续灰带，看不出是几段
+            # 引用。留 6px 让段与段之间有透气的位置。
             style = (
-                f"margin-top:0;margin-bottom:0;margin-left:{QUOTE_INDENT * depth}px;"
+                f"margin-top:0;margin-bottom:6px;margin-left:{QUOTE_INDENT * depth}px;"
                 f"background-color:{QUOTE_BG};color:{QUOTE_FG};"
             )
             for plain_p in ("<p>", "<p style='margin:0;'>"):

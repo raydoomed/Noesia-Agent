@@ -855,6 +855,9 @@ DEFAULT_CONFIG = {
         "tui_auto_resume_recent": False,
         # Desktop reopens the last chat/page on cold start (also in Settings → Appearance).
         "resume_last_session": True,
+        # The agent may react to the user's messages with a single emoji; the desktop renders it
+        # on the bubble. Off hides react_to_message entirely.
+        "message_reactions": True,
         # One-time TUI hint ("subagents working · /agents to watch live") on first delegation.
         "tui_agents_nudge": True,
         "bell_on_complete": False,
@@ -1991,13 +1994,11 @@ DEFAULT_CONFIG = {
             # Tools replaced by the bridge by default. This list intentionally includes cold,
             # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
+            # Agent-dispatched and GUI-surface tools stay out: the bridge carries no agent
+            # context, so deferring one hides a tool the model can still be asked to use.
             "defer": [
-                "computer_use", "session_search", "image_generate",
-                "todo_list", "process_manage", "cronjob_manage", "browser_vault",
-                # Desktop GUI surface (desktop_ui, project and catalog toolsets)
-                "drive_preview", "gui_tour", "desktop_preview", "annotate_preview", "manage_catalog",
-                "show_tip", "desktop_project", "close_terminal",
-                "set_theme", "read_terminal", "read_window_below", "focus_pane",
+                "computer_use", "image_generate", "process_manage",
+                "cronjob_manage", "browser_vault", "desktop_project",
             ],
         },
     },

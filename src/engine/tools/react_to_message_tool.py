@@ -6,10 +6,13 @@ defaults to the triggering message and emits ``message.reaction`` for live paint
 
 import contextlib
 import json
+import logging
 
 from gateway.session_context import get_session_env
 from tools import desktop_ui
 from tools.registry import registry, tool_error
+
+logger = logging.getLogger(__name__)
 
 
 def _open_session_db():
@@ -50,8 +53,28 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
             return tool_error(f"Message {row_id} is not part of this conversation.")
         # Paint it live; a missing bridge (non-desktop) is not an error — the reaction is
         # persisted. `role` lets the renderer match a live message without a durable row id.
-        with contextlib.suppress(Exception):
-            desktop_ui.emit("message.reaction", {"row_id": int(row_id), "reactions": reactions, "role": target_role})
+        # 不吞异常：这一步断在哪儿只能从日志看出来（没挂窗口 / 帧被当别场会话丢掉）。
+        try:
+            pushed = desktop_ui.emit(
+                "message.reaction",
+                {"row_id": int(row_id), "reactions": reactions, "role": target_role},
+            )
+        except Exception:
+            logger.exception("message.reaction 派发异常 row_id=%s", row_id)
+        else:
+            if pushed:
+                logger.info(
+                    "message.reaction 已派发 row_id=%s sid=%s",
+                    row_id,
+                    get_session_env("NOESIA_SESSION_ID", "")
+                    or get_session_env("NOESIA_UI_SESSION_ID", ""),
+                )
+            else:
+                logger.warning(
+                    "message.reaction 没有出口 row_id=%s："
+                    "no Noesia desktop window is attached to this turn",
+                    row_id,
+                )
         return json.dumps({"success": True, "row_id": int(row_id), "reactions": reactions}, ensure_ascii=False)
     finally:
         with contextlib.suppress(Exception):

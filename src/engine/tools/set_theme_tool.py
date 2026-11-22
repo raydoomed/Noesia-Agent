@@ -90,6 +90,7 @@ SET_THEME_SCHEMA = {
 registry.register(
     name="set_theme",
     toolset="desktop_ui",
+    check_fn=lambda: False,
     schema=SET_THEME_SCHEMA,
     handler=lambda args, **kw: set_theme_tool(
         callback=kw.get("callback"), **{k: args.get(k) for k in ("accent", "mode", "layout", "picker")}),

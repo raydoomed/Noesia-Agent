@@ -46,6 +46,7 @@ CLOSE_TERMINAL_SCHEMA = {
 registry.register(
     name="close_terminal",
     toolset="desktop_ui",
+    check_fn=lambda: False,
     schema=CLOSE_TERMINAL_SCHEMA,
     handler=lambda args, **kw: close_terminal_tool(process_id=args.get("process_id", "")),
     emoji="🖥️",

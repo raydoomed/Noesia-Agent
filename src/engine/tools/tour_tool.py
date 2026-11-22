@@ -2,15 +2,16 @@
 steps runs the app's own built-in tour (``preset`` quick or full); for a custom one the agent
 discovers targets (``action="targets"``), then highlights one step at a time (``show``) or hands
 over a step list the user pages (``start`` + ``steps``). Round-trips through the gateway
-blocking-prompt bridge (``tour.request``/``tour.respond``) so the agent learns whether the
-selector matched. Registered in ``desktop_ui`` and hidden from the model when tours are off: a
-tour covers the whole screen, so "off" must mean the model is never told the tool exists rather
-than offered a call that fails."""
+blocking-prompt bridge (``tour``) so the agent learns whether the selector matched. Registered in
+``desktop_ui`` but not exposed to the model: the shell has no answerer for the ``tour`` request
+yet, so offering the call would only produce failures. Putting it back means deleting
+``check_fn=lambda: False`` *and* restoring the Settings → Appearance switch that used to gate it
+(``desktop_ui.user_enabled("in_app_tours", default=True)``) — delete only the check and a tour
+covers the screen even with the switch off."""
 
 import json
 from typing import Callable, Optional
 
-from tools import desktop_ui
 from tools.registry import registry, tool_error
 from tools.tour_presets import TourPreset
 
@@ -151,13 +152,8 @@ TOUR_SCHEMA = {
 }
 
 
-def check_tours_enabled() -> bool:
-    """The user's Settings → Appearance switch. On unless they turned it off."""
-    return desktop_ui.user_enabled("in_app_tours", default=True)
-
-
 registry.register(
-    name="gui_tour", toolset="desktop_ui", schema=TOUR_SCHEMA, check_fn=check_tours_enabled,
+    name="gui_tour", toolset="desktop_ui", schema=TOUR_SCHEMA, check_fn=lambda: False,
     handler=lambda args, **kw: tour_tool(
         action=args.get("action", ""), callback=kw.get("callback"),
         **{k: args.get(k) for k in ("surface", "selector", "title", "text", "side", "steps",

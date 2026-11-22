@@ -143,6 +143,7 @@ ACT_PREVIEW_SCHEMA = {
 registry.register(
     name="drive_preview",
     toolset="desktop_ui",
+    check_fn=lambda: False,
     schema=ACT_PREVIEW_SCHEMA,
     handler=lambda args, **kw: drive_preview_tool(
         action=args.get("action", ""), limit=args.get("max"), callback=kw.get("callback"),

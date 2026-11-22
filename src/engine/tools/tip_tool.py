@@ -1,7 +1,11 @@
 """Point at something in the Noesia desktop GUI and say one line about it — the quiet
 sibling of ``tour`` (same ``data-tour`` handles) with no scrim/spotlight/paging.
 Fire-and-forget: a tip is not a question, so blocking on a round-trip would stall the
-reply. Lives in ``desktop_ui`` and withdraws itself when the user turns tips off."""
+reply. Lives in ``desktop_ui`` but is not exposed to the model: the shell has no renderer for
+``tip.show`` yet, so offering the call would only produce failures. Putting it back means
+deleting ``check_fn=lambda: False`` *and* restoring the Settings → Appearance switch that used
+to gate it (``desktop_ui.user_enabled("in_app_tips", default=True)``) — delete only the check
+and tips fire even with the switch off."""
 
 import json
 
@@ -69,13 +73,8 @@ TIP_SCHEMA = {
 }
 
 
-def check_tips_enabled() -> bool:
-    """The user's Settings → Appearance switch. On unless they turned it off."""
-    return desktop_ui.user_enabled("in_app_tips", default=True)
-
-
 registry.register(
-    name="show_tip", toolset="desktop_ui", schema=TIP_SCHEMA, check_fn=check_tips_enabled,
+    name="show_tip", toolset="desktop_ui", schema=TIP_SCHEMA, check_fn=lambda: False,
     handler=lambda args, **kw: tip_tool(
         **{k: args.get(k, "") for k in ("text", "selector", "title", "side")}),
     emoji="💡")
