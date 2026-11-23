@@ -1091,8 +1091,8 @@ def _is_under_noesia_home(path: str) -> bool:
 def _is_secret_file_arg(arg: str) -> bool:
     """``.env``-style or shell rc basename anywhere; ``config.yaml`` only under a
     ``.noesia`` directory, ``$NOESIA_HOME``, or the resolved Noesia home (never arbitrary
-    YAML). The resolved-home arm is what covers native Windows, where the home directory
-    is ``%LOCALAPPDATA%\\noesia`` and carries no ``.noesia`` segment."""
+    YAML). The resolved-home arm is what covers a ``data/NoesiaHome`` checkout, which
+    carries no ``.noesia`` segment."""
     path = arg.strip("\"'").replace("\\", "/")
     noesia_home = False
     for prefix in _NOESIA_HOME_PREFIXES:

@@ -222,6 +222,11 @@ def store_root(project_root: Path, *, honor_runtime_override: bool = True) -> Pa
         if override:
             return Path(override).resolve()
     root = Path(project_root).resolve()
+    packaged = root / "vendor" / "store"
+    if packaged.is_dir():
+        # Release bundles carry the PM store inside vendor/ (which never enters
+        # the repo), so an unpacked bundle resolves it and downloads nothing.
+        return packaged
     store = (_payload_manifest(root) or {}).get("store")
     if store:
         return _payload_path(root, store, "store")

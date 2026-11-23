@@ -147,7 +147,7 @@ def noesia_owns_windows_service(name: str, binpath: str, noesia_roots: tuple[str
 def _preserve_noesia_home_path(path: str | Path) -> str:
     r"""Render Noesia-owned paths under the configured NOESIA_HOME spelling.
 
-    ``%LOCALAPPDATA%\noesia`` may be a symlink/junction to another drive; launcher files must not
+    A ``NOESIA_HOME`` root may be a symlink/junction to another drive; launcher files must not
     bake in the resolved target for paths under NOESIA_HOME.
     """
     candidate = Path(path)

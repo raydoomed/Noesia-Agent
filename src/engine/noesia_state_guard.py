@@ -24,17 +24,10 @@ _STATE_DB_GUARD_BYPASS_ENV = "NOESIA_STATE_DB_GUARD_BYPASS"
 
 
 def _real_platform_state_root() -> Optional[Path]:
-    """The REAL platform-default Noesia root. Avoids ``Path.home()`` /
-    ``noesia_constants`` (tests monkeypatch Path.home to a tempdir); ``expanduser``
-    reads HOME/passwd, which the conftest never rewrites."""
+    """The REAL default data root. Avoids ``Path.home()`` / ``noesia_constants``
+    (tests monkeypatch Path.home to a tempdir)."""
     try:
-        home = Path(os.path.expanduser("~"))
-        if sys.platform == "win32":
-            base = os.environ.get("LOCALAPPDATA", "").strip()
-            root = Path(base) / "noesia" if base else home / "AppData" / "Local" / "noesia"
-        else:
-            root = home / ".noesia"
-        return root.resolve()
+        return (Path(__file__).resolve().parents[2] / "data" / "NoesiaHome").resolve()
     except Exception:
         return None
 

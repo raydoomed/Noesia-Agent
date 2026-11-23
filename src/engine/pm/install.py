@@ -547,7 +547,7 @@ def ensure(
 
     lockfile = _lockfile()
     target = current_target()
-    chain = walk([name])
+    chain = walk([name], target)
     checked = _operation.checked if _operation is not None else set()
     if _operation is not None:
         _operation.lock()
@@ -583,7 +583,7 @@ def env_for(*names: str, base_env: Optional[dict] = None) -> dict[str, str]:
     diffs: list[dict] = []
     for name in names:
         try:
-            chain = walk([name])
+            chain = walk([name], target)
         except KeyError:
             continue
         for package in chain:
@@ -902,7 +902,7 @@ def check(*, include_venv: bool = True) -> list[str]:
     return [f"{name}: {reason}" for name, reason in drift(include_venv=include_venv).items()]
 
 
-def _dependents_first(names: list[str]) -> list[str]:
+def _dependents_first(names: list[str], target: str | None = None) -> list[str]:
     """*names* with each package moved ahead of the packages it depends on.
 
     A package that extends its dependency must win on PATH: node's own dir also holds node's
@@ -912,7 +912,7 @@ def _dependents_first(names: list[str]) -> list[str]:
     order = list(names)
     for name in names:
         try:
-            deps = {package.name for package in walk([name])} - {name}
+            deps = {package.name for package in walk([name], target)} - {name}
         except KeyError:
             continue
         positions = [order.index(dep) for dep in deps if dep in order]
@@ -941,10 +941,10 @@ def _store_path_dirs() -> list[str]:
         return locations[package.name]
 
     dirs: list[str] = []
-    for name in _dependents_first(lockfile.names()):
+    for name in _dependents_first(lockfile.names(), target):
         try:
             package = get_package(name)
-            chain = walk([name])
+            chain = walk([name], target)
         except KeyError:
             continue
         if package.internal:
@@ -965,6 +965,12 @@ def _store_path_dirs() -> list[str]:
         for directory in path_dirs:
             if directory and native(directory) not in dirs:
                 dirs.append(native(directory))
+    for rel in ("ffmpeg/bin", "git/cmd", "git/usr/bin"):
+        bundled = paths.store_root().parent / rel
+        if bundled.is_dir() and native(str(bundled)) not in dirs:
+            # A release bundle keeps these beside its PM store (vendor/...) instead of
+            # installing a second copy into the store, so store-first PATH must reach them.
+            dirs.append(native(str(bundled)))
     return dirs
 
 

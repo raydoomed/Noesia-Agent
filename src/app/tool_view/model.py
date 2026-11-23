@@ -194,7 +194,9 @@ def shell_command(args: dict[str, Any]) -> str:
 # ---- TOOL_META ----
 
 TOOL_META: dict[str, ToolMetaSpec] = {
+    "browser_cdp": ToolMetaSpec(icon="globe", tone="browser"),
     "browser_click": ToolMetaSpec(icon="globe", tone="browser"),
+    "browser_dialog": ToolMetaSpec(icon="globe", tone="browser"),
     "browser_exec": ToolMetaSpec(icon="globe", tone="browser"),
     "browser_fill": ToolMetaSpec(icon="globe", tone="browser"),
     "browser_navigate": ToolMetaSpec(icon="globe", tone="browser"),
@@ -210,6 +212,7 @@ TOOL_META: dict[str, ToolMetaSpec] = {
     "image_generate": ToolMetaSpec(icon="file-media", tone="image"),
     "list_files": ToolMetaSpec(icon="files", tone="file"),
     "memory": ToolMetaSpec(icon="brain", tone="agent"),
+    "message_agent": ToolMetaSpec(icon="brain", tone="agent"),
     "patch": ToolMetaSpec(icon="edit", tone="file"),
     "read_file": ToolMetaSpec(icon="file", tone="file"),
     "search_files": ToolMetaSpec(icon="search", tone="file"),
@@ -250,6 +253,7 @@ TOOL_META: dict[str, ToolMetaSpec] = {
     "session_search": ToolMetaSpec(icon="search", tone="agent"),
     "set_theme": ToolMetaSpec(icon="tools", tone="agent"),
     "setup_beat": ToolMetaSpec(icon="question", tone="agent"),
+    "setup_mcp": ToolMetaSpec(icon="tools", tone="agent"),
     "show_tip": ToolMetaSpec(icon="question", tone="agent"),
     "text_to_speech": ToolMetaSpec(icon="tools", tone="agent"),
     "video_analyze": ToolMetaSpec(icon="eye", tone="image"),

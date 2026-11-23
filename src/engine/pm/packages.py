@@ -120,11 +120,14 @@ class BinaryPackage(Package):
     def _probe_env(self) -> dict:
         """Deps' env composed in: npm's shim is `#!/usr/bin/env node` and
         must find the node it extends on PATH."""
-        if not self.deps:
+        from pm.store import current_target
+
+        deps = self.deps_for(current_target())
+        if not deps:
             return dict(os.environ)
         from pm.install import env_for
 
-        return env_for(*self.deps)
+        return env_for(*deps)
 
 
 @register
@@ -793,10 +796,9 @@ class Gh(BinaryPackage):
 @register
 class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
     """FFmpeg builds for supported targets; BtbN Linux archives require glibc.
-    optional=False: ffmpeg is a required runtime tool where supported. Sealed bundles ship
-    it baked into the payload; every `noesia update` and `noesia pm install`
-    re-ensures it from the new lockfile before the venv sync
-    (pm.client.ensure_tools_for_sync), so a pin bump lands. Windows + Linux:
+    optional=True: ffmpeg is still a required runtime tool, but a release bundle supplies
+    it from vendor/ffmpeg/bin (engine_wire puts that dir on PATH), so PM must not demand a
+    second copy inside the store. Source checkouts get it from scripts/setup.ps1. Windows + Linux:
     BtbN/FFmpeg-Builds (month-end autobuild tag, kept two years; ships ffprobe too).
     macOS: ffmpeg.martin-riedl.de (uniform ZIP, published sha256;
     single-binary — no ffprobe).
@@ -807,7 +809,7 @@ class Ffmpeg(_BionicDebArm, BinaryPackage, DebPackage):
 
     name = "ffmpeg"
     deb_package = "ffmpeg"
-    optional = False
+    optional = True
     gaps = {target: "BtbN Linux builds link glibc dynamically" for target in MUSL_TARGETS}
 
     def main_rel(self, target: str) -> str:
@@ -869,7 +871,8 @@ class Ripgrep(BinaryPackage):
     # The ARM64 Windows release links the VC++ runtime dynamically (the x64
     # one embeds it), and a fresh Windows has no vcruntime140.dll: rg.exe
     # dies with STATUS_DLL_NOT_FOUND. Our pinned Python ships the ARM64 DLL.
-    deps = ("python",)
+    def deps_for(self, target: str) -> tuple[str, ...]:
+        return ("python",) if target == "win32-arm64" else ()
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         super().stage(store, staged, version, target)

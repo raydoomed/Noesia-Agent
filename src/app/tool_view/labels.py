@@ -81,7 +81,9 @@ ZH: dict[str, Any] = {
         "runningTool": lambda action: f"正在运行 {action}"
       },
       "titles": {
+        "browser_cdp": { "done": '已使用浏览器调试', "pending": '正在使用浏览器调试', "pendingAction": '正在调试' },
         "browser_click": { "done": '已点击页面元素', "pending": '正在点击页面元素', "pendingAction": '正在点击' },
+        "browser_dialog": { "done": '已处理浏览器对话框', "pending": '正在处理浏览器对话框', "pendingAction": '正在处理' },
         "browser_exec": { "done": '已运行浏览器代码', "pending": '正在运行浏览器代码', "pendingAction": '正在运行' },
         "browser_fill": { "done": '已填写表单字段', "pending": '正在填写表单字段', "pendingAction": '正在填写' },
         "browser_navigate": { "done": '已打开页面', "pending": '正在打开页面', "pendingAction": '正在打开' },
@@ -96,10 +98,12 @@ ZH: dict[str, Any] = {
         "image_generate": { "done": '已生成图片', "pending": '正在生成图片', "pendingAction": '正在生成' },
         "list_files": { "done": '已列出文件', "pending": '正在列出文件', "pendingAction": '正在列出' },
         "memory": { "done": '已保存到记忆', "pending": '正在保存到记忆', "pendingAction": '正在保存' },
+        "message_agent": { "done": '已给代理发消息', "pending": '正在给代理发消息', "pendingAction": '正在发消息' },
         "patch": { "done": '已修补文件', "pending": '正在修补文件', "pendingAction": '正在修补' },
         "read_file": { "done": '已读取文件', "pending": '正在读取文件', "pendingAction": '正在读取' },
         "search_files": { "done": '已搜索文件', "pending": '正在搜索文件', "pendingAction": '正在搜索' },
         "session_search_recall": { "done": '已搜索会话历史', "pending": '正在搜索会话历史', "pendingAction": '正在搜索' },
+        "setup_mcp": { "done": '已配置 MCP', "pending": '正在配置 MCP', "pendingAction": '正在配置' },
         "terminal": { "done": '已运行命令', "pending": '正在运行命令', "pendingAction": '正在运行' },
         "todo": { "done": '已更新待办', "pending": '正在更新待办', "pendingAction": '正在更新' },
         "tool_call": { "done": '已调用工具', "pending": '正在调用工具', "pendingAction": '正在调用' },
@@ -184,7 +188,9 @@ EN: dict[str, Any] = {
         "runningTool": lambda action: f"Running {action.lower()}"
       },
       "titles": {
+        "browser_cdp": { "done": 'Used browser devtools', "pending": 'Using browser devtools', "pendingAction": 'Inspecting' },
         "browser_click": { "done": 'Clicked page element', "pending": 'Clicking page element', "pendingAction": 'Clicking' },
+        "browser_dialog": { "done": 'Handled browser dialog', "pending": 'Handling browser dialog', "pendingAction": 'Handling' },
         "browser_exec": { "done": 'Ran browser code', "pending": 'Running browser code', "pendingAction": 'Running' },
         "browser_fill": { "done": 'Filled form field', "pending": 'Filling form field', "pendingAction": 'Filling' },
         "browser_navigate": { "done": 'Opened page', "pending": 'Opening page', "pendingAction": 'Opening' },
@@ -207,9 +213,11 @@ EN: dict[str, Any] = {
         "image_generate": { "done": 'Generated image', "pending": 'Generating image', "pendingAction": 'Generating' },
         "list_files": { "done": 'Listed files', "pending": 'Listing files', "pendingAction": 'Listing' },
         "memory": { "done": 'Saved to memory', "pending": 'Saving to memory', "pendingAction": 'Saving' },
+        "message_agent": { "done": 'Messaged agent', "pending": 'Messaging agent', "pendingAction": 'Messaging' },
         "patch": { "done": 'Patched file', "pending": 'Patching file', "pendingAction": 'Patching' },
         "read_file": { "done": 'Read file', "pending": 'Reading file', "pendingAction": 'Reading' },
         "search_files": { "done": 'Searched files', "pending": 'Searching files', "pendingAction": 'Searching' },
+        "setup_mcp": { "done": 'Configured MCP', "pending": 'Configuring MCP', "pendingAction": 'Configuring' },
         "session_search_recall": {
           "done": 'Searched session history',
           "pending": 'Searching session history',

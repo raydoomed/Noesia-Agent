@@ -50,6 +50,9 @@ dependencies = [
 # 测试不用 pytest 收集：tests/ 是一批独立脚本，统一入口 `scripts/run_tests.py`（make test）。
 dev = ["PySide6>=6.5"]
 qt = ["PySide6>=6.5"]  # 只想跑界面、不装 dev 那组时用这个
+# computer_use 的 MCP 客户端（cua-driver 二进制由 PM 的 store 提供，不在这里）。
+# 版本与引擎 pm/extras.py 的锚点 "computer-use" -> "mcp" 对应。
+computer-use = ["mcp==2.3.0", "httpx2==2.15.1", "starlette==1.9.0"]
 # 口型驱动（Vidu）走云端，本地不需要 torch 之类的推理依赖；
 # 哪天要换本地后端，那层的依赖单独给一组 extras，别在这里写不存在的东西。
 

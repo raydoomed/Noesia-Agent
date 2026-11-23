@@ -20,8 +20,8 @@ def _missing_or_refuse(name):
     from pm.install import _refuse_lazy, current_target, is_installed, lazy_installs_allowed
     from pm.registry import get_package, walk
 
-    missing = [package.name for package in walk([name]) if not is_installed(package.name)]
-    target = current_target() if missing else None
+    target = current_target()
+    missing = [package.name for package in walk([name], target) if not is_installed(package.name)]
     for gap in missing:
         # A registry gap (git on POSIX: "uses system git by choice") is static: no worker can
         # install it, so answer with the worker's own refusal here. Asking one anyway cost a PM

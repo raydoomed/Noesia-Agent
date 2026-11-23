@@ -1865,6 +1865,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._hooked_scrolls: set[int] = set()
         self._msgs: list[dict] = []
         self._reaction_pending: dict | None = None
+        self._deferred_reactions: list[tuple[int, list[dict]]] = []
         self._stream_msg: dict | None = None
         self._bar_buttons: list[HoverActionButton] = []
         self._bar_msg: dict | None = None
@@ -2355,6 +2356,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._streaming = False
         self._row_stamp_pending = None
         self._reaction_pending = None
+        self._deferred_reactions = []
         self._stream_msg = None
         self._flush_timer.stop()
         self._reason_timer.stop()
@@ -3423,6 +3425,7 @@ class ChatPanel(QtWidgets.QWidget):
         if row_id is None and self._row_stamp_pending is not None:
             self._msgs[-1]["row_id"] = self._row_stamp_pending
             self._row_stamp_pending = None
+            self._flush_deferred_reactions()
         for item in items:
             self._append_user_attachment(item)
         frame = self._msgs[-1].get("frame")
@@ -3480,7 +3483,7 @@ class ChatPanel(QtWidgets.QWidget):
         """把这条消息身上的表情整体画一遍：历史和实时走同一条路，画几遍都长一个样。
 
         定位只认两样：行号，或调用方当场递过来的那条消息（历史铺行、刚 append 完都能给准）。
-        两样都没有就不画并记一条，绝不往「最近一条」上挪。
+        两样都没有就先记下，等行号贴上来再补画，绝不往「最近一条」上挪。
         """
         entries = self._reaction_entries(meta)
         if not entries:
@@ -3492,8 +3495,24 @@ class ChatPanel(QtWidgets.QWidget):
                 row_id,
                 [item.get("row_id") for item in self._msgs][-5:],
             )
+            if row_id is not None:
+                self._deferred_reactions.append((int(row_id), entries))
+                del self._deferred_reactions[:-16]
             return
         self.set_reactions(target, entries)
+
+    def _flush_deferred_reactions(self) -> None:
+        """行号刚贴上：把先前没认出来的表情补画一遍，还没认出来的留到下回。"""
+        if not self._deferred_reactions:
+            return
+        left: list[tuple[int, list[dict]]] = []
+        for rid, entries in self._deferred_reactions:
+            target = self._find_msg_for_row(rid)
+            if target is None:
+                left.append((rid, entries))
+            else:
+                self.set_reactions(target, entries)
+        self._deferred_reactions = left
 
     def set_reactions(self, msg: dict, entries: list[dict]) -> None:
         """回答那条：反应就长在表情按钮上，不另起一行；自己那条才在气泡下方落一行。"""
@@ -8151,6 +8170,7 @@ class ChatPanel(QtWidgets.QWidget):
         for msg in reversed(self._msgs):
             if msg.get("role") == "user" and msg.get("row_id") is None:
                 msg["row_id"] = int(row_id)
+                self._flush_deferred_reactions()
                 return
         self._row_stamp_pending = int(row_id)
 
@@ -8174,9 +8194,11 @@ class ChatPanel(QtWidgets.QWidget):
         waiting = [m for m in self._msgs if m.get("role") == "user" and m.get("row_id") is None]
         if not waiting:
             return
-        for msg, rid in zip(waiting, ints[-len(waiting):]):
+        pairs = min(len(waiting), len(ints))
+        for msg, rid in zip(waiting[-pairs:], ints[-pairs:]):
             msg["row_id"] = rid
         self._row_stamp_pending = None
+        self._flush_deferred_reactions()
 
     def is_busy(self) -> bool:
         return bool(self._busy)

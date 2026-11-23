@@ -15,20 +15,25 @@ import traceback
 from pathlib import Path
 
 
-def _log_startup_error(detail: str) -> Path | None:
-    """把启动失败的完整栈写到用户找得到的地方（`%LOCALAPPDATA%\\Noesia\\startup-error.log`）。
+def _startup_log_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "data" / "NoesiaHome" / "startup-error.log"
 
-    刻意不写进 `data/runtime/`：配置坏掉时那个目录本身就可能不可写（装在只读盘、
-    `data` 这个位置是个文件），而那正是要报的错之一。
+
+def _log_startup_error(detail: str) -> Path | None:
+    """把启动失败的完整栈写到用户找得到的地方（`data/NoesiaHome/startup-error.log`）。
+
+    home 写不了时（装在只读盘、`data` 这个位置是个文件）退到系统临时目录：那正是要报的错之一，
+    不能因为报错的地方写不了就什么都不留。
     """
-    base = os.environ.get("LOCALAPPDATA") or os.environ.get("TEMP") or ""
-    path = Path(base or Path.home()) / "Noesia" / "startup-error.log"
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(detail, encoding="utf-8")
-    except OSError:
-        return None
-    return path
+    fallback = Path(os.environ.get("TEMP") or os.environ.get("TMP") or ".") / "noesia-startup-error.log"
+    for path in (_startup_log_path(), fallback):
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(detail, encoding="utf-8")
+            return path
+        except OSError:
+            continue
+    return None
 
 
 def _tell_user(message: str, log: Path | None) -> None:

@@ -7,7 +7,9 @@ from pathlib import Path
 
 
 def repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    from noesia_constants import repo_root as engine_repo_root
+
+    return engine_repo_root()
 
 
 def install_root() -> Path:
@@ -51,8 +53,7 @@ def partials_root() -> Path:
     store. The store can live inside a read-only sealed payload
     (WindowsApps/agent-payload), and partials are mutable state the
     downloader writes continuously, so they must land somewhere writable
-    on every install kind: ``%LOCALAPPDATA%\\noesia\\cache\\partials`` on
-    Windows, ``~/.noesia/cache/partials`` on POSIX.
+    on every install kind: ``<repo>/data/NoesiaHome/cache/partials``.
     """
     from noesia_constants import get_default_noesia_root
 

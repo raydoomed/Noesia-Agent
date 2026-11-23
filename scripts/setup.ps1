@@ -153,22 +153,22 @@ Run-Py314 @("--version")
 if (Test-Path ".venv\Scripts\python.exe") {
     $venvMinor = Get-PythonVersion (Join-Path (Get-Location).Path ".venv\Scripts\python.exe")
     if ($null -ne $venvMinor -and $venvMinor -ne 14) {
-        Say "[1/6] 已有 .venv 是 Python 3.${venvMinor}，跟这个包要求的 3.14 不一致，删掉重建（.venv 里只有依赖，不含 data/ 与聊天记录）..."
+        Say "[1/7] 已有 .venv 是 Python 3.${venvMinor}，跟这个包要求的 3.14 不一致，删掉重建（.venv 里只有依赖，不含 data/ 与聊天记录）..."
         Remove-Item -LiteralPath ".venv" -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 if (-not (Test-Path ".venv\Scripts\python.exe")) {
-    Say "[1/6] 创建虚拟环境 .venv ..."
+    Say "[1/7] 创建虚拟环境 .venv ..."
     Run-Py314 @("-m", "venv", ".venv")
     if (-not (Test-Path ".venv\Scripts\python.exe")) {
         Fail "建虚拟环境失败，上面几行是原因。"
     }
 } else {
-    Say "[1/6] 已有 .venv，跳过创建。"
+    Say "[1/7] 已有 .venv，跳过创建。"
 }
 
 # ---- 3. 装依赖 ----
-Say "[2/6] 安装依赖（PySide6 约 200 MB；有离线轮子就不联网，没有就走镜像源）..."
+Say "[2/7] 安装依赖（PySide6 约 200 MB；有离线轮子就不联网，没有就走镜像源）..."
 $vpy = ".venv\Scripts\python.exe"
 
 # uv 建的或精简过的 venv 里可能没有 pip，先补上
@@ -211,7 +211,7 @@ foreach ($src in $sources) {
     $extra = $src.Args
     # 先装构建后端：隔离构建设置会自己去网上取 setuptools，网络一拦就整个装不上
     & $vpy -m pip install setuptools wheel --disable-pip-version-check @extra
-    & $vpy -m pip install -e ".[dev]" --no-build-isolation --disable-pip-version-check @extra
+    & $vpy -m pip install -e ".[dev,computer-use]" --no-build-isolation --disable-pip-version-check @extra
     if (Test-Deps) { break }
     Write-Host ""
     Say "这个源没装上，换下一个。"
@@ -240,9 +240,9 @@ function Test-EngineDeps {
 
 if (Test-Path "src\engine\deps.txt") {
     if (Test-EngineDeps) {
-        Say "[3/6] 引擎依赖已装好，跳过。"
+        Say "[3/7] 引擎依赖已装好，跳过。"
     } else {
-        Say "[3/6] 安装引擎依赖（按 src\engine\deps.txt，连传递依赖约一百个包，第一次要几分钟）..."
+        Say "[3/7] 安装引擎依赖（按 src\engine\deps.txt，连传递依赖约一百个包，第一次要几分钟）..."
         foreach ($src in $sources) {
             Say "用 $($src.Name) 安装 ..."
             $extra = $src.Args
@@ -258,7 +258,7 @@ if (Test-Path "src\engine\deps.txt") {
         }
     }
 } else {
-    Say "[3/6] 没找到 src\engine\deps.txt，跳过引擎依赖（只聊天，不干活）。"
+    Say "[3/7] 没找到 src\engine\deps.txt，跳过引擎依赖（只聊天，不干活）。"
 }
 
 # ---- 5. 运行时目录与引擎起步配置（用户可能删过 data/，这里补齐，已有不覆盖）----
@@ -268,7 +268,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ---- 4.5 随包的本地运行库：语音互动那一档要用（缺了不影响文字与纯语音）----
-# 这里只判「文件在不在」；真正的导入验证放到 4.8——ARTC 的 dll 在 [5/6] 才补齐，
+# 这里只判「文件在不在」；真正的导入验证放到 4.8——ARTC 的 dll 在 [5/7] 才补齐，
 # 早一步验会对着还不存在的 dll 报红字，让人以为互动档坏了。
 if (-not (Test-Path "src\app\_alirtc.pyd")) {
     Say "[WARN] 没找到 src\app\_alirtc.pyd（杀毒软件常把这种文件删掉）：语音互动用不了，文字和纯语音不受影响。"
@@ -279,11 +279,11 @@ if (-not (Test-Path "src\app\_alirtc.pyd")) {
 # 这里联网补到同一个位置：engine_wire.py 启动时挂的就是 vendor\ffmpeg\bin，代码一行不用改。
 $ffBin = Join-Path (Get-Location).Path "vendor\ffmpeg\bin"
 if ((Test-Path (Join-Path $ffBin "ffmpeg.exe")) -and (Test-Path (Join-Path $ffBin "ffprobe.exe"))) {
-    Say "[4/6] ffmpeg 已在包里，跳过。"
+    Say "[4/7] ffmpeg 已在包里，跳过。"
 } elseif ((Get-Command ffmpeg -ErrorAction SilentlyContinue) -and (Get-Command ffprobe -ErrorAction SilentlyContinue)) {
-    Say "[4/6] 系统里已经有 ffmpeg / ffprobe，跳过。"
+    Say "[4/7] 系统里已经有 ffmpeg / ffprobe，跳过。"
 } else {
-    Say "[4/6] 补 ffmpeg / ffprobe（Edge 朗读要边解码边播，下载约 50 MB）..."
+    Say "[4/7] 补 ffmpeg / ffprobe（Edge 朗读要边解码边播，下载约 50 MB）..."
     $tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
     if (-not (Test-Path $tarExe)) {
         Say "[WARN] 这台系统没有 tar.exe，跳过补 ffmpeg；Edge 语音会念不出来。"
@@ -330,9 +330,9 @@ if ((Test-Path (Join-Path $ffBin "ffmpeg.exe")) -and (Test-Path (Join-Path $ffBi
 # 直链来自阿里云文档的 SDK 下载页（Windows v7.6.0），实测 100 MB / 4.5 秒，dll 的 sha256 与整合包里的完全一致。
 $rtcDir = Join-Path (Get-Location).Path "vendor\alirtc"
 if (Test-Path (Join-Path $rtcDir "AliRTCSdk.dll")) {
-    Say "[5/6] 阿里云 ARTC 已在包里，跳过。"
+    Say "[5/7] 阿里云 ARTC 已在包里，跳过。"
 } else {
-    Say "[5/6] 补阿里云 ARTC（语音互动要的 dll，约 100 MB，几秒）..."
+    Say "[5/7] 补阿里云 ARTC（语音互动要的 dll，约 100 MB，几秒）..."
     $tarExe = Join-Path $env:SystemRoot "System32\tar.exe"
     if (-not (Test-Path $tarExe)) {
         Say "[WARN] 这台系统没有 tar.exe，跳过 ARTC：语音互动那一档用不了（文字和纯语音不受影响）。"
@@ -368,7 +368,7 @@ if (Test-Path (Join-Path $rtcDir "AliRTCSdk.dll")) {
     }
 }
 
-# ---- 4.8 互动档收尾确认：ARTC 的 dll 刚在 [5/6] 补齐，到这里才真导入 pyd ----
+# ---- 4.8 互动档收尾确认：ARTC 的 dll 刚在 [5/7] 补齐，到这里才真导入 pyd ----
 # 4.5 那一步在 dll 还没到位时只提示「等下面补完再验」，不报红字；ABI 对不上（pyd 不是 3.14 编的）也在这里露出来。
 if (Test-Path "src\app\_alirtc.pyd") {
     $probe = @()
@@ -416,8 +416,41 @@ public class EnvBroadcast {
     [EnvBroadcast]::PostMessage([IntPtr]0xffff, 0x001A, [IntPtr]::Zero, "Environment") | Out-Null
 }
 
+# ---- 5.8 cua-driver：computer_use（agent 操控整台电脑）的唯一后端，由 Noesia PM 按 pin 管理 ----
+# 跟 ffmpeg / ARTC 同一套处理：没有就补，补不上只警告——聊天、语音、写代码都不受影响，
+# 只有「让她动鼠标键盘」这一个工具缺席。26 MB，装完即用，不用用户自己敲命令。
+Say "[6/7] 准备 cua-driver（桌面操作要它，约 26 MB）..."
+$cuReady = $false
+try {
+    $cuOut = (& $vpy -c "import sys; sys.path.insert(0,'src/engine'); from noesia_cli.main import main; sys.argv=['noesia','computer-use','status']; sys.exit(main())" 2>&1) -join "`n"
+    if ($cuOut -match "contract ready") { $cuReady = $true }
+} catch { $cuReady = $false }
+if ($cuReady) {
+    Say "[6/7] cua-driver 已就绪，跳过。"
+} else {
+    $oldProgress = $ProgressPreference
+    $ProgressPreference = "SilentlyContinue"
+    try {
+        & $vpy -c "import sys; sys.path.insert(0,'src/engine'); from noesia_cli.main import main; sys.argv=['noesia','computer-use','install']; sys.exit(main())" | Out-Host
+    } catch {
+        Say "[WARN] 补 cua-driver 失败：$($_.Exception.Message)"
+    } finally {
+        $ProgressPreference = $oldProgress
+    }
+    try {
+        $cuOut = (& $vpy -c "import sys; sys.path.insert(0,'src/engine'); from noesia_cli.main import main; sys.argv=['noesia','computer-use','status']; sys.exit(main())" 2>&1) -join "`n"
+        $cuReady = $cuOut -match "contract ready"
+    } catch { $cuReady = $false }
+    if ($cuReady) {
+        Say "     cua-driver 已装好（首次运行 Windows 可能弹 SmartScreen，允许即可）。"
+    } else {
+        Say "[WARN] 没装上 cua-driver：她不能替你动鼠标键盘，其余功能正常。"
+        Say "       联网后双击 setup.bat 再补一次，或手动跑：noesia computer-use install"
+    }
+}
+
 $scriptsDir = Join-Path (Get-Location).Path ".venv\Scripts"
-Say "[6/6] 把 noesia 命令加进当前用户的 PATH ..."
+Say "[7/7] 把 noesia 命令加进当前用户的 PATH ..."
 try {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $parts = @($userPath -split ';' | Where-Object { $_.Trim() })

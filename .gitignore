@@ -60,6 +60,9 @@ src/engine/noesia_cli/_version.py
 /AUDIT.md
 /BACKLOG.md
 
+# 改文件前留的备份（archive/*.bak-<时间戳>）：只在本机给回滚用，绝不入库
+/archive/
+
 # 测试与工具产物
 .pytest_cache/
 .coverage

@@ -10,11 +10,18 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from agent.context_compressor import _DB_PERSISTED_MARKER
+from agent.message_metadata import DB_ROW_SNAPSHOT
 
 
 def committed_row_id(message: Any) -> int | None:
-    row_id = message.get("_row_id") if isinstance(message, dict) else None
-    return row_id if message.get(_DB_PERSISTED_MARKER) and type(row_id) is int and row_id > 0 else None
+    if not isinstance(message, dict):
+        return None
+    row_id = message.get("_row_id")
+    if type(row_id) is not int or row_id <= 0:
+        return None
+    if message.get(_DB_PERSISTED_MARKER) or message.get(DB_ROW_SNAPSHOT):
+        return row_id
+    return None
 
 
 def persisted_turn_receipt(
@@ -41,12 +48,13 @@ def persisted_turn_receipt(
     if not row_ids:
         return None
     receipt: dict = {"row_ids": row_ids, "complete": False}
-    if (user_row_id := committed_row_id(tail[0])) is not None:
-        receipt["user_row_id"] = user_row_id
     # Every rendered user row of the turn in order (the prompt, then each steer/redirect row), so a
-    # client binds its optimistic bubbles even when the turn holds more than one prompt row. Only a
-    # fully committed list is published: a gap would shift every later pairing.
+    # client binds its optimistic bubbles even when the turn holds more than one prompt row. The
+    # single id is the LAST rendered row: clients pair it with their newest unbound bubble. Only a
+    # fully committed list is published in ``user_row_ids``: a gap would shift every later pairing.
     users = [message for message in tail if message.get("role") == "user" and message.get("display_kind") != "hidden"]
+    if users and (last_user_id := committed_row_id(users[-1])) is not None:
+        receipt["user_row_id"] = last_user_id
     user_row_ids = [committed_row_id(message) for message in users]
     if users and None not in user_row_ids:
         receipt["user_row_ids"] = user_row_ids

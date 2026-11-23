@@ -5,7 +5,7 @@ SYSTEM, Administrators and OWNER RIGHTS. An elevated process's default owner is
 ``BUILTIN\\Administrators``, so OWNER RIGHTS resolves to Administrators too, and the user's own
 non-elevated token (where Administrators is deny-only) gets ``WinError 5`` on the directory and on
 everything created inside it (#139845, #139485, the ``gateway-locks`` reports in #134889 W2). A plain
-``mkdir`` inherits its parent's ACL instead, which under ``%LOCALAPPDATA%`` names the user, so the
+``mkdir`` inherits its parent's ACL instead, which under the user-owned data dir names the user, so the
 ``mode=0o700`` sites are the ones that strand the user.
 
 :func:`make_user_dir` is the one place Noesia state/lock/log directories are created. Off Windows,

@@ -48,14 +48,14 @@ def _expand_noesia_home(path: str) -> Path:
     return Path(os.path.expanduser(os.path.expandvars(path)))
 
 
+def default_noesia_root(suffix: str = "") -> Path:
+    """本机默认数据根：项目里的 ``data/NoesiaHome``（后缀只给多实例隔离用）。"""
+    return repo_root() / "data" / ("NoesiaHome" + suffix)
+
+
 def _platform_default_noesia_home(environ: Mapping[str, str], user_home: Callable[[], Path]) -> Path:
-    """The platform default that *environ* names, with the literal data-directory suffix."""
-    suffix = environ.get("NOESIA_DATA_DIR_SUFFIX", "")
-    if sys.platform == "win32":
-        local_appdata = environ.get("LOCALAPPDATA", "").strip()
-        base = Path(local_appdata) if local_appdata else user_home() / "AppData" / "Local"
-        return base / ("noesia" + suffix)
-    return user_home() / (".noesia" + suffix)
+    """默认数据根就是项目里的 ``data/NoesiaHome``：Noesia 的数据只住一处，不落到系统目录。"""
+    return default_noesia_root(environ.get("NOESIA_DATA_DIR_SUFFIX", ""))
 
 
 def _get_platform_default_noesia_home() -> Path:

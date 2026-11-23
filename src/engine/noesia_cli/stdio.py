@@ -91,28 +91,26 @@ def _default_windows_editor() -> str:
 
 
 def _augment_path_with_known_tools() -> None:
-    r"""Prepend Noesia-managed tool directories to ``PATH`` (no-op on POSIX / missing dirs).
+    r"""Prepend the bundled tool directories to ``PATH`` (no-op on POSIX / missing dirs).
 
-    install.ps1 adds entries like ``%LOCALAPPDATA%\noesia\git\bin`` to the User PATH via
-    ``SetEnvironmentVariable``, but already-running shells never see that broadcast, so a noesia
-    launched from the install session would not find rg / bash / grep. Prepending the known dirs
-    at startup closes that first-launch gap.
+    A process started outside ``pm.activate()`` (a shortcut, a scheduled task, an
+    already-running shell) has none of the bundled dirs on PATH, so ``bash`` / ``git`` /
+    ``ffmpeg`` / ``noesia.exe`` would not resolve. Prepending the known project dirs at
+    startup closes that gap without touching the user's own PATH.
     """
     if not is_windows():
         return
-    local_appdata = os.environ.get("LOCALAPPDATA", "")
-    if not local_appdata:
-        return
+    from noesia_constants import repo_root
 
-    # Kept in sync with the PATH entries scripts/install.ps1 adds to User scope. The venv Scripts
-    # dir hosts noesia.exe + pip console scripts; WinGet\Links is where ``winget install`` drops
-    # CLI shims (ripgrep lands there as rg.exe).
-    candidate_dirs = [
-        os.path.join(local_appdata, "noesia", "git", "cmd"),
-        os.path.join(local_appdata, "noesia", "git", "bin"),
-        os.path.join(local_appdata, "noesia", "git", "usr", "bin"),
-        os.path.join(local_appdata, "noesia", "noesia-agent", "venv", "Scripts"),
-        os.path.join(local_appdata, "Microsoft", "WinGet", "Links")]
+    repo = repo_root()
+    candidate_dirs = [str(repo / "vendor" / "git" / "cmd"),
+                      str(repo / "vendor" / "git" / "bin"),
+                      str(repo / "vendor" / "git" / "usr" / "bin"),
+                      str(repo / "vendor" / "ffmpeg" / "bin"),
+                      str(repo / ".venv" / "Scripts")]
+    winget = os.environ.get("LOCALAPPDATA", "")
+    if winget:
+        candidate_dirs.append(os.path.join(winget, "Microsoft", "WinGet", "Links"))
     existing = os.environ.get("PATH", "")
     existing_lower = {p.lower() for p in existing.split(os.pathsep) if p}
     prepend = [d for d in candidate_dirs if os.path.isdir(d) and d.lower() not in existing_lower]

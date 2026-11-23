@@ -156,8 +156,11 @@ def load_package_definitions(definitions: list[dict[str, Any]]) -> None:
     _packages.update(restored)
 
 
-def walk(names: list[str]) -> list[Package]:
-    """Deps-first topological order over the requested packages."""
+def walk(names: list[str], target: str | None = None) -> list[Package]:
+    """Deps-first topological order over the requested packages.
+
+    ``target`` selects platform-specific deps via ``Package.deps_for``; omit it
+    for the declared deps regardless of platform."""
     seen: dict[str, Package] = {}
 
     def visit(name: str, chain: tuple[str, ...]) -> None:
@@ -167,7 +170,7 @@ def walk(names: list[str]) -> list[Package]:
         if name in seen:
             return
         package = get_package(name)
-        for dep in package.deps:
+        for dep in (package.deps_for(target) if target else package.deps):
             visit(dep, chain + (name,))
         seen[name] = package
 

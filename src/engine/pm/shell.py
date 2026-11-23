@@ -34,28 +34,25 @@ from pm.lock import Facts
 
 
 def _staged_bash() -> str | None:
-    """The git Package's bash.exe under the store (Windows bundles only)."""
+    """The bundled git's bash.exe: the store entry when facts names one, else ``vendor/git``."""
     import platform
 
     if platform.system() != "Windows":
         return None
+    roots = []
     facts_path = paths.facts_path()
-    if not facts_path.is_file():
-        return None
-    try:
-        facts = Facts(facts_path)
-        fact = facts.get("git")
-        if fact is None or "entry" not in fact:
-            return None
-        entry = paths.store_root() / fact["entry"]
-        for candidate in (
-            entry / "usr" / "bin" / "bash.exe",
-            entry / "bin" / "bash.exe",
-        ):
+    if facts_path.is_file():
+        try:
+            fact = Facts(facts_path).get("git")
+            if fact is not None and "entry" in fact:
+                roots.append(paths.store_root() / fact["entry"])
+        except Exception:
+            pass
+    roots.append(paths.repo_root() / "vendor" / "git")
+    for root in roots:
+        for candidate in (root / "usr" / "bin" / "bash.exe", root / "bin" / "bash.exe"):
             if candidate.is_file():
                 return str(candidate)
-    except Exception:
-        return None
     return None
 
 
@@ -78,8 +75,7 @@ def windows_bash_candidates(on_path: str | None, env: Mapping[str, str]) -> list
     if env.get("ProgramFiles(x86)"):
         roots.append(ntpath.join(env["ProgramFiles(x86)"], "Git"))
     if env.get("LOCALAPPDATA"):
-        roots.extend((ntpath.join(env["LOCALAPPDATA"], "noesia", "git"),
-                      ntpath.join(env["LOCALAPPDATA"], "Programs", "Git")))
+        roots.append(ntpath.join(env["LOCALAPPDATA"], "Programs", "Git"))
     for root in roots:
         candidates.extend((ntpath.join(root, "bin", "bash.exe"),
                            ntpath.join(root, "usr", "bin", "bash.exe")))

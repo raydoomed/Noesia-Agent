@@ -75,6 +75,10 @@ class Package:
     deps: tuple[str, ...] = ()
     optional: bool = False
     default: bool = False
+
+    def deps_for(self, target: str) -> tuple[str, ...]:
+        """Dependencies for ``target``; override when a dep is platform-specific."""
+        return self.deps
     internal: bool = False
     on_path: bool = True
     url: str = ""
