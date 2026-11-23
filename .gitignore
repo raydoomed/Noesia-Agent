@@ -50,6 +50,9 @@ src/engine/noesia_cli/_version.py
 .noesia-bootstrap-complete
 # 更新器运行时写在引擎目录里的互斥锁（pid + 时间戳 + 启动时刻），每台机器各一份
 .noesia-update.lock
+# 更新引导器把自己的 exe 落在项目根的 .noesia/bin/ 下，同样是每台机器各一份
+# 带前导斜杠只排项目根这一层，免得挡掉别处同名的 .noesia 目录（同下条 /tests/ 的道理）
+/.noesia/
 
 # 测试只在本机跑，不入库（守护测试里会出现被禁止的旧名字，公开仓库不该带上）
 # 只排项目根这一层：写成 tests/ 会把 src/engine/**/tests/ 也一起挡掉，
