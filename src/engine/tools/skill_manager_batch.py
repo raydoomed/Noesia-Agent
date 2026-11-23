@@ -88,7 +88,7 @@ def _validate_batch_ops(operations, default_name, tool_error):
     from tools.skill_manager_guards import _background_review_preflight
     from tools.skill_manager_tool import _validate_category
     def fail(i, msg):
-        return None, tool_error(f"operations[{i}]{msg}", success=False)
+        return None, tool_error(f"operations[{i}]{msg}", success=False, error_kind="input")
     names = []
     for i, op in enumerate(operations):
         if not isinstance(op, dict) or not op.get("action"):
@@ -226,16 +226,18 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     from tools import skill_manager_tool as _smt
     from tools.registry import tool_error
     if not isinstance(operations, list) or not operations:
-        return tool_error("operations must be a non-empty array.", success=False)
+        return tool_error("operations must be a non-empty array.", success=False, error_kind="input")
     if len(operations) > _BATCH_MAX_OPS:
-        return tool_error(f"operations is capped at {_BATCH_MAX_OPS} ops per call.", success=False)
+        return tool_error(f"operations is capped at {_BATCH_MAX_OPS} ops per call.",
+                          success=False, error_kind="input")
     if any(isinstance(op, dict) and op.get("action") == "delete" for op in operations):
         if len(operations) != 1:
             return tool_error("delete must be the SOLE op in its call — it doesn't "
-                              "compose with other ops' rollback.", success=False)
+                              "compose with other ops' rollback.", success=False, error_kind="input")
         nm = operations[0].get("name") or default_name
         if not nm:
-            return tool_error("operations[0] (delete) needs a 'name'.", success=False)
+            return tool_error("operations[0] (delete) needs a 'name'.",
+                              success=False, error_kind="input")
         return _smt.skill_manage(action="delete", name=nm, task_id=task_id, session_id=session_id,
                                  absorbed_into=operations[0].get("absorbed_into"))
     names, err = _validate_batch_ops(operations, default_name, tool_error)

@@ -1627,6 +1627,8 @@ class SessionDB(
     _CONTENT_JSON_PREFIX = "\x00json:"
     #: Reactions live inside ``display_metadata`` so they survive row rewrites.
     REACTIONS_METADATA_KEY = "reactions"
+    #: Tapback removals ride the same blob, under their own key (``reactions`` is popped when empty).
+    RETRACTIONS_METADATA_KEY = "reaction_retracted"
     # Columns every conversation projection decodes; ``active`` rides along so a display read
     # can split compaction-archived rows without a second query. Contract: must include every
     # ``agent.transcript_repair._OWNED_COLUMNS`` column, because replay stamps

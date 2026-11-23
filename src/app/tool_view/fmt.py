@@ -96,16 +96,34 @@ def parse_maybe_object(value: Any) -> dict:
 
 NEUTRAL_FAILURE_TOOLS = frozenset(['skill_manage'])
 
+NEUTRAL_FAILURE_KIND = 'input'
+
+NEUTRAL_FAILURE_MARKERS = (
+    'Could not find a match for old_string',
+    'new skills must fit the ',
+    'YAML frontmatter parse error',
+    'already exists',
+    'is required',
+)
+
 
 def is_neutral_failure(tool_name: str | None, result: Any) -> bool:
     if (tool_name or '') not in NEUTRAL_FAILURE_TOOLS:
         return False
 
-    error = parse_maybe_object(result).get('error')
+    record = parse_maybe_object(result)
+
+    kind = record.get('error_kind')
+    if kind:
+        return kind == NEUTRAL_FAILURE_KIND
+
+    error = record.get('error')
     if error is None:
         error = result if isinstance(result, str) else ''
 
-    return 'ROLLBACK FAILED' not in (error if isinstance(error, str) else str(error))
+    text = error if isinstance(error, str) else str(error)
+
+    return any(marker in text for marker in NEUTRAL_FAILURE_MARKERS)
 
 
 def tool_call_failed(part: Any) -> bool:

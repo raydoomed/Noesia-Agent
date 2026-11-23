@@ -106,6 +106,7 @@ class ToolView:
     terminal_exit_code: float | None = None
     stdout: str | None = None
     title_action: ToolTitleAction | None = None
+    foldable: bool = False
 
 
 @dataclass

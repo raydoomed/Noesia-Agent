@@ -195,11 +195,13 @@ def shell_command(args: dict[str, Any]) -> str:
 
 TOOL_META: dict[str, ToolMetaSpec] = {
     "browser_click": ToolMetaSpec(icon="globe", tone="browser"),
+    "browser_exec": ToolMetaSpec(icon="globe", tone="browser"),
     "browser_fill": ToolMetaSpec(icon="globe", tone="browser"),
     "browser_navigate": ToolMetaSpec(icon="globe", tone="browser"),
     "browser_snapshot": ToolMetaSpec(icon="globe", tone="browser"),
     "browser_take_screenshot": ToolMetaSpec(icon="file-media", tone="browser"),
     "browser_type": ToolMetaSpec(icon="globe", tone="browser"),
+    "browser_vault": ToolMetaSpec(icon="globe", tone="browser"),
     "clarify": ToolMetaSpec(icon="question", tone="agent"),
     "cronjob": ToolMetaSpec(icon="watch", tone="agent"),
     "cronjob_manage": ToolMetaSpec(icon="watch", tone="agent"),
@@ -218,6 +220,9 @@ TOOL_META: dict[str, ToolMetaSpec] = {
     "terminal": ToolMetaSpec(icon="terminal", tone="terminal"),
     "todo": ToolMetaSpec(icon="tools", tone="agent"),
     "todo_list": ToolMetaSpec(icon="tools", tone="agent"),
+    "tool_call": ToolMetaSpec(icon="tools", tone="agent"),
+    "tool_describe": ToolMetaSpec(icon="tools", tone="agent"),
+    "tool_search": ToolMetaSpec(icon="search", tone="agent"),
     "vision_analyze": ToolMetaSpec(icon="eye", tone="image"),
     "web_extract": ToolMetaSpec(icon="globe", tone="web"),
     "web_search": ToolMetaSpec(icon="search", tone="web"),
@@ -541,6 +546,9 @@ def tool_result_count(
     part: ToolPart, args_record: dict[str, Any], result_record: dict[str, Any]
 ) -> CountMetric | None:
     if part.result is None:
+        return None
+
+    if part.tool_name == "skill_manage":
         return None
 
     fallback_noun_by_tool = fallback_count_noun(part.tool_name)
@@ -989,6 +997,9 @@ def cronjob_detail(args_record: dict[str, Any], result_record: dict[str, Any]) -
 def tool_subtitle(part: ToolPart, args_record: dict[str, Any], result_record: dict[str, Any]) -> str:
     tool_name = part.tool_name
 
+    if tool_name in ("tool_call", "tool_describe", "tool_search"):
+        return ""
+
     if tool_name == "browser_navigate":
         url = (
             first_string_field(args_record, ["url", "target"])
@@ -1197,6 +1208,47 @@ def nested_call_detail(args: dict[str, Any], result: Any) -> str:
     return "\n\n".join(line for line in lines if line)
 
 
+_DETAIL_MAX_LINES = 5
+
+
+def _fold_detail_lines(lines: list[str]) -> str:
+    extra = len(lines) - _DETAIL_MAX_LINES
+
+    if extra > 0:
+        lines = lines[:_DETAIL_MAX_LINES] + [f"+{extra}"]
+
+    return "\n".join(lines)
+
+
+def tool_describe_detail(result_record: dict[str, Any]) -> str:
+    tools = result_record.get("tools")
+    lines: list[str] = []
+
+    if isinstance(tools, dict):
+        for name, spec in tools.items():
+            record = spec if isinstance(spec, dict) else {}
+            head = first_string_field(record, ["description"]).splitlines()
+            summary = head[0].strip() if head else ""
+            lines.append(f"{name} — {summary}" if summary else str(name))
+
+    return _fold_detail_lines(lines)
+
+
+def tool_search_detail(result_record: dict[str, Any]) -> str:
+    names: list[str] = []
+    results = result_record.get("results")
+
+    if isinstance(results, list):
+        for group in results:
+            record = group if isinstance(group, dict) else {}
+
+            for name in record.get("matches") or []:
+                if isinstance(name, str) and name not in names:
+                    names.append(name)
+
+    return _fold_detail_lines(names)
+
+
 def tool_detail_text(part: ToolPart, args_record: dict[str, Any], result_record: dict[str, Any]) -> str:
     if part.tool_name == "tool_call":
         return nested_call_detail(args_record, tool_result_record(part))
@@ -1284,6 +1336,12 @@ def tool_detail_text(part: ToolPart, args_record: dict[str, Any], result_record:
         )
 
         return re.sub(r"\bDuration\s+S\s*:", "Duration:", detail, flags=re.I | re.A)
+
+    if part.tool_name == "tool_describe":
+        return tool_describe_detail(result_record)
+
+    if part.tool_name == "tool_search":
+        return tool_search_detail(result_record)
 
     if part.tool_name == "cronjob":
         return cronjob_detail(args_record, result_record)
@@ -1591,6 +1649,9 @@ def build_tool_view(part: ToolPart | Mapping[str, Any], inline_diff: str) -> Too
     else:
         detail = detail_body
 
+    if detail and (looks_redundant(title, detail) or looks_redundant(subtitle, detail)):
+        detail = ""
+
     search_hits = (
         extract_search_results(part.result) if part.tool_name == "web_search" and status != "error" else None
     )
@@ -1609,6 +1670,8 @@ def build_tool_view(part: ToolPart | Mapping[str, Any], inline_diff: str) -> Too
     has_split_streams = renders_ansi and (bool(stdout) or bool(stderr_raw))
     terminal_command = shell_command(args_record) if part.tool_name == "terminal" else None
     terminal_exit_code = numeric_field(result_record, "exit_code") if part.tool_name == "terminal" else None
+    image = tool_image_url(args_record, result_record)
+    foldable = bool(detail or inline_diff or image or search_hits or stdout or stderr_raw)
 
     return ToolView(
         count_label=format_count_label(result_count) if result_count else None,
@@ -1616,7 +1679,7 @@ def build_tool_view(part: ToolPart | Mapping[str, Any], inline_diff: str) -> Too
         detail_label="Error details" if error else tool_detail_label(part.tool_name),
         duration_label=duration_label(result_record),
         icon=meta.icon,
-        image_url=tool_image_url(args_record, result_record),
+        image_url=image,
         inline_diff=inline_diff,
         renders_ansi=renders_ansi or None,
         search_query=search_query or None,
@@ -1630,4 +1693,5 @@ def build_tool_view(part: ToolPart | Mapping[str, Any], inline_diff: str) -> Too
         title=title,
         title_action=None if unavailable else title_parts.action,
         tone=meta.tone,
+        foldable=foldable,
     )

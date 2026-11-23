@@ -142,22 +142,31 @@ def prepend_note(run_message: Any, note: str) -> Any:
     return run_message
 
 
-def format_reaction_notes(pending: list[dict[str, Any]]) -> str:
-    """Model-input notes for reactions the user left, one line each.
+def _reaction_snippet(entry: dict[str, Any]) -> str:
+    snippet = (entry.get("text") or "").strip().replace("\n", " ")
+    return snippet[:120] + "…" if len(snippet) > 120 else snippet
+
+
+def format_reaction_notes(pending: list[dict[str, Any]], retracted: list[dict[str, Any]] = ()) -> str:
+    """Model-input notes for reactions the user left or took back, one line each.
 
     A row with text is quoted back (trimmed to 120 chars) so the model knows which message was
     reacted to; an attachment-only or tool-call-only row gets the unquoted form."""
     notes = []
     for entry in pending or ():
-        snippet = (entry.get("text") or "").strip().replace("\n", " ")
-        if len(snippet) > 120:
-            snippet = snippet[:120] + "…"
-        emoji = entry.get("emoji") or ""
+        snippet, emoji = _reaction_snippet(entry), entry.get("emoji") or ""
         whose = "their own" if entry.get("role") == "user" else "your"
         if snippet:
             notes.append(f'[The user reacted {emoji} to {whose} message: "{snippet}"]')
         else:
             notes.append(f"[The user reacted {emoji} to {whose} earlier message]")
+    for entry in retracted or ():
+        snippet, emoji = _reaction_snippet(entry), entry.get("emoji") or ""
+        whose = "their own" if entry.get("role") == "user" else "your"
+        if snippet:
+            notes.append(f'[The user removed {emoji} from {whose} message: "{snippet}"]')
+        else:
+            notes.append(f"[The user removed {emoji} from {whose} earlier message]")
     return "\n".join(notes)
 
 
@@ -556,15 +565,16 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             return True
         return self._execute_write(_do)
 
-    def _reaction_list(self, meta: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Well-formed (dict) reactions stored under ``REACTIONS_METADATA_KEY``."""
-        reactions = (meta or {}).get(self.REACTIONS_METADATA_KEY)
-        return [r for r in reactions if isinstance(r, dict)] if isinstance(reactions, list) else []
+    def _meta_list(self, meta: Optional[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+        """Well-formed (dict) entries stored under *key* in ``display_metadata``."""
+        values = (meta or {}).get(key)
+        return [v for v in values if isinstance(v, dict)] if isinstance(values, list) else []
 
     def set_message_reaction(self, session_id: str, message_row_id: int, emoji: Optional[str], *,
                              author: str = "user") -> Optional[list[dict[str, Any]]]:
         """Set (``emoji=None``: clear) *author*'s reaction. Tapback semantics: one per author per message;
-        the same emoji again clears, a different one replaces. Returns the list after the write, or
+        the same emoji again clears, a different one replaces. A clear also records a retraction under
+        ``RETRACTIONS_METADATA_KEY`` so the next turn can announce it. Returns the list after the write, or
         ``None`` for a row outside the session's visible resume lineage (see ``_reaction_row_query``)."""
         if not session_id or message_row_id is None:
             return None
@@ -574,11 +584,16 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
             if row is None:
                 return None
             meta = self._decode_display_metadata(row[0]) or {}
-            existing = self._reaction_list(meta)
+            existing = self._meta_list(meta, self.REACTIONS_METADATA_KEY)
             reactions = [r for r in existing if r.get("author") != author]
             previous = next((r for r in existing if r.get("author") == author), None)
             if emoji and (previous is None or previous.get("emoji") != emoji):
                 reactions.append({"emoji": _scrub_surrogates(emoji), "author": author, "at": time.time()})
+            elif previous is not None:
+                retracted = self._meta_list(meta, self.RETRACTIONS_METADATA_KEY)
+                retracted.append({"emoji": previous.get("emoji") or "", "author": author,
+                                  "at": time.time(), "seen": False})
+                meta[self.RETRACTIONS_METADATA_KEY] = retracted
             if reactions:
                 meta[self.REACTIONS_METADATA_KEY] = reactions
             else:
@@ -592,7 +607,9 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         if not session_id or message_row_id is None:
             return []
         row = self._read_one(*self._reaction_row_query(session_id, message_row_id))
-        return self._reaction_list(self._decode_display_metadata(row[0])) if row is not None else []
+        if row is None:
+            return []
+        return self._meta_list(self._decode_display_metadata(row[0]), self.REACTIONS_METADATA_KEY)
 
     def _reaction_row_query(self, session_id: str, message_row_id: int) -> tuple[str, tuple]:
         """A reaction addresses a row the client can SEE, and a display resume materializes the whole
@@ -603,33 +620,41 @@ class SessionMessagesMixin(SessionDetachedResultsMixin, SessionTodoResultMixin):
         return _DISPLAY_META_ROW_SQL.format(ids=_placeholders(lineage)), (message_row_id, *lineage)
 
     def take_unseen_reactions(self, session_id: str, *, author: str = "user") -> list[dict[str, Any]]:
-        """Return *author*'s not-yet-surfaced reactions and mark them seen. Reactions are announced on the
-        NEXT user turn (never by rewriting the reacted message: cache-safe); ``seen`` makes it exactly once.
-        Include compaction-archived history that remains visible, but exclude rewound/superseded rows."""
+        """Return *author*'s not-yet-surfaced reactions and mark them seen."""
+        return self._take_unseen_reaction_entries(session_id, self.REACTIONS_METADATA_KEY, author)
+
+    def take_unseen_reaction_retractions(self, session_id: str, *, author: str = "user") -> list[dict[str, Any]]:
+        """Return *author*'s not-yet-surfaced tapback removals and mark them seen."""
+        return self._take_unseen_reaction_entries(session_id, self.RETRACTIONS_METADATA_KEY, author)
+
+    def _take_unseen_reaction_entries(self, session_id: str, key: str, author: str) -> list[dict[str, Any]]:
+        """Reactions and retractions share this scan. They are announced on the NEXT user turn (never by
+        rewriting the reacted message: cache-safe); ``seen`` makes it exactly once. Include
+        compaction-archived history that remains visible, but exclude rewound/superseded rows."""
         if not session_id:
             return []
         lineage = self._resume_lineage_ids(session_id)
         def _do(conn):
             pending = []
-            # Only reaction-bearing rows cross into Python: display_metadata also carries delivery /
+            # Only entry-bearing rows cross into Python: display_metadata also carries delivery /
             # attachment markers on most rows, and the lineage scan grows with the session's age.
             for row in conn.execute("SELECT id, role, content, display_metadata FROM messages "
                     f"WHERE session_id IN ({_placeholders(lineage)}){_DISPLAY_ACTIVE_CLAUSE} "
-                    f"AND {_sql_json_extract('display_metadata', '$.' + self.REACTIONS_METADATA_KEY)} IS NOT NULL "
+                    f"AND {_sql_json_extract('display_metadata', '$.' + key)} IS NOT NULL "
                     "ORDER BY id", tuple(lineage)).fetchall():
                 meta = self._decode_display_metadata(row["display_metadata"])
-                reactions = meta.get(self.REACTIONS_METADATA_KEY) if meta else None
-                if not isinstance(reactions, list):
+                entries = meta.get(key) if meta else None
+                if not isinstance(entries, list):
                     continue
                 changed = False
-                for reaction in reactions:
-                    if not isinstance(reaction, dict) or reaction.get("author") != author or reaction.get("seen"):
+                for entry in entries:
+                    if not isinstance(entry, dict) or entry.get("author") != author or entry.get("seen"):
                         continue
-                    reaction["seen"] = True
+                    entry["seen"] = True
                     changed = True
                     content = self._decode_content(row["content"])
                     pending.append({
-                        "row_id": row["id"], "role": row["role"], "emoji": reaction.get("emoji") or "",
+                        "row_id": row["id"], "role": row["role"], "emoji": entry.get("emoji") or "",
                         "text": content if isinstance(content, str) else ""})
                 if changed:
                     conn.execute(_SET_DISPLAY_META_SQL, (self._encode_display_metadata(meta), row["id"]))

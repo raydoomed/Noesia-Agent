@@ -415,7 +415,7 @@ from app.tool_view.helpers import is_file_edit_tool, strip_ansi
 from app.tool_view.icons import icon_svg
 from app.tool_view.codicon_icons import codicon_for_filename
 from app.tool_view.adapter import view_for
-from app.tool_view.model import count_diff_line_stats, looks_redundant, tool_copy_payload, tool_meta
+from app.tool_view.model import count_diff_line_stats, tool_copy_payload, tool_meta
 from app.model_menu import current_label, fill_menu, group_models
 from app.window_geometry import (
     cursor_for,
@@ -1864,6 +1864,7 @@ class ChatPanel(QtWidgets.QWidget):
         self._zone: tuple | None = None
         self._hooked_scrolls: set[int] = set()
         self._msgs: list[dict] = []
+        self._reaction_pending: dict | None = None
         self._stream_msg: dict | None = None
         self._bar_buttons: list[HoverActionButton] = []
         self._bar_msg: dict | None = None
@@ -2353,6 +2354,7 @@ class ChatPanel(QtWidgets.QWidget):
         self.view.clear()
         self._streaming = False
         self._row_stamp_pending = None
+        self._reaction_pending = None
         self._stream_msg = None
         self._flush_timer.stop()
         self._reason_timer.stop()
@@ -3204,14 +3206,24 @@ class ChatPanel(QtWidgets.QWidget):
                 tail = " ".join(text.split(_AUTO_CONTINUE_REQUEST, 1)[1].split())
             self.append_notice_lines([f"{label}：{tail}" if tail else label])
             return
+        row_id = item.get("row_id")
+        row_id = row_id if isinstance(row_id, int) else None
         if str(item.get("role") or "") == "user":
-            row_id = item.get("row_id")
-            row_id = row_id if isinstance(row_id, int) else None
             self.append_user(text, row_id=row_id)
-            self.append_reaction(item.get("display_metadata"), row_id=row_id)
         else:
             self.append_chunk(text, replay=True)
             self.end_assistant()
+            if (
+                row_id is not None
+                and self._msgs
+                and self._msgs[-1].get("role") == "assistant"
+                and self._msgs[-1].get("row_id") is None
+            ):
+                self._msgs[-1]["row_id"] = row_id
+        target = self._find_msg_for_row(row_id)
+        if target is None and row_id is None and self._msgs:
+            target = self._msgs[-1]
+        self.append_reaction(item.get("display_metadata"), msg=target)
 
     def _paint_setup_receipt(self, item) -> bool:
         """历史里的名字卡：从工具结果里取回名字，画成和当场那张一样的卡（答过那行绿字）。
@@ -3455,33 +3467,33 @@ class ChatPanel(QtWidgets.QWidget):
         return " ".join(parts)
 
     def _find_msg_for_row(self, row_id: int | None) -> dict | None:
-        """这条行号落在哪条消息上：刚发出去那条还没回填行号，就认最近的一条。"""
-        for item in reversed(self._msgs):
-            if item.get("role") != "user":
-                continue
-            if row_id is None or item.get("row_id") == row_id:
-                return item
+        """这条行号落在哪条消息上：按行号精确认，认不出就是没有。拿不准就不画。"""
         if row_id is None:
             return None
+        rid = int(row_id)
         for item in reversed(self._msgs):
-            if item.get("role") == "user" and item.get("row_id") is None:
+            if item.get("row_id") == rid:
                 return item
         return None
 
-    def append_reaction(self, meta, row_id: int | None = None) -> None:
-        """把这条消息身上的表情整体画一遍：历史和实时走同一条路，画几遍都长一个样。"""
+    def append_reaction(self, meta, row_id: int | None = None, msg: dict | None = None) -> None:
+        """把这条消息身上的表情整体画一遍：历史和实时走同一条路，画几遍都长一个样。
+
+        定位只认两样：行号，或调用方当场递过来的那条消息（历史铺行、刚 append 完都能给准）。
+        两样都没有就不画并记一条，绝不往「最近一条」上挪。
+        """
         entries = self._reaction_entries(meta)
         if not entries:
             return
-        msg = self._find_msg_for_row(row_id)
-        if msg is None:
-            logger.info(
+        target = msg if msg is not None else self._find_msg_for_row(row_id)
+        if target is None:
+            logger.warning(
                 "reaction 未匹配 row_id=%s 面板最近=%s",
                 row_id,
                 [item.get("row_id") for item in self._msgs][-5:],
             )
             return
-        self.set_reactions(msg, entries)
+        self.set_reactions(target, entries)
 
     def set_reactions(self, msg: dict, entries: list[dict]) -> None:
         """回答那条：反应就长在表情按钮上，不另起一行；自己那条才在气泡下方落一行。"""
@@ -4337,31 +4349,58 @@ class ChatPanel(QtWidgets.QWidget):
         self.toggle_reaction(msg, str(entries[slot].get("emoji") or ""))
 
     def toggle_reaction(self, msg: dict, emoji: str | None) -> None:
-        """点了就先画上，随后落库；引擎回来的那份列表才算准，失败再退回原来的。"""
+        """点了就先画上，随后落库；引擎回来的那份列表才算准，失败再退回原来的。
+
+        取消必须打在**这一条**上，所以没有行号就拒绝：猜一个「最新那条」会把取消写成加，
+        落在别人身上（真机上就这么丢过一颗心）。加一颗容许猜，落库后回执会把行号补回来。
+        """
         before: list[dict] = [dict(e) for e in (msg.get("reactions") or ()) if isinstance(e, dict)]
         after = reactions.apply_reaction(before, emoji, "user")
         if after == before:
             return
-        self.set_reactions(msg, after)
+        removing = any(
+            e.get("emoji") == emoji and e.get("author") == "user" for e in before
+        )
         params: dict = {"emoji": emoji, "author": "user"}
         if msg.get("row_id") is None:
+            if removing:
+                logger.warning(
+                    "reaction 取消没有行号，拒绝：role=%s emoji=%r 面板最近=%s",
+                    msg.get("role"),
+                    emoji,
+                    [item.get("row_id") for item in self._msgs][-5:],
+                )
+                return
             params["newest_role"] = msg.get("role") or "user"
         else:
             params["row_id"] = int(msg["row_id"])
+        self.set_reactions(msg, after)
+        self._reaction_pending = msg
         self.reaction_requested.emit(params, msg, before)
 
     def apply_reaction_result(self, payload: dict) -> None:
         """引擎回的权威列表：顺手把行号回填到那条上，表情照它重画。"""
         row_id = payload.get("row_id")
-        msg = self._find_msg_for_row(row_id)
-        if msg is None:
+        if row_id is None:
+            logger.warning("reaction 回执没带行号：%r", payload)
             return
-        if row_id is not None and msg.get("row_id") is None:
-            msg["row_id"] = int(row_id)
+        rid = int(row_id)
+        msg = self._find_msg_for_row(rid) or self._reaction_pending
+        self._reaction_pending = None
+        if msg is None or msg.get("row_id") not in (None, rid):
+            logger.warning(
+                "reaction 回执找不到落点 row_id=%s 面板最近=%s",
+                rid,
+                [item.get("row_id") for item in self._msgs][-5:],
+            )
+            return
+        if msg.get("row_id") is None:
+            msg["row_id"] = rid
         self.set_reactions(msg, self._reaction_entries({"reactions": payload.get("reactions") or ()}))
 
     def rollback_reaction(self, msg, before: list[dict]) -> None:
         """落库没成：把刚才那一下画回去。"""
+        self._reaction_pending = None
         if msg is None:
             return
         self.set_reactions(msg, list(before or ()))
@@ -4738,11 +4777,14 @@ class ChatPanel(QtWidgets.QWidget):
                 open_=False,
                 glyph=glyph,
                 accent=self._title_accent(view, pending),
+                foldable=view.foldable,
             )
             if tool_id:
                 self._tool_folds[tool_id] = fold
-        elif label != fold.label or self._glyph_url(glyph) != self._glyph_url(fold.glyph):
+        elif (label != fold.label or self._glyph_url(glyph) != self._glyph_url(fold.glyph)
+              or bool(view.foldable) != fold.foldable):
             fold.glyph = glyph
+            fold.foldable = bool(view.foldable)
             self._folds.retitle(fold, label)
         self._note_fold(
             fold,
@@ -5257,8 +5299,6 @@ class ChatPanel(QtWidgets.QWidget):
 
         if not view.detail:
             return
-        if looks_redundant(view.title, view.detail) or looks_redundant(view.subtitle, view.detail):
-            return
         if view.detail_label:
             self._folds.append_runs(fold, [[(view.detail_label, self._label_format())]])
         self._append_text(fold, view.detail, ansi=bool(view.renders_ansi))
@@ -5365,11 +5405,13 @@ class ChatPanel(QtWidgets.QWidget):
         glyph = self._tool_icon_glyph(name, ok=ok)
         fold = self._tool_folds.get(tool_id) if tool_id else None
         if fold is None:
-            fold = self._folds.new("tool", label, open_=False, glyph=glyph)
+            fold = self._folds.new("tool", label, open_=False, glyph=glyph, foldable=bool(body))
             if tool_id:
                 self._tool_folds[tool_id] = fold
-        elif label != fold.label or self._glyph_url(glyph) != self._glyph_url(fold.glyph):
+        elif (label != fold.label or self._glyph_url(glyph) != self._glyph_url(fold.glyph)
+              or bool(body) != fold.foldable):
             fold.glyph = glyph
+            fold.foldable = bool(body)
             self._folds.retitle(fold, label)
         self._note_fold(fold, "tool", name=name, label=label, glyph=glyph)
         if body:

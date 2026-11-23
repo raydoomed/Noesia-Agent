@@ -13,8 +13,8 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger("tools.skill_manager_tool")
 
 
-def _refusal(message: str, **extra: Any) -> dict[str, Any]:
-    return {"success": False, "error": message, **extra}
+def _refusal(message: str, *, kind: str = "input", **extra: Any) -> dict[str, Any]:
+    return {"success": False, "error": message, "error_kind": kind, **extra}
 
 
 def _is_background_review() -> bool:

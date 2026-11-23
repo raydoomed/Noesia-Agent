@@ -411,7 +411,7 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         atomic_write_text(target, original, preserve_mode=True)
     else:
         target.unlink(missing_ok=True)
-    return _err(scan_error)
+    return _err(scan_error, kind="blocked")
 
 
 def _add_description_prompt_preview(result: dict[str, Any], content: str) -> dict[str, Any]:
@@ -711,7 +711,7 @@ def _act_patch(a):
     """Two shapes: old_string/new_string = targeted replacement (validated in _patch_skill so the
     tool and the helper give the same guidance); content alone = full rewrite (the old 'edit')."""
     if a["content"] and (a["old_string"] or a["new_string"] is not None):
-        return tool_error(_PATCH_EITHER_OR, success=False)
+        return tool_error(_PATCH_EITHER_OR, success=False, error_kind="input")
     if a["content"]:
         return _edit_skill(a["name"], a["content"])
     return _patch_skill(a["name"], a["old_string"], a["new_string"], a["file_path"], a["replace_all"])
@@ -785,7 +785,7 @@ def skill_manage(
     if (gate_result := _apply_skill_write_gate(action, name, **args)) is not None:
         return gate_result
     if (shape_err := _op_shape_error(action, args)) is not None:
-        return tool_error(shape_err, success=False)
+        return tool_error(shape_err, success=False, error_kind="input")
     # Validate before the lock is keyed on the name, so a rejected name never touches .locks/
     # (create takes a bare name; the other actions also accept ``category/name``).
     if (name_err := _validate_name(name if action == "create" or not name else Path(name).name)) is not None:

@@ -174,12 +174,12 @@ def consume_gateway_turn_context_notes(agent: Any) -> str:
 
 
 def stage_reaction_note(agent: Any) -> None:
-    """Stage the reactions the user left since the last turn on the per-turn note channel.
+    """Stage the reactions the user left or took back since the last turn on the per-turn note channel.
 
     Called right before ``build_turn_context`` so it rides the same one-shot user-message injection
     the gateway notes use: every turn path (gateway / tui_gateway / api_server) delivers it, and the
     transcript keeps the original user message untouched. Reading the rows stamps them seen, so each
-    reaction is announced exactly once."""
+    reaction and retraction is announced exactly once."""
     with suppress(Exception):
         db = getattr(agent, "_session_db", None)
         target = str(getattr(agent, "session_id", None) or "")
@@ -187,15 +187,16 @@ def stage_reaction_note(agent: Any) -> None:
             logger.warning("reaction note skipped: db=%s session_id=%r", bool(db), target)
             return
         rows = list(db.take_unseen_reactions(target, author="user") or ())
-        if not rows:
+        retracted = list(db.take_unseen_reaction_retractions(target, author="user") or ())
+        if not rows and not retracted:
             return
         from noesia_state_messages import format_reaction_notes
-        note = format_reaction_notes(rows)
+        note = format_reaction_notes(rows, retracted)
         if not note:
             return
         prior = getattr(agent, "_gateway_turn_context_notes", "") or ""
         agent._gateway_turn_context_notes = f"{prior}\n\n{note}" if prior else note
-        logger.info("Reaction check %s: %d pending", target, len(rows))
+        logger.info("Reaction check %s: %d pending, %d retracted", target, len(rows), len(retracted))
 
 
 def consume_surface_switch_note(agent: Any) -> str:

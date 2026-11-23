@@ -91,6 +91,7 @@ class Fold:
     accent_span: tuple[int, int] = (0, 0)
     head_block: QtGui.QTextBlock | None = field(default=None, repr=False)
     has_body: bool = False
+    foldable: bool = True
     pinned: bool = False
     glyph: QtGui.QTextImageFormat | None = field(default=None, repr=False)
     scroll: QtWidgets.QWidget | None = field(default=None, repr=False)
@@ -224,17 +225,23 @@ class Folds:
         fold.glyph = glyph
         self.retitle(fold, fold.label)
 
-    def new(self, kind: str, label: str, *, open_: bool = False, glyph=None, accent: str = "") -> Fold:
+    @staticmethod
+    def _head_text(fold: Fold, label: str) -> str:
+        return head_text(label, fold.open) if fold.foldable else label
+
+    def new(self, kind: str, label: str, *, open_: bool = False, glyph=None, accent: str = "",
+            foldable: bool = True) -> Fold:
         cursor = self._end_cursor()
         self._start_block(cursor, margin=self._gap)
         head_pos = cursor.position()
         self._seq += 1
-        fold = Fold(key=self._seq, kind=kind, label=label, open=bool(open_), accent=accent)
+        fold = Fold(key=self._seq, kind=kind, label=label, open=bool(open_), accent=accent,
+                    foldable=bool(foldable))
         if glyph is not None:
             fold.glyph = glyph
             cursor.insertImage(glyph)
             cursor.insertText(" ")
-        fold.accent_span = self._insert_head(cursor, fold, head_text(label, fold.open))
+        fold.accent_span = self._insert_head(cursor, fold, self._head_text(fold, label))
         fold.head_block = self._doc.findBlock(head_pos)
         head_format = fold.head_block.blockFormat()
         head_format.setLineHeight(18, QtGui.QTextBlockFormat.LineHeightTypes.FixedHeight.value)
@@ -571,7 +578,7 @@ class Folds:
 
     def toggle(self, key: int) -> bool | None:
         fold = self._items.get(key)
-        if fold is None:
+        if fold is None or not fold.foldable:
             return None
         self.set_open(fold, not fold.open)
         self.retitle(fold, fold.label)
@@ -714,7 +721,7 @@ class Folds:
         if fold.glyph is not None:
             cursor.insertImage(fold.glyph)
             cursor.insertText(" ")
-        fold.accent_span = self._insert_head(cursor, fold, head_text(label, fold.open))
+        fold.accent_span = self._insert_head(cursor, fold, self._head_text(fold, label))
         cursor.endEditBlock()
         fold.label = label
         fold.head_block = self._doc.findBlock(pos)
