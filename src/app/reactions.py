@@ -54,24 +54,6 @@ def apply_reaction(
     return without + [{"emoji": emoji, "author": author}]
 
 
-def merge_reactions(
-    persisted: list[dict] | None,
-    local: list[dict] | None = None,
-    agent_live: list[dict] | None = None,
-) -> list[dict]:
-    """落库的那份打底，本窗口刚点的和 agent 实时来的盖在上面——各占自己那一格。"""
-    stored = list(persisted or ())
-    if local is None:
-        user_side = [e for e in stored if e.get("author") == "user"]
-    else:
-        user_side = [e for e in local if e.get("author") == "user"]
-    if agent_live is None:
-        agent_side = [e for e in stored if e.get("author") == "agent"]
-    else:
-        agent_side = list(agent_live)
-    return user_side + agent_side
-
-
 class _EmojiGrid(QtWidgets.QListWidget):
     """一格一个表情；点一下就把字符抛出去。"""
 

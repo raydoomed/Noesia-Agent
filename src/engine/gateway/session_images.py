@@ -15,12 +15,14 @@ async def attach_bytes(connection, ref, params):
     # The declared ``profile`` selector names this owner's own home or is refused (dokterdok N73).
     from gateway.session_busy_controls import authorize
     authorize(connection, ref, params, 'session:submit')
+    live = connection.authority.sessions.get(ref.session_id)
+    if live is None:
+        raise RuntimeStoreError('not_found')
     # The owner, never the caller or ambient process profile, selects staging.
     directory = Path(connection.authority.profile_id) / 'cache' / 'images'
     staged = await asyncio.to_thread(_stage, directory, params)
     # The next turn consumes this queue (``_native_image_run_message`` reads and clears it);
     # staging alone leaves the pixels on disk with nothing pointing at them.
-    live = connection.authority.sessions[ref.session_id]
     connection.authority.runner._session_state(live.route).persistent.native_image_paths.append(
         staged['path'])
     return staged

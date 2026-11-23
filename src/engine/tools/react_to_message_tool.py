@@ -83,8 +83,7 @@ def react_to_message_tool(emoji: str, message_row_id=None, messages_back=None) -
 
 
 def check_react_requirements() -> bool:
-    """Opt-in flag (Settings → Appearance); ``desktop_ui`` already restricts to GUI sessions."""
-    return desktop_ui.user_enabled("message_reactions", default=False)
+    return desktop_ui.user_enabled("message_reactions", default=True)
 
 
 REACT_TO_MESSAGE_SCHEMA = {
