@@ -42,6 +42,39 @@ class _InputMixin:
                 return None
         return _refuse(tool, missing_msg) if missing_msg else None
 
+    def _element_drag_args(self, args: dict[str, Any], from_element: int, to_element: int) -> Optional[ActionResult]:
+        """Translate an element-to-element drag into window-relative screenshot pixels.
+
+        cua-driver 0.59's `drag` accepts nothing but coordinates. ``frame`` and ``window_bounds`` are both
+        screen-space, so their difference is the window-relative point; the screenshot/window ratio then maps
+        it onto the pixels the driver expects — the two differ by the client-area border, which
+        ``window_bounds`` excludes.
+        """
+        if self._active_window_id is None:
+            return _refuse("drag", "No active window_id for element-based drag.")
+        wb = self._active_window_bounds or {}
+        try:
+            ox, oy = float(wb["x"]), float(wb["y"])
+            ww, wh = float(wb["width"]), float(wb["height"])
+        except (KeyError, TypeError, ValueError):
+            return _refuse("drag", "No window geometry for element-based drag; capture again.")
+        # A zero/negative extent or a missing screenshot size means the capture did not describe the window, so
+        # there is no honest scale factor — guessing 1.0 would silently drop the DPI correction and drag to the
+        # wrong pixel. Refuse instead.
+        sw, sh = self._active_screenshot_size or (0, 0)
+        if ww <= 0 or wh <= 0 or not sw or not sh:
+            return _refuse("drag", "Window/screenshot geometry is empty; capture again.")
+        sx, sy = sw / ww, sh / wh
+        points: dict[str, int] = {}
+        for edge, idx in (("from", from_element), ("to", to_element)):
+            frame = self._snapshot_frames.get(idx)
+            if not frame or frame == (0, 0, 0, 0):
+                return _refuse("drag", f"element #{idx} has no frame in the current snapshot; capture again.")
+            points[f"{edge}_x"] = int(round((frame[0] + frame[2] / 2.0 - ox) * sx))
+            points[f"{edge}_y"] = int(round((frame[1] + frame[3] / 2.0 - oy) * sy))
+        args.update(points, window_id=self._active_window_id)
+        return None
+
     def _apply_delivery(self, action: str, args: dict[str, Any], delivery_mode: Optional[str]) -> Optional[ActionResult]:
         """Attach delivery_mode to an input-action args dict. Background is the default and needs no flag.
         Foreground is only sent when the live action schema accepts it; on an older driver we refuse with
@@ -92,16 +125,17 @@ class _InputMixin:
         refusal, args = self._target_args("click")
         if refusal is not None:
             return refusal
-        # Tool is chosen by click_count only; `button` goes through click's enum (the driver rejects unknown
-        # buttons). `right_click` / `middle_click` MCP tools are deprecated aliases and never invoked here.
-        # Choose tool by click_count only — single-vs-double — and pass the button through to `click`'s
-        # `button` enum (Surface 5 of the driver contract). cua-driver-rs gained an explicit
-        # `button: "left"|"right"|"middle"` arg on `click` in trycua/cua#1961 which rejects unknown buttons;
-        # before that, `middle` was silently mapped to a left-click via name-routing through `right_click`.
+        # cua-driver 0.59's `double_click` schema is a stub — no `button`, no `count` — while `click` carries
+        # both. Route every click through `click` and express multi-click as `count`, which keeps right-double
+        # working instead of silently downgrading to a left one. `right_click` / `middle_click` MCP tools are
+        # deprecated aliases and never invoked here.
         button_norm = (button or "left").lower()
         if button_norm not in {"left", "right", "middle"}:
             return _refuse("click", f"unknown button {button!r} — expected left, right, middle.")
-        tool, args["button"] = ("double_click" if click_count == 2 else "click"), button_norm
+        tool = "click"
+        args["button"] = button_norm
+        if click_count != 1:
+            args["count"] = click_count
         refusal = self._pointer_args(tool, args, (
             ("element_index click", {"element_index": element} if element is not None else None),
             ("coordinate click", {"x": x, "y": y} if x is not None and y is not None else None),
@@ -115,10 +149,15 @@ class _InputMixin:
              button: str = "left", modifiers: Optional[list[str]] = None,
              delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("drag")
-        if refusal is None:
+        if refusal is not None:
+            return refusal
+        # cua-driver 0.59's `drag` takes window-relative pixels only — `from_element`/`to_element` were dropped
+        # with the rest of the element addressing, so translate the two element centres here. An index with no
+        # captured frame is refused rather than sent as a property the driver rejects outright.
+        if from_element is not None and to_element is not None:
+            refusal = self._element_drag_args(args, from_element, to_element)
+        else:
             refusal = self._pointer_args("drag", args, (
-                ("element-based drag", {"from_element": from_element, "to_element": to_element}
-                 if from_element is not None and to_element is not None else None),
                 ("coordinate drag", {"from_x": int(from_xy[0]), "from_y": int(from_xy[1]),
                                      "to_x": int(to_xy[0]), "to_y": int(to_xy[1])}
                  if from_xy is not None and to_xy is not None else None),

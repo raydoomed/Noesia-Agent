@@ -509,6 +509,17 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
             f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
             "— input actions always hit the sticky target from the last capture/focus_app. "
             f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
+    if spec.input:
+        want = {k: args.get(k) for k in ("pid", "window_id") if args.get(k) is not None}
+        if want:
+            last = getattr(backend, "_last_target", None) or {}
+            drift = {k: v for k, v in want.items() if last.get(k) != v}
+            if drift:
+                return json.dumps({"ok": False, "action": action, "code": "input_target_mismatch", "error": (
+                    f"{action} would go to the current target pid={last.get('pid')} "
+                    f"window_id={last.get('window_id')}, not {drift} — pid=/window_id= pick the capture target, "
+                    "they do not retarget input. Call capture(pid=..., window_id=...) or focus_app first, "
+                    "then retry.")})
     # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
     # handlers forward their kwargs to the backend verbatim, so the lease fence and the dedup session key ride
     # only on read handlers (delivery kwargs would leak into backend input calls, and vice versa).

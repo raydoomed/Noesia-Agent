@@ -353,16 +353,24 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         """Forget a capture/focus target so a failed lookup cannot misroute input."""
         self._active_pid = self._active_window_id = self._last_app = self._last_target = None
         # Surface 6 of the driver contract: per-snapshot `element_index -> element_token` map
-        # populated on capture(). Action tools (click/scroll/set_value/...) attach the matching token
-        # alongside `element_index` so cua-driver detects "stale" explicitly instead of silently
-        # re-resolving to a different element. Cleared whenever a fresh capture overwrites the snapshot
-        # context.
+        # populated on capture(). cua-driver 0.59 rejects `element_index` outright, so action tools
+        # (click/scroll/set_value/...) send the matching token in its place, which also makes a
+        # superseded snapshot report "stale" explicitly instead of silently re-resolving to a
+        # different element. Cleared whenever a fresh capture overwrites the snapshot context.
         self._snapshot_tokens: dict[int, str] = {}
+        # Frames and window geometry for the same snapshot: `drag` takes window-relative pixels in 0.59, so it
+        # converts element centres itself. Screen-space `frame` minus screen-space `window_bounds` is exact.
+        self._snapshot_frames: dict[int, tuple[int, int, int, int]] = {}
+        self._active_window_bounds: Optional[dict[str, Any]] = None
+        self._active_screenshot_size: Optional[tuple[int, int]] = None
 
     def _set_active_target(self, target: dict[str, Any]) -> None:
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
+        self._snapshot_frames = {}
+        self._active_window_bounds = None
+        self._active_screenshot_size = None
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
@@ -402,16 +410,17 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         return self._session.call_tool(name, payload, timeout=timeout)
 
     def _action(self, name: str, args: dict[str, Any], *, inject_session: bool = True) -> ActionResult:
-        # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit
-        # 'stale' error. Two ways to establish support, the live input schema first: cua-driver 0.21+ stopped
-        # publishing per-tool `capabilities[]` while still accepting `element_token` in its schema, and it REFUSES a
-        # bare `element_index` (`snapshot_id_required`) — gating on the capability alone broke EVERY element click and
-        # left only pixel clicks working. The capability check stays so older drivers that shipped the vocabulary keep
-        # working; drivers advertising neither (`additionalProperties: false`) must never see the property.
-        idx = args.get("element_index")
-        token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
-        if token and (self._session.supports_input_property(name, "element_token")
-                      or self._session.supports_capability("accessibility.element_tokens", tool=name)):
+        # cua-driver 0.59 dropped `element_index` from every input schema and validates arguments strictly —
+        # sending both is rejected outright (`unknown argument element_index`). Translate to the snapshot's
+        # `element_token` and drop the index; a token-less index means the capture carried no `elements`
+        # array, so fail loudly rather than send a property the driver refuses.
+        idx = args.pop("element_index", None)
+        if isinstance(idx, int):
+            token = self._snapshot_tokens.get(idx)
+            if not token:
+                return ActionResult(ok=False, action=name,
+                                    message=f"element #{idx} has no element_token in the current snapshot; "
+                                            f"capture again before acting on it")
             args["element_token"] = token
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)

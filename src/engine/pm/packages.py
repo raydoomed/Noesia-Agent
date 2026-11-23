@@ -290,10 +290,14 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
 
 def _uv_lock_digest(path: Path) -> bytes:
     """sha256 of uv.lock, cached on (mtime_ns, size) — check() runs at
-    every startup and uv.lock is megabyte-class."""
+    every startup and uv.lock is megabyte-class. Empty when there is no
+    uv.lock to hash."""
     import hashlib
 
-    stat = path.stat()
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return b""
     key = (stat.st_mtime_ns, stat.st_size)
     cached = _uv_lock_digest_cache.get(path)
     if cached and cached[0] == key:
@@ -947,7 +951,7 @@ class CuaDriver(BinaryPackage):
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
-        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v")
+        return github_release_tags("trycua/cua", strip_prefix="cua-driver-rs-v", allow_prerelease=True)
 
     def stage(self, store: Store, staged: Path, version: str, target: str) -> None:
         flatten_single_dir(staged)

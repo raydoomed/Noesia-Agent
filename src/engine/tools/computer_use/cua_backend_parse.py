@@ -242,6 +242,7 @@ def _ingest_windows(raw_windows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "window_id": window_id_int,
             # Only explicit False means off-screen; null (Linux 0.6.x) means unknown.
             "off_screen": w.get("is_on_screen") is False,
+            "minimized": w.get("minimized") is True,
             "title": title if isinstance(title, str) else "",
             "z_index": z_raw if isinstance(z_raw, (int, float)) and not isinstance(z_raw, bool) else 0,
         })

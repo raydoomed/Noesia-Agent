@@ -35,7 +35,7 @@ _NO_DESKTOP_WINDOW_MSG = ("<no desktop/shell window found for app={app!r}; cua-d
                           "and exposes no whole-virtual-desktop or per-monitor capture. Call list_apps / "
                           "capture(app='<AppName>') to target a specific window instead. On Windows the taskbar is "
                           "'Shell_TrayWnd' and the desktop is 'Progman'.>")
-_NO_APP_MATCH_MSG = ("<no on-screen window matched app={app!r}; call list_apps to see available app names or bundle "
+_NO_APP_MATCH_MSG = ("<no window matched app={app!r}; call list_apps to see available app names or bundle "
                      "IDs (macOS reports localized names, e.g. '計算機' instead of 'Calculator'; some Linux/Qt apps "
                      "only resolve via list_apps metadata)>")
 _NO_DESKTOP_IMAGE_MSG = ("<get_desktop_state returned no image; the driver may predate the desktop capture lane — "
@@ -43,6 +43,8 @@ _NO_DESKTOP_IMAGE_MSG = ("<get_desktop_state returned no image; the driver may p
 _FULL_SCREEN_NOTE = ("full-screen capture has no interactable elements; to act on what you see, call "
                      "capture(app='<AppName>') for that app's clickable element list, or capture(app='desktop') for "
                      "the desktop shell (wallpaper icons / taskbar) with elements")
+_MINIMIZED_MSG = ("window '{app}' is minimized and has no rendered content, so it cannot be captured. Restore it "
+                  "first with focus_app(app='{app}', raise_window=True), then capture again")
 
 def _linux_x11_active_window_id() -> Optional[int]:
     """Best-effort read of ``_NET_ACTIVE_WINDOW`` via xprop. Never raises."""
@@ -93,9 +95,12 @@ def _sorted_windows(out: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(_ingest_windows(_windows_from_tool_result(out)), key=lambda w: w["z_index"], reverse=True)
 
 def _tree_and_title(out: dict[str, Any]) -> tuple[str, str]:
-    """``(tree_markdown, window_title)`` from a get_window_state result."""
-    tree = _split_tree_text(data if isinstance((data := out.get("data")), str) else "")[1]
-    return tree, (match.group(1) if (match := re.search(r'AXWindow\s+"([^"]+)"', tree)) else "")
+    """``(tree_markdown, window_title)`` from a get_window_state result. cua-driver 0.59 puts both in
+    ``structuredContent``; ``data`` carries the same markdown behind a one-line summary, so it only
+    backfills a missing tree."""
+    sc = out.get("structuredContent") or {}
+    tree = sc.get("tree_markdown") or _split_tree_text(out["data"] if isinstance(out.get("data"), str) else "")[1]
+    return tree, sc.get("window_title") or ""
 
 def _gws_is_empty(out: dict[str, Any]) -> bool:
     """True when a get_window_state result carries neither a screenshot nor a parseable tree. Modern
@@ -170,9 +175,8 @@ class _CaptureMixin:
         return cli_out if cli_out is not None and not empty(cli_out) else out
 
     def list_windows(self) -> list[dict[str, Any]]:
-        """Visible windows frontmost-first, re-fetching over the CLI transport when MCP returns nothing."""
         return _sorted_windows(self._fetch_or_refetch(
-            "list_windows", {"on_screen_only": True, "session": self._session_id}, 20.0, "list_windows",
+            "list_windows", {"on_screen_only": False, "session": self._session_id}, 20.0, "list_windows",
             lambda out: not _sorted_windows(out),
             "cua-driver list_windows returned no windows over MCP; re-fetching via CLI transport"))
 
@@ -243,6 +247,11 @@ class _CaptureMixin:
     def _gws_args(self) -> dict[str, Any]:
         """``get_window_state`` args.
 
+        ``tree_format="both"`` is not optional: cua-driver 0.59 defaults to ``markdown``, which returns
+        ``structuredContent.elements == []`` — no ``frame`` bounds and no ``element_token`` — and every
+        element-addressed input action then gets rejected. ``both`` keeps the markdown tree the fallback
+        parser reads alongside the structured array.
+
         ``max_elements`` bounds the DRIVER's accessibility walk, not just its response: tool.py caps the
         surfaced element window at ``_DEFAULT_MAX_ELEMENTS`` (100) and spills the rest to a cache file, so
         walking a 1,444-node Electron tree — or Finder's, whose AX surface is pathologically slow — buys
@@ -250,7 +259,7 @@ class _CaptureMixin:
         model sees are unchanged. ``computer_use.ax_max_elements`` tunes it; 0 disables.
         """
         args: dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id,
-                                "session": self._session_id}
+                                "session": self._session_id, "tree_format": "both"}
         from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
         if capped := _cb._cua_configured_ax_max_elements():
             args["max_elements"] = capped
@@ -298,7 +307,13 @@ class _CaptureMixin:
         elements = (_parse_elements_from_structured(sc_elements) if isinstance(sc_elements, list) and sc_elements
                     else _parse_elements_from_tree(tree) if tree else [])
         # Tokens are tied to this snapshot: overwrite the whole map (and clear it when the new capture carries none).
+        sc_all = gws_out.get("structuredContent") or {}
         self._snapshot_tokens = {e.index: e.element_token for e in elements if e.element_token}
+        # Frames plus window geometry let `drag` turn element centres into the window-relative pixels its 0.59
+        # schema takes; it no longer accepts element ids at all.
+        self._snapshot_frames = {e.index: e.bounds for e in elements if e.bounds != (0, 0, 0, 0)}
+        self._active_window_bounds = sc_all.get("window_bounds")
+        self._active_screenshot_size = (sc_all.get("screenshot_width"), sc_all.get("screenshot_height"))
         return *_image_from_tool_result(gws_out), elements, window_title
 
     def capture(self, mode: str = "som", app: Optional[str] = None, pid: Optional[int] = None,
@@ -316,8 +331,11 @@ class _CaptureMixin:
         windows = self._resolve_capture_windows(mode, app, pid, window_id)
         if isinstance(windows, CaptureResult):
             return windows
-        self._set_active_target(target := _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target))
+        target = _select_capture_target(windows, app_requested=bool(app), exact_target=exact_target)
         app_name = target["app_name"]
+        if target.get("minimized"):
+            return self._failed_capture(mode, _MINIMIZED_MSG.format(app=app_name or app or target["title"]))
+        self._set_active_target(target)
         # Record the resolved app so capture_after= follow-ups re-target the same app rather than falling back
         # to the frontmost window.
         if app or not self._last_app:
